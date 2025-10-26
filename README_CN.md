@@ -22,26 +22,28 @@
 
 [English](README.md) | 中文
 
-一个为 CLI 提供 OpenAI/Gemini/Claude/Codex 兼容 API 接口的代理服务器。
+一个为 CLI 提供 OpenAI/Gemini/Claude/Codex/Kiro 兼容 API 接口的代理服务器。
 
-现已支持通过 OAuth 登录接入 OpenAI Codex（GPT 系列）和 Claude Code。
+现已支持通过 OAuth 登录接入 OpenAI Codex（GPT 系列）、Claude Code 和 Kiro AI（基于令牌认证）。
 
-您可以使用本地或多账户的CLI方式，通过任何与 OpenAI（包括Responses）/Gemini/Claude 兼容的客户端和SDK进行访问。
+您可以使用本地或多账户的CLI方式，通过任何与 OpenAI（包括Responses）/Gemini/Claude/Kiro 兼容的客户端和SDK进行访问。
 
 现已新增国内提供商：[Qwen Code](https://github.com/QwenLM/qwen-code)、[iFlow](https://iflow.cn/)。
 
 ## 功能特性
 
-- 为 CLI 模型提供 OpenAI/Gemini/Claude/Codex 兼容的 API 端点
+- 为 CLI 模型提供 OpenAI/Gemini/Claude/Codex/Kiro 兼容的 API 端点
 - 新增 OpenAI Codex（GPT 系列）支持（OAuth 登录）
 - 新增 Claude Code 支持（OAuth 登录）
 - 新增 Qwen Code 支持（OAuth 登录）
 - 新增 iFlow 支持（OAuth 登录）
+- 新增 Kiro AI 支持（基于令牌认证，无需在线 OAuth）
 - 支持流式与非流式响应
 - 函数调用/工具支持
 - 多模态输入（文本、图片）
-- 多账户支持与轮询负载均衡（Gemini、OpenAI、Claude、Qwen 与 iFlow）
+- 多账户支持与轮询负载均衡（Gemini、OpenAI、Claude、Qwen、iFlow 与 Kiro）
 - 简单的 CLI 身份验证流程（Gemini、OpenAI、Claude、Qwen 与 iFlow）
+- Kiro AI 基于令牌的身份验证（无需在线 OAuth）
 - 支持 Gemini AIStudio API 密钥
 - 支持 Gemini CLI 多账户轮询
 - 支持 Claude Code 多账户轮询
@@ -138,6 +140,20 @@ CLIProxyAPI 的基于 Web 的管理中心。
   ```
   选项：加上 `--no-browser` 可打印登录地址而不自动打开浏览器。本地 OAuth 回调端口为 `11451`。
 
+- Kiro（Kiro AI，基于令牌认证）：
+  1. 从官方 Kiro 工具下载 `kiro-auth-token.json`。
+  2. 确认 JSON 中包含 `"type": "kiro"` 字段（通过 CLI 导入器生成的文件会自动包含该字段；如果是手动提供的令牌，需要自行补全）。
+  3. 将其放置到配置的 `auth-dir`（默认 `~/.cli-proxy-api/kiro-auth-token.json`）。
+  3. 使用仓库提供的测试配置快速验证：
+     ```bash
+     ./cli-proxy-api --config config.test.yaml
+     curl -H "Authorization: Bearer test-api-key-01" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' \
+          http://localhost:8317/v1/chat/completions
+     ```
+     只要 `kiro-auth-token.json` 在 `auth-dir` 中，新 Kiro 执行器就会自动生效。
+
 ### 启动服务器
 
 身份验证完成后，启动服务器：
@@ -147,6 +163,14 @@ CLIProxyAPI 的基于 Web 的管理中心。
 ```
 
 默认情况下，服务器在端口 8317 上运行。
+
+如需快速本地自测（尤其是 Kiro），可直接使用 `config.test.yaml`：
+
+```bash
+./cli-proxy-api --config config.test.yaml
+```
+
+该配置开启详细日志、使用伪造 API Key（`test-api-key-01`），方便用 `curl` 直接命中 Kiro/Gemini 端点。
 
 ### API 端点
 
@@ -178,13 +202,22 @@ POST http://localhost:8317/v1/chat/completions
 ```
 
 说明：
-- 使用 "gemini-*" 模型（例如 "gemini-2.5-pro"）来调用 Gemini，使用 "gpt-*" 模型（例如 "gpt-5"）来调用 OpenAI，使用 "claude-*" 模型（例如 "claude-3-5-sonnet-20241022"）来调用 Claude，使用 "qwen-*" 模型（例如 "qwen3-coder-plus"）来调用 Qwen，或者使用 iFlow 支持的模型（例如 "tstars2.0"、"deepseek-v3.1"、"kimi-k2" 等）来调用 iFlow。代理服务会自动将请求路由到相应的提供商。
+- 使用 "gemini-*" 模型（例如 "gemini-2.5-pro"）来调用 Gemini，使用 "gpt-*" 模型（例如 "gpt-5"）来调用 OpenAI，使用 "claude-*" 模型（例如 "claude-3-5-sonnet-20241022"）来调用 Claude，使用 "qwen-*" 模型（例如 "qwen3-coder-plus"）来调用 Qwen，使用 Kiro 模型（例如 "claude-sonnet-4-5"）来调用 Kiro AI，或者使用 iFlow 支持的模型（例如 "tstars2.0"、"deepseek-v3.1"、"kimi-k2" 等）来调用 iFlow。代理服务会自动将请求路由到相应的提供商。
 
 #### Claude 消息（SSE 兼容）
 
 ```
 POST http://localhost:8317/v1/messages
 ```
+
+## CI / Docker 镜像
+
+仓库内的 `.github/workflows/docker-build.yml` 定义了镜像构建流程：当推送到 `main` 或标签 `v*.*.*` 时，会以 Buildx 同时构建 `linux/amd64` 与 `linux/arm64` 镜像，并推送到 Docker Hub（`$DOCKERHUB_USERNAME/cliproxyapi`）和 GitHub Container Registry（`ghcr.io/<owner>/cliproxyapi`）。请在仓库 Secrets 中配置：
+
+- `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`
+- （可选）若不想使用默认 `GITHUB_TOKEN`，可提供 `GHCR_PAT`
+
+也可以在 Actions 页面使用 `workflow_dispatch` 手动触发该工作流。
 
 ### 与 OpenAI 库一起使用
 
@@ -294,6 +327,13 @@ console.log(await claudeResponse.json());
 - glm-4.6
 - tstars2.0
 - 以及其他 iFlow 支持的模型
+- **Kiro AI 模型**：
+  - claude-sonnet-4-5
+  - claude-sonnet-4-5-20250929
+  - claude-sonnet-4-20250514
+  - claude-3-7-sonnet-20250219
+  - amazonq-claude-sonnet-4-20250514
+  - amazonq-claude-3-7-sonnet-20250219
 - Gemini 模型在需要时自动切换到对应的 preview 版本
 
 ## 配置

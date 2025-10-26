@@ -2,26 +2,28 @@
 
 English | [中文](README_CN.md)
 
-A proxy server that provides OpenAI/Gemini/Claude/Codex compatible API interfaces for CLI.
+A proxy server that provides OpenAI/Gemini/Claude/Codex/Kiro compatible API interfaces for CLI.
 
-It now also supports OpenAI Codex (GPT models) and Claude Code via OAuth.
+It now also supports OpenAI Codex (GPT models), Claude Code, and Kiro AI via OAuth or token-based authentication.
 
-So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude-compatible clients and SDKs.
+So you can use local or multi-account CLI access with OpenAI(include Responses)/Gemini/Claude/Kiro-compatible clients and SDKs.
 
 Chinese providers have now been added: [Qwen Code](https://github.com/QwenLM/qwen-code), [iFlow](https://iflow.cn/).
 
 ## Features
 
-- OpenAI/Gemini/Claude compatible API endpoints for CLI models
+- OpenAI/Gemini/Claude/Kiro compatible API endpoints for CLI models
 - OpenAI Codex support (GPT models) via OAuth login
 - Claude Code support via OAuth login
 - Qwen Code support via OAuth login
 - iFlow support via OAuth login
+- Kiro AI support via token-based authentication (import kiro-auth-token.json)
 - Streaming and non-streaming responses
 - Function calling/tools support
 - Multimodal input support (text and images)
-- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Qwen and iFlow)
+- Multiple accounts with round-robin load balancing (Gemini, OpenAI, Claude, Qwen, iFlow, and Kiro)
 - Simple CLI authentication flows (Gemini, OpenAI, Claude, Qwen and iFlow)
+- Token-based authentication for Kiro (no online OAuth required)
 - Generative Language API Key support
 - Gemini CLI multi-account load balancing
 - Claude Code multi-account load balancing
@@ -124,6 +126,20 @@ You can authenticate for Gemini, OpenAI, Claude, Qwen, and/or iFlow. All can coe
   ```
   Options: add `--no-browser` to print the login URL instead of opening a browser. The local OAuth callback uses port `11451`.
 
+- Kiro (token import):
+  1. Download your `kiro-auth-token.json` from the official Kiro tooling.
+  2. Ensure the JSON contains `"type": "kiro"` (tokens exported by the CLI authenticator already include this field; manually provided files must be updated to match).
+  3. Copy it into the configured `auth-dir` (default `~/.cli-proxy-api/kiro-auth-token.json`).
+  3. Start the server with the sample testing configuration to verify the integration:
+     ```bash
+     ./cli-proxy-api --config config.test.yaml
+     curl -H "Authorization: Bearer test-api-key-01" \
+          -H "Content-Type: application/json" \
+          -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' \
+          http://localhost:8317/v1/chat/completions
+     ```
+     The request will be routed through the new Kiro executor automatically once the token file is present.
+
 
 ### Starting the Server
 
@@ -134,6 +150,8 @@ Once authenticated, start the server:
 ```
 
 By default, the server runs on port 8317.
+
+For quick local smoke tests (especially for Kiro), the repository ships with `config.test.yaml`, which binds the server to port `8317`, enables verbose logging, and preloads a dummy API key (`test-api-key-01`). Use it via `./cli-proxy-api --config config.test.yaml`.
 
 ### API Endpoints
 
@@ -172,6 +190,15 @@ Notes:
 ```
 POST http://localhost:8317/v1/messages
 ```
+
+## CI / Docker Images
+
+The workflow defined in `.github/workflows/docker-build.yml` builds multi-architecture Docker images on pushes to `main` and tags (`v*.*.*`). It uses Docker Buildx to publish to both Docker Hub (`$DOCKERHUB_USERNAME/cliproxyapi`) and GitHub Container Registry (`ghcr.io/<owner>/cliproxyapi`). Provide the following repository secrets for pushes:
+
+- `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN`
+- (`optional`) override `GHCR_PAT` if you prefer a PAT over the default `GITHUB_TOKEN`.
+
+You can also trigger the workflow manually from the Actions tab via the `workflow_dispatch` event.
 
 ### Using with OpenAI Libraries
 

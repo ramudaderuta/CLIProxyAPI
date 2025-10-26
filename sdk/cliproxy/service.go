@@ -101,6 +101,8 @@ func newDefaultAuthManager() *sdkAuth.Manager {
 		sdkAuth.NewCodexAuthenticator(),
 		sdkAuth.NewClaudeAuthenticator(),
 		sdkAuth.NewQwenAuthenticator(),
+		sdkAuth.NewIFlowAuthenticator(),
+		sdkAuth.NewKiroAuthenticator(),
 	)
 }
 
@@ -258,6 +260,8 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewCodexExecutor(s.cfg))
 	case "qwen":
 		s.coreManager.RegisterExecutor(executor.NewQwenExecutor(s.cfg))
+	case "kiro":
+		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "iflow":
 		s.coreManager.RegisterExecutor(executor.NewIFlowExecutor(s.cfg))
 	default:
@@ -522,6 +526,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = registry.GetQwenModels()
 	case "iflow":
 		models = registry.GetIFlowModels()
+	case "kiro":
+		models = registry.GetKiroModels()
 	default:
 		// Handle OpenAI-compatibility providers by name using config
 		if s.cfg != nil {
