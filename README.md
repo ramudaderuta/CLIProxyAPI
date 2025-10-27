@@ -133,10 +133,7 @@ You can authenticate for Gemini, OpenAI, Claude, Qwen, and/or iFlow. All can coe
   3. Start the server with the sample testing configuration to verify the integration:
      ```bash
      ./cli-proxy-api --config config.test.yaml
-     curl -H "Authorization: Bearer test-api-key-01" \
-          -H "Content-Type: application/json" \
-          -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' \
-          http://localhost:8317/v1/chat/completions
+     curl -H "Authorization: Bearer test-api-key-01" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' http://localhost:8317/v1/chat/completions
      ```
      The request will be routed through the new Kiro executor automatically once the token file is present.
 

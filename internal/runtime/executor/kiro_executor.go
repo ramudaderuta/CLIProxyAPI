@@ -114,7 +114,6 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		for _, payload := range buildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls) {
 			stream <- cliproxyexecutor.StreamChunk{Payload: payload}
 		}
-		stream <- cliproxyexecutor.StreamChunk{Payload: []byte("data: [DONE]\n\n")}
 	}()
 	return stream, nil
 }
@@ -972,7 +971,7 @@ func buildStreamingChunks(id, model string, created int64, content string, toolC
 
 func marshalStreamChunk(payload map[string]any) []byte {
 	data, _ := json.Marshal(payload)
-	return append([]byte("data: "), append(data, []byte("\n\n")...)...)
+	return data
 }
 
 func usageDetail(prompt, completion int64) usage.Detail {

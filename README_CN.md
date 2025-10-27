@@ -147,10 +147,7 @@ CLIProxyAPI 的基于 Web 的管理中心。
   3. 使用仓库提供的测试配置快速验证：
      ```bash
      ./cli-proxy-api --config config.test.yaml
-     curl -H "Authorization: Bearer test-api-key-01" \
-          -H "Content-Type: application/json" \
-          -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' \
-          http://localhost:8317/v1/chat/completions
+     curl -H "Authorization: Bearer test-api-key-01" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' http://localhost:8317/v1/chat/completions
      ```
      只要 `kiro-auth-token.json` 在 `auth-dir` 中，新 Kiro 执行器就会自动生效。
 
