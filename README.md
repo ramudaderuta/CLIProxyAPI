@@ -25,6 +25,7 @@ Chinese providers have now been added: [Qwen Code](https://github.com/QwenLM/qwe
 - Simple CLI authentication flows (Gemini, OpenAI, Claude, Qwen and iFlow)
 - Token-based authentication for Kiro (no online OAuth required)
 - Generative Language API Key support
+- AI Studio Build multi-account load balancing
 - Gemini CLI multi-account load balancing
 - Claude Code multi-account load balancing
 - Qwen Code multi-account load balancing
@@ -69,6 +70,14 @@ Chinese providers have now been added: [Qwen Code](https://github.com/QwenLM/qwe
 brew install cliproxyapi
 brew services start cliproxyapi
 ```
+
+### Installation via CLIProxyAPI Linux Installer
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/brokechubb/cliproxyapi-installer/refs/heads/master/cliproxyapi-installer | bash
+```
+
+Thanks to [brokechubb](https://github.com/brokechubb) for building the Linux installer!
 
 ## Usage
 
@@ -284,12 +293,16 @@ console.log(await claudeResponse.json());
 - gemini-2.5-flash-lite
 - gemini-2.5-flash-image
 - gemini-2.5-flash-image-preview
+- gemini-pro-latest
+- gemini-flash-latest
+- gemini-flash-lite-latest
 - gpt-5
 - gpt-5-codex
 - claude-opus-4-1-20250805
 - claude-opus-4-20250514
 - claude-sonnet-4-20250514
 - claude-sonnet-4-5-20250929
+- claude-haiku-4-5-20251001
 - claude-3-7-sonnet-20250219
 - claude-3-5-haiku-20241022
 - qwen3-coder-plus
@@ -301,7 +314,6 @@ console.log(await claudeResponse.json());
 - deepseek-r1
 - deepseek-v3
 - kimi-k2
-- glm-4.5
 - glm-4.6
 - tstars2.0
 - And other iFlow-supported models
@@ -342,6 +354,9 @@ The server uses a YAML configuration file (`config.yaml`) located in the project
 | `claude-api-key.api-key`                           | string   | ""                 | Claude API key.                                                                                                                                                                           |
 | `claude-api-key.base-url`                          | string   | ""                 | Custom Claude API endpoint, if you use a third-party API endpoint.                                                                                                                        |
 | `claude-api-key.proxy-url`                         | string   | ""                 | Proxy URL for this specific API key. Overrides the global proxy-url setting. Supports socks5/http/https protocols.                                                                        |
+| `claude-api-key.models`                            | object[] | []                 | Model alias entries for this key.                                                                                                                                                         |
+| `claude-api-key.models.*.name`                     | string   | ""                 | Upstream Claude model name invoked against the API.                                                                                                                                       |
+| `claude-api-key.models.*.alias`                    | string   | ""                 | Client-facing alias that maps to the upstream model name.                                                                                                                                 |
 | `openai-compatibility`                             | object[] | []                 | Upstream OpenAI-compatible providers configuration (name, base-url, api-keys, models).                                                                                                    |
 | `openai-compatibility.*.name`                      | string   | ""                 | The name of the provider. It will be used in the user agent and other places.                                                                                                             |
 | `openai-compatibility.*.base-url`                  | string   | ""                 | The base URL of the provider.                                                                                                                                                             |
@@ -349,9 +364,11 @@ The server uses a YAML configuration file (`config.yaml`) located in the project
 | `openai-compatibility.*.api-key-entries`           | object[] | []                 | API key entries with optional per-key proxy configuration. Preferred over api-keys.                                                                                                        |
 | `openai-compatibility.*.api-key-entries.*.api-key` | string   | ""                 | The API key for this entry.                                                                                                                                                               |
 | `openai-compatibility.*.api-key-entries.*.proxy-url` | string | ""                 | Proxy URL for this specific API key. Overrides the global proxy-url setting. Supports socks5/http/https protocols.                                                                      |
-| `openai-compatibility.*.models`                    | object[] | []                 | The actual model name.                                                                                                                                                                    |
-| `openai-compatibility.*.models.*.name`             | string   | ""                 | The models supported by the provider.                                                                                                                                                     |
-| `openai-compatibility.*.models.*.alias`            | string   | ""                 | The alias used in the API.                                                                                                                                                                |
+| `openai-compatibility.*.models`                    | object[] | []                 | Model alias definitions routing client aliases to upstream names.                                                                                                                         |
+| `openai-compatibility.*.models.*.name`             | string   | ""                 | Upstream model name invoked against the provider.                                                                                                                                         |
+| `openai-compatibility.*.models.*.alias`            | string   | ""                 | Client alias routed to the upstream model.                                                                                                                                                |
+
+When `claude-api-key.models` is specified, only the provided aliases are registered in the model registry (mirroring OpenAI compatibility behaviour), and the default Claude catalog is suppressed for that credential.
 
 ### Example Configuration File
 
@@ -434,7 +451,7 @@ openai-compatibility:
     # api-keys:
     #   - "sk-or-v1-...b780"
     #   - "sk-or-v1-...b781"
-    models: # The models supported by the provider.
+    models: # The models supported by the provider. Or you can use a format such as openrouter://moonshotai/kimi-k2:free to request undefined models
       - name: "moonshotai/kimi-k2:free" # The actual model name.
         alias: "kimi-k2" # The alias used in the API.
 ```
@@ -529,28 +546,37 @@ openai-compatibility:
         alias: "kimi-k2"
 ```
 
-Legacy format (still supported):
-
-```yaml
-openai-compatibility:
-  - name: "openrouter"
-    base-url: "https://openrouter.ai/api/v1"
-    api-keys:
-      - "sk-or-v1-...b780"
-      - "sk-or-v1-...b781"
-    models:
-      - name: "moonshotai/kimi-k2:free"
-        alias: "kimi-k2"
-```
-
 Usage: 
 
 Call OpenAI's endpoint `/v1/chat/completions` with `model` set to the alias (e.g., `kimi-k2`). The proxy routes to the configured provider/model automatically.
 
-Also, you may call Claude's endpoint `/v1/messages`, Gemini's `/v1beta/models/model-name:streamGenerateContent` or `/v1beta/models/model-name:generateContent`.
-
 And you can always use Gemini CLI with `CODE_ASSIST_ENDPOINT` set to `http://127.0.0.1:8317` for these OpenAI-compatible provider's models.
 
+### AI Studio Instructions
+
+You can use this service (CLIProxyAPI) as a backend for [this AI Studio App](https://aistudio.google.com/apps/drive/1CPW7FpWGsDZzkaYgYOyXQ_6FWgxieLmL). Follow the steps below to configure it:
+
+1.  **Start the CLIProxyAPI Service**: Ensure your CLIProxyAPI instance is running, either locally or remotely.
+2.  **Access the AI Studio App**: Log in to your Google account in your browser, then open the following link:
+    - [https://aistudio.google.com/apps/drive/1CPW7FpWGsDZzkaYgYOyXQ_6FWgxieLmL](https://aistudio.google.com/apps/drive/1CPW7FpWGsDZzkaYgYOyXQ_6FWgxieLmL)
+
+#### Connection Configuration
+
+By default, the AI Studio App attempts to connect to a local CLIProxyAPI instance at `ws://127.0.0.1:8317`.
+
+-   **Connecting to a Remote Service**:
+    If you need to connect to a remotely deployed CLIProxyAPI, modify the `config.ts` file in the AI Studio App to update the `WEBSOCKET_PROXY_URL` value.
+    -   Use the `wss://` protocol if your remote service has SSL enabled.
+    -   Use the `ws://` protocol if SSL is not enabled.
+
+#### Authentication Configuration
+
+By default, WebSocket connections to CLIProxyAPI do not require authentication.
+
+-   **Enable Authentication on the CLIProxyAPI Server**:
+    In your `config.yaml` file, set `ws_auth` to `true`.
+-   **Configure Authentication on the AI Studio Client**:
+    In the `config.ts` file of the AI Studio App, set the `JWT_TOKEN` value to your authentication token.
 
 ### Authentication Directory
 
