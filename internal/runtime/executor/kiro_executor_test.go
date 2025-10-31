@@ -216,3 +216,88 @@ func TestBuildKiroRequestPayload(t *testing.T) {
 		t.Fatalf("unexpected chat trigger: %v", conv["chatTriggerType"])
 	}
 }
+
+func TestBuildKiroRequestPayload_ToolsSchemaDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		payload []byte
+	}{
+		{
+			name: "MissingParametersDefaultsToEmptyObject",
+			payload: []byte(`{
+				"messages":[{"role":"user","content":"Hola"}],
+				"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup something"}}]
+			}`),
+		},
+		{
+			name: "ExplicitEmptyParameters",
+			payload: []byte(`{
+				"messages":[{"role":"user","content":"Hola"}],
+				"tools":[{"type":"function","function":{"name":"lookup","description":"Lookup something","parameters":{}}}]
+			}`),
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			ts := &kiro.KiroTokenStorage{
+				ProfileArn:  "arn:aws:codewhisperer:us-east-1:123456789012:profile/Test",
+				AuthMethod:  "social",
+				AccessToken: "token",
+			}
+
+			body, err := buildKiroRequestPayload("claude-sonnet-4-5", tc.payload, ts, nil)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			var parsed map[string]any
+			if err := json.Unmarshal(body, &parsed); err != nil {
+				t.Fatalf("invalid json: %v", err)
+			}
+
+			conv, ok := parsed["conversationState"].(map[string]any)
+			if !ok {
+				t.Fatalf("conversationState missing")
+			}
+			current, ok := conv["currentMessage"].(map[string]any)
+			if !ok {
+				t.Fatalf("currentMessage missing")
+			}
+			user, ok := current["userInputMessage"].(map[string]any)
+			if !ok {
+				t.Fatalf("userInputMessage missing")
+			}
+			ctx, ok := user["userInputMessageContext"].(map[string]any)
+			if !ok {
+				t.Fatalf("userInputMessageContext missing")
+			}
+			tools, ok := ctx["tools"].([]any)
+			if !ok || len(tools) == 0 {
+				t.Fatalf("tools context missing")
+			}
+			firstTool, ok := tools[0].(map[string]any)
+			if !ok {
+				t.Fatalf("invalid tool entry")
+			}
+			spec, ok := firstTool["toolSpecification"].(map[string]any)
+			if !ok {
+				t.Fatalf("toolSpecification missing")
+			}
+			inputSchema, ok := spec["inputSchema"].(map[string]any)
+			if !ok {
+				t.Fatalf("inputSchema missing")
+			}
+			jsonSchema, ok := inputSchema["json"].(map[string]any)
+			if !ok {
+				t.Fatalf("json schema should be an object, got %T", inputSchema["json"])
+			}
+			if jsonSchema == nil {
+				t.Fatal("json schema should not be nil")
+			}
+		})
+	}
+}

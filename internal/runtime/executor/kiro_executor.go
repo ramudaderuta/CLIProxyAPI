@@ -548,11 +548,15 @@ func buildToolSpecifications(tools gjson.Result) []map[string]any {
 		if !function.Exists() {
 			return true
 		}
+		schema := parseJSONSafely(function.Get("parameters"), gjson.Result{})
+		if schema == nil {
+			schema = map[string]any{}
+		}
 		entry := map[string]any{
 			"toolSpecification": map[string]any{
 				"name":        function.Get("name").String(),
 				"description": function.Get("description").String(),
-				"inputSchema": map[string]any{"json": parseJSONSafely(function.Get("parameters"), gjson.Result{})},
+				"inputSchema": map[string]any{"json": schema},
 			},
 		}
 		specs = append(specs, entry)
