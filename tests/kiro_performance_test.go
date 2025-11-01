@@ -14,9 +14,10 @@ import (
 )
 
 func BenchmarkKiroExecutorExecute(b *testing.B) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, nil)
+	auth := fixtures.NewTestAuth(nil, nil)
 
 	response := map[string]any{
 		"conversationState": map[string]any{
@@ -28,17 +29,17 @@ func BenchmarkKiroExecutorExecute(b *testing.B) {
 		},
 	}
 	raw, _ := json.Marshal(response)
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(raw)),
 		}, nil
 	})
 
-	ctx := withRoundTripper(context.Background(), rt)
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
 	req := cliproxyexecutor.Request{
 		Model:   "claude-sonnet-4-5",
-		Payload: openAIChatPayload(b, []map[string]any{{"role": "user", "content": "ping"}}, nil),
+		Payload: fixtures.OpenAIChatPayloadNoHelper([]map[string]any{{"role": "user", "content": "ping"}}, nil),
 	}
 
 	b.ResetTimer()
@@ -50,9 +51,10 @@ func BenchmarkKiroExecutorExecute(b *testing.B) {
 }
 
 func BenchmarkKiroExecutorExecuteParallel(b *testing.B) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, nil)
+	auth := fixtures.NewTestAuth(nil, nil)
 
 	response := map[string]any{
 		"conversationState": map[string]any{
@@ -64,18 +66,18 @@ func BenchmarkKiroExecutorExecuteParallel(b *testing.B) {
 		},
 	}
 	raw, _ := json.Marshal(response)
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(raw)),
 		}, nil
 	})
 
-	payload := openAIChatPayload(b, []map[string]any{{"role": "user", "content": "ping"}}, nil)
+	payload := fixtures.OpenAIChatPayloadNoHelper([]map[string]any{{"role": "user", "content": "ping"}}, nil)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
-		ctx := withRoundTripper(context.Background(), rt)
+		ctx := fixtures.WithRoundTripper(context.Background(), rt)
 		req := cliproxyexecutor.Request{
 			Model:   "claude-sonnet-4-5",
 			Payload: payload,

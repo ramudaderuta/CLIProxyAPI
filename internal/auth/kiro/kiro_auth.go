@@ -58,18 +58,21 @@ func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStor
 	// Check if token needs refresh
 	if ts.IsExpired() {
 		log.Info("[Kiro Auth] Token is expired or near expiry, refreshing...")
-		if err := k.refreshToken(ts, proxyURL); err != nil {
+		if err := k.refreshToken(ctx, ts, proxyURL); err != nil {
 			return nil, fmt.Errorf("failed to refresh token: %w", err)
 		}
 	}
 
-	// Create HTTP client with transport configuration
+	// Create HTTP client with context-aware transport configuration
 	client := &http.Client{
 		Timeout: 120 * time.Second, // 2 minutes timeout
 	}
 
-	// Configure proxy if specified
-	if proxyURL != "" {
+	// Priority 1: Use RoundTripper from context (test mocking support)
+	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+		client.Transport = rt
+	} else if proxyURL != "" {
+		// Priority 2: Use proxy if specified
 		if parsed, err := url.Parse(proxyURL); err == nil {
 			client.Transport = &http.Transport{
 				Proxy: http.ProxyURL(parsed),
@@ -91,7 +94,7 @@ func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStor
 //
 // Returns:
 //   - error: An error if the refresh fails, nil otherwise
-func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, proxyURL string) error {
+func (k *KiroAuth) refreshToken(ctx context.Context, ts *KiroTokenStorage, proxyURL string) error {
 	if ts.RefreshToken == "" {
 		return fmt.Errorf("no refresh token available")
 	}
@@ -126,7 +129,7 @@ func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, proxyURL string) error {
 	}
 
 	// Create HTTP request
-	req, err := http.NewRequestWithContext(context.Background(), "POST", refreshURL, bytes.NewBuffer(jsonBody))
+	req, err := http.NewRequestWithContext(ctx, "POST", refreshURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
 		return fmt.Errorf("failed to create refresh request: %w", err)
 	}
@@ -135,9 +138,14 @@ func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, proxyURL string) error {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", kiroUserAgent)
 
-	// Configure proxy for refresh request if needed
+	// Configure HTTP client with context-aware transport
 	client := &http.Client{Timeout: 30 * time.Second}
-	if proxyURL != "" {
+
+	// Priority 1: Use RoundTripper from context (test mocking support)
+	if rt, ok := ctx.Value("cliproxy.roundtripper").(http.RoundTripper); ok && rt != nil {
+		client.Transport = rt
+	} else if proxyURL != "" {
+		// Priority 2: Use proxy if specified
 		if parsed, err := url.Parse(proxyURL); err == nil {
 			client.Transport = &http.Transport{
 				Proxy: http.ProxyURL(parsed),

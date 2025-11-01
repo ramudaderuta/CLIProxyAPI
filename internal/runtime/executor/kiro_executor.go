@@ -156,6 +156,16 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 	}
 
 	text, toolCalls := kirotranslator.ParseResponse(data)
+
+	// Filter out "Thinking" content from streaming responses
+	if strings.Contains(text, "Thinking") {
+		parts := strings.Split(text, "Thinking")
+		if len(parts) > 1 {
+			text = strings.TrimSpace(parts[1])
+		} else {
+			text = ""
+		}
+	}
 	promptTokens, _ := estimatePromptTokens(req.Model, req.Payload)
 	completionTokens := estimateCompletionTokens(text, toolCalls)
 

@@ -44,12 +44,25 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
 	}
+
+	// First check for explicitly configured token files
+	if e.cfg != nil && len(e.cfg.KiroTokenFiles) > 0 {
+		// Use the first configured token file (could be enhanced later to match by region/label)
+		tokenFile := e.cfg.KiroTokenFiles[0]
+		if tokenFile.TokenFilePath != "" {
+			return expandPath(tokenFile.TokenFilePath)
+		}
+	}
+
+	// Fall back to auth attributes
 	if auth.Attributes != nil {
 		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
 			return expandPath(p)
 		}
 	}
-	candidates := []string{auth.FileName, auth.ID}
+
+	// Fall back to default behavior
+	candidates := []string{auth.FileName, auth.ID, "kiro-auth-token.json"}
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -59,9 +72,12 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 			return candidate
 		}
 		if e.cfg != nil && e.cfg.AuthDir != "" {
-			return filepath.Join(expandPath(e.cfg.AuthDir), candidate)
+			path := filepath.Join(expandPath(e.cfg.AuthDir), candidate)
+			// Check if file exists before returning
+			if _, err := os.Stat(path); err == nil {
+				return path
+			}
 		}
-		return candidate
 	}
 	return ""
 }

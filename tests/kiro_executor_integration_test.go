@@ -15,73 +15,18 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
-	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 )
 
-type roundTripperFunc func(*http.Request) (*http.Response, error)
-
-func (fn roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
-	return fn(req)
-}
-
-func withRoundTripper(ctx context.Context, fn roundTripperFunc) context.Context {
-	return context.WithValue(ctx, "cliproxy.roundtripper", http.RoundTripper(fn))
-}
-
-func newTestToken() *authkiro.KiroTokenStorage {
-	return &authkiro.KiroTokenStorage{
-		AccessToken:  "access-token",
-		RefreshToken: "refresh-token",
-		ProfileArn:   "arn:aws:codewhisperer:us-west-2:123456789012:profile/test",
-		ExpiresAt:    time.Now().Add(30 * time.Minute),
-		AuthMethod:   "social",
-		Provider:     "Github",
-		Type:         "kiro",
-	}
-}
-
-func newTestAuth(token *authkiro.KiroTokenStorage, attrs map[string]string) *cliproxyauth.Auth {
-	if token == nil {
-		token = newTestToken()
-	}
-	if attrs == nil {
-		attrs = map[string]string{}
-	}
-	return &cliproxyauth.Auth{
-		ID:         "auth-test",
-		Provider:   "kiro",
-		Attributes: attrs,
-		Metadata:   map[string]any{},
-		Runtime:    token,
-		CreatedAt:  time.Now(),
-		UpdatedAt:  time.Now(),
-	}
-}
-
-func openAIChatPayload(t *testing.T, messages []map[string]any, tools []map[string]any) []byte {
-	t.Helper()
-	payload := map[string]any{
-		"model":    "claude-sonnet-4-5",
-		"messages": messages,
-	}
-	if len(tools) > 0 {
-		payload["tools"] = tools
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("marshal payload: %v", err)
-	}
-	return data
-}
-
-func TestKiroExecutorExecuteIntegration(t *testing.T) {
+// TestKiroExecutor_Execute validates the basic non-streaming request execution
+func TestKiroExecutor_Execute(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, map[string]string{"region": "ap-southeast-1"})
+	auth := fixtures.NewTestAuth(nil, map[string]string{"region": "ap-southeast-1"})
 
 	var captured []byte
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatalf("read request body: %v", err)
@@ -105,10 +50,10 @@ func TestKiroExecutorExecuteIntegration(t *testing.T) {
 		}, nil
 	})
 
-	ctx := withRoundTripper(context.Background(), rt)
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
 	req := cliproxyexecutor.Request{
 		Model: "claude-sonnet-4-5",
-		Payload: openAIChatPayload(t, []map[string]any{
+		Payload: fixtures.OpenAIChatPayload(t, []map[string]any{
 			{"role": "system", "content": "You are a helpful assistant."},
 			{"role": "user", "content": "Hello!"},
 		}, []map[string]any{
@@ -179,10 +124,12 @@ func TestKiroExecutorExecuteIntegration(t *testing.T) {
 	}
 }
 
-func TestKiroExecutorExecuteStreamIntegration(t *testing.T) {
+// TestKiroExecutor_ExecuteStream validates streaming request execution
+func TestKiroExecutor_ExecuteStream(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, nil)
+	auth := fixtures.NewTestAuth(nil, nil)
 
 	sse := `
 data: {"content":"Thinking","followupPrompt":false}
@@ -191,7 +138,7 @@ data: {"name":"get_weather","toolUseId":"call_1","stop":true}
 data: {"content":"It is sunny","followupPrompt":false}
 `
 
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(sse))),
@@ -199,10 +146,10 @@ data: {"content":"It is sunny","followupPrompt":false}
 		}, nil
 	})
 
-	ctx := withRoundTripper(context.Background(), rt)
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
 	req := cliproxyexecutor.Request{
 		Model:   "claude-sonnet-4-5",
-		Payload: openAIChatPayload(t, []map[string]any{{"role": "user", "content": "Weather?"}}, nil),
+		Payload: fixtures.OpenAIChatPayload(t, []map[string]any{{"role": "user", "content": "Weather?"}}, nil),
 	}
 	stream, err := exec.ExecuteStream(ctx, auth, req, cliproxyexecutor.Options{})
 	if err != nil {
@@ -261,12 +208,14 @@ data: {"content":"It is sunny","followupPrompt":false}
 	}
 }
 
-func TestKiroExecutorExecute_ErrorPropagation(t *testing.T) {
+// TestKiroExecutor_ErrorPropagation validates that errors are properly propagated
+func TestKiroExecutor_ErrorPropagation(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, nil)
+	auth := fixtures.NewTestAuth(nil, nil)
 
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`{"message":"quota exceeded"}`))),
@@ -274,10 +223,10 @@ func TestKiroExecutorExecute_ErrorPropagation(t *testing.T) {
 		}, nil
 	})
 
-	ctx := withRoundTripper(context.Background(), rt)
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
 	req := cliproxyexecutor.Request{
 		Model:   "claude-sonnet-4-5",
-		Payload: openAIChatPayload(t, []map[string]any{{"role": "user", "content": "Hello"}}, nil),
+		Payload: fixtures.OpenAIChatPayload(t, []map[string]any{{"role": "user", "content": "Hello"}}, nil),
 	}
 	_, err := exec.Execute(ctx, auth, req, cliproxyexecutor.Options{})
 	if err == nil {
@@ -292,13 +241,15 @@ func TestKiroExecutorExecute_ErrorPropagation(t *testing.T) {
 	}
 }
 
-func TestKiroExecutorConcurrentExecute(t *testing.T) {
+// TestKiroExecutor_ConcurrentExecute validates concurrent execution
+func TestKiroExecutor_ConcurrentExecute(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
-	auth := newTestAuth(nil, nil)
+	auth := fixtures.NewTestAuth(nil, nil)
 
 	var calls atomic.Int32
-	rt := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		response := map[string]any{
 			"conversationState": map[string]any{
@@ -316,10 +267,10 @@ func TestKiroExecutorConcurrentExecute(t *testing.T) {
 		}, nil
 	})
 
-	ctx := withRoundTripper(context.Background(), rt)
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
 	req := cliproxyexecutor.Request{
 		Model:   "claude-sonnet-4-5",
-		Payload: openAIChatPayload(t, []map[string]any{{"role": "user", "content": "ping"}}, nil),
+		Payload: fixtures.OpenAIChatPayload(t, []map[string]any{{"role": "user", "content": "ping"}}, nil),
 	}
 
 	const workers = 8
@@ -347,5 +298,92 @@ func TestKiroExecutorConcurrentExecute(t *testing.T) {
 	want := int32(workers * perWorker)
 	if got := calls.Load(); got != want {
 		t.Fatalf("expected %d upstream calls, got %d", want, got)
+	}
+}
+
+// TestKiroExecutor_TokenRefresh validates token refresh functionality
+func TestKiroExecutor_TokenRefresh(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
+	// Create an expired token to test refresh functionality
+	expiredToken := &authkiro.KiroTokenStorage{
+		AccessToken:  "expired-access-token",
+		RefreshToken: "valid-refresh-token",
+		ProfileArn:   "arn:aws:codewhisperer:us-west-2:123456789012:profile/test",
+		ExpiresAt:    time.Now().Add(-5 * time.Minute), // Expired 5 minutes ago
+		AuthMethod:   "social",
+		Provider:     "Github",
+		Type:         "kiro",
+	}
+
+	cfg := &config.Config{}
+	exec := executor.NewKiroExecutor(cfg)
+	auth := fixtures.NewTestAuth(expiredToken, map[string]string{"region": "us-west-2"})
+
+	// Mock the refresh endpoint
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		// Check if this is a refresh request
+		if req.URL.Path == "/refreshToken" || req.URL.Path == "/token" {
+			// Return a successful refresh response
+			refreshResponse := map[string]any{
+				"accessToken":  "new-access-token",
+				"refreshToken": "new-refresh-token",
+				"profileArn":   "arn:aws:codewhisperer:us-west-2:123456789012:profile/test",
+				"expiresIn":    3600,
+			}
+			raw, _ := json.Marshal(refreshResponse)
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(bytes.NewReader(raw)),
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+			}, nil
+		}
+
+		// Otherwise, it's a regular API request
+		response := map[string]any{
+			"conversationState": map[string]any{
+				"currentMessage": map[string]any{
+					"assistantResponseMessage": map[string]any{
+						"content": "Hello from refreshed token",
+					},
+				},
+			},
+		}
+		raw, _ := json.Marshal(response)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader(raw)),
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+		}, nil
+	})
+
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
+	req := cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-5",
+		Payload: fixtures.OpenAIChatPayload(t, []map[string]any{{"role": "user", "content": "Hello!"}}, nil),
+	}
+
+	// Execute should trigger token refresh and then succeed
+	resp, err := exec.Execute(ctx, auth, req, cliproxyexecutor.Options{})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+
+	if len(resp.Payload) == 0 {
+		t.Fatal("expected payload from Execute")
+	}
+
+	// Verify the response content
+	var completion map[string]any
+	if err := json.Unmarshal(resp.Payload, &completion); err != nil {
+		t.Fatalf("failed to parse completion payload: %v", err)
+	}
+	choices, _ := completion["choices"].([]any)
+	if len(choices) != 1 {
+		t.Fatalf("expected 1 choice, got %d", len(choices))
+	}
+	first := choices[0].(map[string]any)
+	message := first["message"].(map[string]any)
+	if got := message["content"]; got != "Hello from refreshed token" {
+		t.Fatalf("expected assistant content from response, got %v", got)
 	}
 }
