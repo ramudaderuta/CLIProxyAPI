@@ -122,7 +122,7 @@ CLAUDE.md
 GEMINI.md
 
 # OpenSpec working directory
-openspec/
+# openspec/
 
 # Tooling metadata
 .vscode/*

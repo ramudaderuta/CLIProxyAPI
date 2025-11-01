@@ -173,16 +173,17 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 				textParts = append(textParts, part.Get("text").String())
 			case "tool_result":
 				resultContent := extractNestedContent(part.Get("content"))
-				if resultContent == "" {
-					resultContent = part.Get("text").String()
-				}
+				// Remove incorrect fallback to non-existent "text" field
+				// Tool results use content field, not text field
+				toolUseId := firstString(
+					part.Get("tool_use_id").String(),
+					part.Get("tool_useId").String(),
+				)
+				// Always create tool result entry, even with empty content
 				toolResults = append(toolResults, map[string]any{
 					"content": []map[string]string{{"text": resultContent}},
 					"status":  firstString(part.Get("status").String(), "success"),
-					"toolUseId": firstString(
-						part.Get("tool_use_id").String(),
-						part.Get("tool_useId").String(),
-					),
+					"toolUseId": toolUseId,
 				})
 			case "tool_use":
 				toolUses = append(toolUses, map[string]any{
