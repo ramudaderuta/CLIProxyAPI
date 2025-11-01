@@ -137,14 +137,25 @@ You can authenticate for Gemini, OpenAI, Claude, Qwen, and/or iFlow. All can coe
 
 - Kiro (token import):
   1. Download your `kiro-auth-token.json` from the official Kiro tooling.
-  2. Ensure the JSON contains `"type": "kiro"` (tokens exported by the CLI authenticator already include this field; manually provided files must be updated to match).
-  3. Copy it into the configured `auth-dir` (default `~/.cli-proxy-api/kiro-auth-token.json`).
+  2. Configure the token in `config.yaml` using the new `kiro-token-file` block **or** drop the file into `auth-dir` (configured paths take precedence).
+     ```yaml
+     kiro-token-file:
+       - token-file-path: "~/.cli-proxy-api/kiro-auth-token.json"
+         region: "us-east-1"           # optional override if profileArn is missing
+         label: "primary-kiro-account" # optional label used in logs and the UI
+     ```
+     If you rely on auto-detection, place the file at `~/.cli-proxy-api/kiro-auth-token.json` (or your custom `auth-dir`).
   3. Start the server with the sample testing configuration to verify the integration:
      ```bash
      ./cli-proxy-api --config config.test.yaml
      curl -H "Authorization: Bearer test-api-key-01" -H "Content-Type: application/json" -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}' http://localhost:8317/v1/chat/completions
      ```
      The request will be routed through the new Kiro executor automatically once the token file is present.
+
+  **Notes**
+  - Native token exports that lack `"type": "kiro"` are automatically enhanced in memory; no manual editing is required.
+  - When both configured paths and auto-detected files exist, the configured entries are used and the legacy files are ignored.
+  - See `docs/kiro-token-migration.md` for guidance on migrating from auto-detection to explicit configuration.
 
 
 ### Starting the Server

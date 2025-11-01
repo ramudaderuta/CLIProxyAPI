@@ -58,6 +58,9 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// KiroTokenFiles defines token-file based authentication entries for the Kiro provider.
+	KiroTokenFiles []KiroTokenFile `yaml:"kiro-token-file" json:"kiro-token-file"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -254,6 +257,15 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Codex keys: drop entries without base-url
 	sanitizeCodexKeys(&cfg)
+
+	// Normalize and validate Kiro token file configuration.
+	cfg.NormalizeKiroTokenFiles()
+	if err := cfg.ValidateKiroTokenFiles(); err != nil {
+		if optional {
+			return &Config{}, nil
+		}
+		return nil, err
+	}
 
 	// Return the populated configuration struct.
 	return &cfg, nil

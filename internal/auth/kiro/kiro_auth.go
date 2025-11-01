@@ -13,16 +13,15 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	log "github.com/sirupsen/logrus"
 )
 
 const (
 	// Kiro OAuth endpoints
-	kiroRefreshURL     = "https://prod.%s.auth.desktop.kiro.dev/refreshToken"
-	kiroRefreshIDCURL  = "https://oidc.%s.amazonaws.com/token"
-	kiroBaseURL        = "https://codewhisperer.%s.amazonaws.com/generateAssistantResponse"
-	kiroAmazonQURL     = "https://codewhisperer.%s.amazonaws.com/SendMessageStreaming"
+	kiroRefreshURL    = "https://prod.%s.auth.desktop.kiro.dev/refreshToken"
+	kiroRefreshIDCURL = "https://oidc.%s.amazonaws.com/token"
+	kiroBaseURL       = "https://codewhisperer.%s.amazonaws.com/generateAssistantResponse"
+	kiroAmazonQURL    = "https://codewhisperer.%s.amazonaws.com/SendMessageStreaming"
 
 	// Authentication methods
 	authMethodSocial = "social"
@@ -50,16 +49,16 @@ func NewKiroAuth() *KiroAuth {
 // Parameters:
 //   - ctx: The context for the HTTP client
 //   - ts: The Kiro token storage containing authentication tokens
-//   - cfg: The configuration containing proxy settings
+//   - proxyURL: Optional proxy URL used when creating HTTP clients
 //
 // Returns:
 //   - *http.Client: An HTTP client configured with authentication
 //   - error: An error if the client configuration fails, nil otherwise
-func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStorage, cfg *config.Config) (*http.Client, error) {
+func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStorage, proxyURL string) (*http.Client, error) {
 	// Check if token needs refresh
 	if ts.IsExpired() {
 		log.Info("[Kiro Auth] Token is expired or near expiry, refreshing...")
-		if err := k.refreshToken(ts, cfg); err != nil {
+		if err := k.refreshToken(ts, proxyURL); err != nil {
 			return nil, fmt.Errorf("failed to refresh token: %w", err)
 		}
 	}
@@ -70,13 +69,13 @@ func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStor
 	}
 
 	// Configure proxy if specified
-	if cfg.ProxyURL != "" {
-		if proxyURL, err := url.Parse(cfg.ProxyURL); err == nil {
+	if proxyURL != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil {
 			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
+				Proxy: http.ProxyURL(parsed),
 			}
 		} else {
-			log.Warnf("[Kiro Auth] Invalid proxy URL: %s", cfg.ProxyURL)
+			log.Warnf("[Kiro Auth] Invalid proxy URL: %s", proxyURL)
 		}
 	}
 
@@ -88,11 +87,11 @@ func (k *KiroAuth) GetAuthenticatedClient(ctx context.Context, ts *KiroTokenStor
 //
 // Parameters:
 //   - ts: The Kiro token storage containing the refresh token
-//   - cfg: The configuration containing settings
+//   - proxyURL: Optional proxy URL string
 //
 // Returns:
 //   - error: An error if the refresh fails, nil otherwise
-func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, cfg *config.Config) error {
+func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, proxyURL string) error {
 	if ts.RefreshToken == "" {
 		return fmt.Errorf("no refresh token available")
 	}
@@ -138,10 +137,10 @@ func (k *KiroAuth) refreshToken(ts *KiroTokenStorage, cfg *config.Config) error 
 
 	// Configure proxy for refresh request if needed
 	client := &http.Client{Timeout: 30 * time.Second}
-	if cfg.ProxyURL != "" {
-		if proxyURL, err := url.Parse(cfg.ProxyURL); err == nil {
+	if proxyURL != "" {
+		if parsed, err := url.Parse(proxyURL); err == nil {
 			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(proxyURL),
+				Proxy: http.ProxyURL(parsed),
 			}
 		}
 	}

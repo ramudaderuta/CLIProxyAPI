@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/misc"
@@ -82,36 +84,48 @@ func (ts *KiroTokenStorage) SaveTokenToFile(authFilePath string) error {
 //   - *KiroTokenStorage: The loaded token storage
 //   - error: An error if the operation fails, nil otherwise
 func LoadTokenFromFile(authFilePath string) (*KiroTokenStorage, error) {
-	f, err := os.Open(authFilePath)
+	data, err := os.ReadFile(authFilePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open token file: %w", err)
 	}
-	defer func() {
-		if errClose := f.Close(); errClose != nil {
-			log.Errorf("failed to close file: %v", errClose)
-		}
-	}()
+	if len(data) == 0 {
+		return nil, fmt.Errorf("failed to decode token file: file is empty")
+	}
 
 	var token KiroTokenStorage
-	if err = json.NewDecoder(f).Decode(&token); err != nil {
+	if err = json.Unmarshal(data, &token); err != nil {
 		return nil, fmt.Errorf("failed to decode token file: %w", err)
 	}
 
-	// Parse the expiresAt field from string if needed
-	if token.ExpiresAt.IsZero() {
-		// Try to read the file again as raw JSON to handle string format
-		var rawToken map[string]interface{}
-		f.Seek(0, 0)
-		if err = json.NewDecoder(f).Decode(&rawToken); err == nil {
-			if expiresStr, ok := rawToken["expiresAt"].(string); ok {
-				if parsed, parseErr := time.Parse(time.RFC3339, expiresStr); parseErr == nil {
-					token.ExpiresAt = parsed
-				}
+	var raw map[string]any
+	if err = json.Unmarshal(data, &raw); err == nil {
+		token.AccessToken = coalesceString(token.AccessToken, raw, "accessToken", "access_token")
+		token.RefreshToken = coalesceString(token.RefreshToken, raw, "refreshToken", "refresh_token")
+		token.ProfileArn = coalesceString(token.ProfileArn, raw, "profileArn", "profile_arn")
+		token.AuthMethod = coalesceString(token.AuthMethod, raw, "authMethod", "auth_method")
+		token.Provider = coalesceString(token.Provider, raw, "provider")
+		if token.ExpiresAt.IsZero() {
+			if ts, ok := coalesceTime(raw, "expiresAt", "expires_at"); ok {
+				token.ExpiresAt = ts
 			}
+		}
+		if token.Type == "" {
+			token.Type = coalesceString("", raw, "type")
 		}
 	}
 
-	token.Type = "kiro"
+	if strings.TrimSpace(token.Type) == "" {
+		token.Type = "kiro"
+		log.Infof("[Kiro Auth] token file %s missing type; enhancing in memory", authFilePath)
+	} else if !strings.EqualFold(token.Type, "kiro") {
+		log.Warnf("[Kiro Auth] token file %s has unexpected type %q; overriding to \"kiro\"", authFilePath, token.Type)
+		token.Type = "kiro"
+	}
+
+	if err := validateKiroToken(&token); err != nil {
+		return nil, fmt.Errorf("invalid kiro token file %s: %w", authFilePath, err)
+	}
+
 	return &token, nil
 }
 
@@ -120,4 +134,71 @@ func LoadTokenFromFile(authFilePath string) (*KiroTokenStorage, error) {
 func (ts *KiroTokenStorage) IsExpired() bool {
 	// Consider token expired if it expires within 5 minutes to provide buffer
 	return time.Until(ts.ExpiresAt) < 5*time.Minute
+}
+
+func coalesceString(current string, raw map[string]any, keys ...string) string {
+	if strings.TrimSpace(current) != "" {
+		return current
+	}
+	for _, key := range keys {
+		if value, ok := raw[key]; ok {
+			switch typed := value.(type) {
+			case string:
+				if trimmed := strings.TrimSpace(typed); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+	}
+	return current
+}
+
+func coalesceTime(raw map[string]any, keys ...string) (time.Time, bool) {
+	for _, key := range keys {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			trimmed := strings.TrimSpace(typed)
+			if trimmed == "" {
+				continue
+			}
+			if ts, err := time.Parse(time.RFC3339, trimmed); err == nil {
+				return ts, true
+			}
+			if unix, err := strconv.ParseInt(trimmed, 10, 64); err == nil {
+				return time.Unix(unix, 0), true
+			}
+		case json.Number:
+			if val, err := typed.Int64(); err == nil {
+				return time.Unix(val, 0), true
+			}
+		case float64:
+			return time.Unix(int64(typed), 0), true
+		case int64:
+			return time.Unix(typed, 0), true
+		}
+	}
+	return time.Time{}, false
+}
+
+func validateKiroToken(token *KiroTokenStorage) error {
+	if token == nil {
+		return fmt.Errorf("token payload is empty")
+	}
+	if strings.TrimSpace(token.AccessToken) == "" {
+		return fmt.Errorf("accessToken is required")
+	}
+	if strings.TrimSpace(token.RefreshToken) == "" {
+		return fmt.Errorf("refreshToken is required")
+	}
+	if token.ExpiresAt.IsZero() {
+		return fmt.Errorf("expiresAt is required")
+	}
+	if token.IsExpired() {
+		return fmt.Errorf("token is expired")
+	}
+	return nil
 }
