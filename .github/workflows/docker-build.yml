@@ -17,6 +17,7 @@ concurrency:
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/cliproxyapi
+  BUILDKIT_PROGRESS: plain
 
 jobs:
   build-and-push:
@@ -67,8 +68,12 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache
+          cache-to: |
+            type=registry,ref=${{ env.GHCR_IMAGE }}:buildcache,mode=max
+          provenance: false
+          sbom: false
           build-args: |
             VERSION=${{ env.VERSION }}
             COMMIT=${{ env.COMMIT }}
