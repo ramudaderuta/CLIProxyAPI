@@ -1,0 +1,4 @@
+{"content": "Save file"}
+{"name": "write_file", "toolUseId": "t1"}
+{"input": {"path": "a.txt"}}
+{"stop": true}

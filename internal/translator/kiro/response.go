@@ -25,19 +25,77 @@ func ParseResponse(data []byte) (string, []OpenAIToolCall) {
 	}
 	if gjson.ValidBytes(data) {
 		root := gjson.ParseBytes(data)
-		if content := root.Get("conversationState.currentMessage.assistantResponseMessage.content"); content.Exists() {
-			return content.String(), nil
-		}
-		if history := root.Get("conversationState.history"); history.Exists() && history.IsArray() {
+
+		// Extract content from currentMessage
+		var content string
+		if contentField := root.Get("conversationState.currentMessage.assistantResponseMessage.content"); contentField.Exists() {
+			content = contentField.String()
+		} else if history := root.Get("conversationState.history"); history.Exists() && history.IsArray() {
+			// Look for content in history if not in currentMessage
 			for i := len(history.Array()) - 1; i >= 0; i-- {
 				item := history.Array()[i]
-				if content := item.Get("assistantResponseMessage.content"); content.Exists() {
-					return content.String(), nil
+				if contentField := item.Get("assistantResponseMessage.content"); contentField.Exists() {
+					content = contentField.String()
+					break
 				}
 			}
 		}
+
+		// Extract tool calls from currentMessage (check both locations)
+		var toolCalls []OpenAIToolCall
+		// Check for toolUse at currentMessage level
+		if toolUse := root.Get("conversationState.currentMessage.toolUse"); toolUse.Exists() {
+			if toolUse.IsArray() {
+				toolCalls = extractToolCalls(toolUse.Array())
+			} else {
+				toolCalls = extractToolCalls([]gjson.Result{toolUse})
+			}
+		} else if toolUse := root.Get("conversationState.currentMessage.assistantResponseMessage.toolUse"); toolUse.Exists() {
+			// Check for toolUse nested inside assistantResponseMessage
+			if toolUse.IsArray() {
+				toolCalls = extractToolCalls(toolUse.Array())
+			} else {
+				toolCalls = extractToolCalls([]gjson.Result{toolUse})
+			}
+		}
+
+		return content, toolCalls
 	}
 	return parseEventStream(string(data))
+}
+
+// extractToolCalls converts gjson toolUse objects into OpenAIToolCall structures
+func extractToolCalls(toolUses []gjson.Result) []OpenAIToolCall {
+	toolCalls := make([]OpenAIToolCall, 0, len(toolUses))
+	for _, toolUse := range toolUses {
+		toolID := toolUse.Get("toolUseId").String()
+		name := toolUse.Get("name").String()
+
+		if toolID == "" || name == "" {
+			continue
+		}
+
+		// Extract and format input arguments
+		var arguments string
+		if input := toolUse.Get("input"); input.Exists() {
+			if input.IsObject() {
+				arguments = input.Raw
+			} else {
+				// Handle non-object inputs
+				inputMap := map[string]any{"value": input.String()}
+				if argsBytes, err := json.Marshal(inputMap); err == nil {
+					arguments = string(argsBytes)
+				}
+			}
+		}
+
+		toolCalls = append(toolCalls, OpenAIToolCall{
+			ID:        toolID,
+			Name:      name,
+			Arguments: arguments,
+		})
+	}
+	return toolCalls
 }
 
 // BuildOpenAIChatCompletionPayload generates a non-streaming OpenAI-compatible chat completion response.
