@@ -429,3 +429,87 @@ func GetIFlowModels() []*ModelInfo {
 	}
 	return models
 }
+
+// GetKiroModels returns the standard Kiro model definitions
+func GetKiroModels() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:                  "claude-sonnet-4-5",
+			Object:              "model",
+			Created:             1759104000, // 2025-09-29
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250929_V1_0",
+			DisplayName:         "Claude 4.5 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 4.5 Sonnet model with CodeWhisperer integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+		{
+			ID:                  "claude-sonnet-4-5-20250929",
+			Object:              "model",
+			Created:             1759104000, // 2025-09-29
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250929_V1_0",
+			DisplayName:         "Claude 4.5 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 4.5 Sonnet model with CodeWhisperer integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+		{
+			ID:                  "claude-sonnet-4-20250514",
+			Object:              "model",
+			Created:             1715644800, // 2025-05-14
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250514_V1_0",
+			DisplayName:         "Claude 4 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 4 Sonnet model with CodeWhisperer integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+		{
+			ID:                  "claude-3-7-sonnet-20250219",
+			Object:              "model",
+			Created:             1708300800, // 2025-02-19
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250219_V1_0",
+			DisplayName:         "Claude 3.7 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 3.7 Sonnet model with CodeWhisperer integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 4096,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+		{
+			ID:                  "amazonq-claude-sonnet-4-20250514",
+			Object:              "model",
+			Created:             1715644800, // 2025-05-14
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250514_V1_0",
+			DisplayName:         "Amazon Q Claude 4 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 4 Sonnet model via Amazon Q integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 8192,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+		{
+			ID:                  "amazonq-claude-3-7-sonnet-20250219",
+			Object:              "model",
+			Created:             1708300800, // 2025-02-19
+			OwnedBy:             "kiro",
+			Type:                "kiro",
+			Version:             "20250219_V1_0",
+			DisplayName:         "Amazon Q Claude 3.7 Sonnet (Kiro)",
+			Description:         "Kiro-hosted Claude 3.7 Sonnet model via Amazon Q integration",
+			ContextLength:       200000,
+			MaxCompletionTokens: 4096,
+			SupportedParameters: []string{"temperature", "top_p", "max_tokens", "stream", "stop", "tools"},
+		},
+	}
+}

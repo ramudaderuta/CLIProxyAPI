@@ -154,6 +154,7 @@ func (MyExecutor) Refresh(ctx context.Context, a *coreauth.Auth) (*coreauth.Auth
 	return a, nil
 }
 
+
 func main() {
 	cfg, err := config.LoadConfig("config.yaml")
 	if err != nil {

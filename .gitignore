@@ -20,11 +20,109 @@ static/*
 auths/*
 !auths/.gitkeep
 
+# Local authentication directories and files (privacy protection)
+*.auth-token.json
+*auth-token.json
+kiro-auth-token.json
+*-auth-token.json
+.auth/
+.auth-dir/
+~/.cli-proxy-api/
+*.token
+*.tokens
+*.credentials
+*.creds
+*.test.yaml
+
+# Local configuration and work files
+local/
+workspace/
+work/
+*.local
+*.workspace
+*.work
+
+# Privacy and sensitive files
+secrets/
+private/
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cert
+*.pem.*
+
+# IDE and editor local files
+.vscode/settings.json
+.vscode/launch.json
+.vscode/tasks.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Local logs and runtime files
+*.log
+*.out
+*.pid
+*.seed
+*.pid.lock
+
+# Temporary and cache files
+.cache/
+tmp/
+temp/
+*.tmp
+*.temp
+.cache/
+
+# Build artifacts not in bin/
+dist/
+build/
+target/
+
+# Test coverage reports
+coverage.txt
+coverage.html
+*.cover
+*.prof
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*.old
+*.orig
+
+# Archived prototype directories
+*-prototype-archived/
+*-archived/
+prototype/
+archived/
+
 # Documentation
 docs/*
+!docs/kiro-token-migration.md
 AGENTS.md
 CLAUDE.md
 GEMINI.md
+
+# OpenSpec working directory
+# openspec/
 
 # Tooling metadata
 .vscode/*
