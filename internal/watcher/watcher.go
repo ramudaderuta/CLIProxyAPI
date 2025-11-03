@@ -744,6 +744,7 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 	w.clientsMutex.RLock()
 	cfg := w.config
 	w.clientsMutex.RUnlock()
+	configuredKiroPaths := make(map[string]struct{})
 	if cfg != nil {
 		// Gemini official API keys -> synthesize auths
 		for i := range cfg.GeminiKey {
@@ -954,6 +955,10 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			continue
 		}
 		full := filepath.Join(w.authDir, name)
+		cleanFull := filepath.Clean(full)
+		if _, exists := configuredKiroPaths[cleanFull]; exists {
+			continue
+		}
 		data, err := os.ReadFile(full)
 		if err != nil || len(data) == 0 {
 			continue
@@ -1000,6 +1005,9 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			UpdatedAt: now,
 		}
 		out = append(out, a)
+		if provider == "kiro" {
+			log.Infof("registered kiro token from auth dir: %s", full)
+		}
 	}
 	return out
 }

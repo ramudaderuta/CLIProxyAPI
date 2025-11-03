@@ -17,6 +17,8 @@ remote-management:
 
 # Authentication directory (supports ~ for home directory)
 auth-dir: "~/.cli-proxy-api"
+# Place provider auth JSON files in this directory (e.g., Gemini OAuth exports or Kiro's kiro-auth-token.json).
+# Kiro token files missing `"type": "kiro"` are automatically fixed in memory, but configuring explicit paths is recommended.
 
 # API keys for authentication
 api-keys:
@@ -75,6 +77,12 @@ ws-auth: false
 #    models:
 #      - name: "claude-3-5-sonnet-20241022" # upstream model name
 #        alias: "claude-sonnet-latest" # client alias mapped to the upstream model
+
+# Kiro token file configuration (takes precedence over auto-detected kiro-auth-token.json)
+#kiro-token-file:
+#  - token-file-path: "~/.cli-proxy-api/kiro-auth-token.json"
+#    region: "us-east-1"           # optional override when profileArn is absent
+#    label: "primary-kiro-account" # optional label used in the UI/logs
 
 # OpenAI compatibility providers
 #openai-compatibility:
