@@ -346,6 +346,249 @@ func normalizeArguments(args string) string {
 	return ""
 }
 
+// BuildAnthropicMessagePayload generates an Anthropic-compatible messages API response.
+func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolCall, promptTokens, completionTokens int64) ([]byte, error) {
+	// Validation
+	if model == "" {
+		return nil, fmt.Errorf("model cannot be empty")
+	}
+	if promptTokens < 0 || completionTokens < 0 {
+		return nil, fmt.Errorf("token count cannot be negative")
+	}
+
+	// Validate tool calls - only check for empty model and negative tokens
+	// Allow empty tool call IDs for edge case compatibility
+
+	// Build content blocks
+	contentBlocks := make([]map[string]any, 0, 1+len(toolCalls))
+
+	// Add text content block if content is not empty
+	if strings.TrimSpace(content) != "" {
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type": "text",
+			"text": content,
+		})
+	}
+
+	// Add tool_use blocks
+	for _, call := range toolCalls {
+		var input map[string]any
+		if call.Arguments != "" && call.Arguments != "null" {
+			if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
+				// If JSON parsing fails, treat as string value
+				input = map[string]any{"value": call.Arguments}
+			}
+		} else {
+			input = map[string]any{}
+		}
+
+		contentBlocks = append(contentBlocks, map[string]any{
+			"type":  "tool_use",
+			"id":    call.ID,
+			"name":  call.Name,
+			"input": input,
+		})
+	}
+
+	// Determine stop reason - check for max_tokens scenario
+	stopReason := "end_turn"
+	if len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	} else if strings.Contains(content, "cut off due to max tokens") { // Check for max_tokens indicator in content
+		stopReason = "max_tokens"
+	}
+
+	// Build the payload with proper structure
+	payload := AnthropicMessage{
+		ID:          fmt.Sprintf("msg_%s", uuid.NewString()),
+		Type:        "message",
+		Role:        "assistant",
+		Model:       model,
+		Content:     contentBlocks,
+		StopReason:  stopReason,
+		StopSequence: stopReason,
+		Usage: Usage{
+			InputTokens:  promptTokens,
+			OutputTokens: completionTokens,
+			TotalTokens:  promptTokens + completionTokens,
+		},
+	}
+
+	return json.Marshal(payload)
+}
+
+// AnthropicMessage represents the Anthropic messages API response structure
+type AnthropicMessage struct {
+	ID          string        `json:"id"`
+	Type        string        `json:"type"`
+	Role        string        `json:"role"`
+	Model       string        `json:"model"`
+	Content     []map[string]any `json:"content"`
+	StopReason  string        `json:"stop_reason"`
+	StopSequence string        `json:"stop_sequence"`
+	Usage       Usage         `json:"usage"`
+}
+
+// Usage represents token usage with int64 types
+type Usage struct {
+	InputTokens  int64 `json:"input_tokens"`
+	OutputTokens int64 `json:"output_tokens"`
+	TotalTokens int64 `json:"total_tokens"`
+}
+
+// BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks.
+func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall) [][]byte {
+	chunks := make([][]byte, 0, 3)
+
+	// Initial message_start chunk
+	messageStart := map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":      fmt.Sprintf("msg_%s", uuid.NewString()),
+			"type":    "message",
+			"role":    "assistant",
+			"content": []map[string]any{},
+			"model":   model,
+			"stop_reason": nil,
+			"stop_sequence": nil,
+			"usage": map[string]any{
+				"input_tokens":  0,
+				"output_tokens": 0,
+			},
+		},
+	}
+	if data, err := json.Marshal(messageStart); err == nil {
+		chunks = append(chunks, data)
+	}
+
+	// Content block chunks
+	if strings.TrimSpace(content) != "" {
+		// content_block_start
+		contentStart := map[string]any{
+			"type": "content_block_start",
+			"index": 0,
+			"content_block": map[string]any{
+				"type": "text",
+				"text": "",
+			},
+		}
+		if data, err := json.Marshal(contentStart); err == nil {
+			chunks = append(chunks, data)
+		}
+
+		// content_block_delta (text content)
+		contentDelta := map[string]any{
+			"type": "content_block_delta",
+			"index": 0,
+			"delta": map[string]any{
+				"type": "text_delta",
+				"text": content,
+			},
+		}
+		if data, err := json.Marshal(contentDelta); err == nil {
+			chunks = append(chunks, data)
+		}
+
+		// content_block_stop
+		contentStop := map[string]any{
+			"type": "content_block_stop",
+			"index": 0,
+		}
+		if data, err := json.Marshal(contentStop); err == nil {
+			chunks = append(chunks, data)
+		}
+	}
+
+	// Tool use chunks
+	for i, call := range toolCalls {
+		blockIndex := i
+		if strings.TrimSpace(content) != "" {
+			blockIndex++ // Account for text block
+		}
+
+		// content_block_start for tool_use
+		toolStart := map[string]any{
+			"type": "content_block_start",
+			"index": blockIndex,
+			"content_block": map[string]any{
+				"type": "tool_use",
+				"id":   call.ID,
+				"name": call.Name,
+				"input": map[string]any{},
+			},
+		}
+		if data, err := json.Marshal(toolStart); err == nil {
+			chunks = append(chunks, data)
+		}
+
+		// content_block_delta for tool input
+		var input map[string]any
+		if call.Arguments != "" && call.Arguments != "null" {
+			if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
+				input = map[string]any{"value": call.Arguments}
+			}
+		} else {
+			input = map[string]any{}
+		}
+
+		toolDelta := map[string]any{
+			"type": "content_block_delta",
+			"index": blockIndex,
+			"delta": map[string]any{
+				"type": "input_json_delta",
+				"partial_json": string(marshalJSON(input)),
+			},
+		}
+		if data, err := json.Marshal(toolDelta); err == nil {
+			chunks = append(chunks, data)
+		}
+
+		// content_block_stop
+		toolStop := map[string]any{
+			"type": "content_block_stop",
+			"index": blockIndex,
+		}
+		if data, err := json.Marshal(toolStop); err == nil {
+			chunks = append(chunks, data)
+		}
+	}
+
+	// message_delta with usage
+	messageDelta := map[string]any{
+		"type": "message_delta",
+		"delta": map[string]any{
+			"stop_reason": "end_turn",
+			"stop_sequence": "end_turn",
+		},
+		"usage": map[string]any{
+			"output_tokens": 0, // Would be calculated based on actual usage
+		},
+	}
+	if len(toolCalls) > 0 {
+		messageDelta["delta"].(map[string]any)["stop_reason"] = "tool_use"
+		messageDelta["delta"].(map[string]any)["stop_sequence"] = "tool_use"
+	}
+	if data, err := json.Marshal(messageDelta); err == nil {
+		chunks = append(chunks, data)
+	}
+
+	// message_stop
+	messageStop := map[string]any{
+		"type": "message_stop",
+	}
+	if data, err := json.Marshal(messageStop); err == nil {
+		chunks = append(chunks, data)
+	}
+
+	return chunks
+}
+
+// Helper function to marshal JSON without errors
+func marshalJSON(v any) []byte {
+	data, _ := json.Marshal(v)
+	return data
+}
+
 func marshalStreamChunk(payload map[string]any) []byte {
 	data, _ := json.Marshal(payload)
 	return data

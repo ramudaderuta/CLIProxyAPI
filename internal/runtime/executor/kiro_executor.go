@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -45,7 +46,17 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		return resp, err
 	}
 
-	payload, err := kirotranslator.BuildOpenAIChatCompletionPayload(req.Model, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
+	// Detect request format and build appropriate response
+	format := e.detectRequestFormat(req)
+	var payload []byte
+
+	if format == "anthropic" {
+		payload, err = kirotranslator.BuildAnthropicMessagePayload(req.Model, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
+	} else {
+		// Default to OpenAI format
+		payload, err = kirotranslator.BuildOpenAIChatCompletionPayload(req.Model, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
+	}
+
 	if err != nil {
 		return resp, err
 	}
@@ -57,6 +68,7 @@ func (e *KiroExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, req
 		"provider":   e.Identifier(),
 		"model":      req.Model,
 		"kiro_model": result.KiroModel,
+		"format":     format,
 	}
 	return resp, nil
 }
@@ -68,13 +80,24 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		return nil, err
 	}
 
+	// Detect request format and use appropriate streaming format
+	format := e.detectRequestFormat(req)
+
 	stream := make(chan cliproxyexecutor.StreamChunk, 4)
 	go func() {
 		defer close(stream)
 		created := time.Now().Unix()
 		id := fmt.Sprintf("chatcmpl_%s", uuid.NewString())
 
-		for _, payload := range kirotranslator.BuildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls) {
+		var chunks [][]byte
+		if format == "anthropic" {
+			chunks = kirotranslator.BuildAnthropicStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)
+		} else {
+			// Default to OpenAI format
+			chunks = kirotranslator.BuildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)
+		}
+
+		for _, payload := range chunks {
 			stream <- cliproxyexecutor.StreamChunk{Payload: payload}
 		}
 	}()
@@ -126,6 +149,40 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		}
 	}
 	return auth, nil
+}
+
+// DetectRequestFormat detects whether the request is OpenAI or Anthropic format
+func (e *KiroExecutor) DetectRequestFormat(req cliproxyexecutor.Request) string {
+	if len(req.Payload) == 0 {
+		return "unknown"
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(req.Payload, &payload); err != nil {
+		return "unknown"
+	}
+
+	// Check for Anthropic format by looking for max_tokens field
+	if _, hasMaxTokens := payload["max_tokens"]; hasMaxTokens {
+		// Additional check for messages array to confirm it's Anthropic
+		if _, hasMessages := payload["messages"]; hasMessages {
+			return "anthropic"
+		}
+	}
+
+	// Check for OpenAI format by looking for messages array without max_tokens
+	if _, hasMessages := payload["messages"]; hasMessages {
+		if _, hasMaxTokens := payload["max_tokens"]; !hasMaxTokens {
+			return "openai"
+		}
+	}
+
+	return "unknown"
+}
+
+// detectRequestFormat is an alias for DetectRequestFormat (kept for backward compatibility)
+func (e *KiroExecutor) detectRequestFormat(req cliproxyexecutor.Request) string {
+	return e.DetectRequestFormat(req)
 }
 
 func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*kiroResult, error) {
