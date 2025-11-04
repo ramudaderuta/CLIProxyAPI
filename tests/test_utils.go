@@ -97,6 +97,24 @@ func (f *KiroTestFixtures) OpenAIChatPayloadNoHelper(messages []map[string]any, 
 	return data
 }
 
+// AnthropicChatPayload creates an Anthropic chat payload for testing
+func (f *KiroTestFixtures) AnthropicChatPayload(t testing.TB, messages []map[string]any, tools []map[string]any) []byte {
+	t.Helper()
+	payload := map[string]any{
+		"model":      "claude-sonnet-4-5",
+		"max_tokens": 1000,
+		"messages":   messages,
+	}
+	if len(tools) > 0 {
+		payload["tools"] = tools
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	return data
+}
+
 // Common test data
 var (
 	// NativeTokenFilePath is the path to the native Kiro token file (without "type": "kiro")

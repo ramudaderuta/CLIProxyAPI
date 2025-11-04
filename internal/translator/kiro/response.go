@@ -151,7 +151,7 @@ func BuildStreamingChunks(id, model string, created int64, content string, toolC
 			"delta": map[string]any{"role": "assistant"},
 		}},
 	}
-	chunks = append(chunks, marshalStreamChunk(initial))
+	chunks = append(chunks, marshalJSON(initial))
 
 	if strings.TrimSpace(content) != "" {
 		data := map[string]any{
@@ -164,7 +164,7 @@ func BuildStreamingChunks(id, model string, created int64, content string, toolC
 				"delta": map[string]any{"content": content},
 			}},
 		}
-		chunks = append(chunks, marshalStreamChunk(data))
+		chunks = append(chunks, marshalJSON(data))
 	}
 
 	if len(toolCalls) > 0 {
@@ -189,7 +189,7 @@ func BuildStreamingChunks(id, model string, created int64, content string, toolC
 				"delta": map[string]any{"tool_calls": tc},
 			}},
 		}
-		chunks = append(chunks, marshalStreamChunk(data))
+		chunks = append(chunks, marshalJSON(data))
 	}
 
 	final := map[string]any{
@@ -203,7 +203,7 @@ func BuildStreamingChunks(id, model string, created int64, content string, toolC
 			"finish_reason": "stop",
 		}},
 	}
-	chunks = append(chunks, marshalStreamChunk(final))
+	chunks = append(chunks, marshalJSON(final))
 	return chunks
 }
 
@@ -436,12 +436,67 @@ type Usage struct {
 	TotalTokens int64 `json:"total_tokens"`
 }
 
-// BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks.
+// BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks formatted as SSE events.
 func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall) [][]byte {
 	chunks := make([][]byte, 0, 3)
 
 	// Initial message_start chunk
-	messageStart := map[string]any{
+	messageStart := buildMessageStartEvent(model)
+	chunks = append(chunks, buildSSEEvent("message_start", messageStart))
+
+	// Content block chunks
+	if strings.TrimSpace(content) != "" {
+		// content_block_start
+		contentStart := buildContentBlockStartEvent()
+		chunks = append(chunks, buildSSEEvent("content_block_start", contentStart))
+
+		// content_block_delta (text content)
+		contentDelta := buildContentBlockDeltaEvent(content)
+		chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
+
+		// content_block_stop
+		contentStop := buildContentBlockStopEvent()
+		chunks = append(chunks, buildSSEEvent("content_block_stop", contentStop))
+	}
+
+	// Tool use chunks
+	for i, call := range toolCalls {
+		blockIndex := i
+		if strings.TrimSpace(content) != "" {
+			blockIndex++ // Account for text block
+		}
+
+		// content_block_start for tool_use
+		toolStart := buildToolUseStartEvent(call, blockIndex)
+		chunks = append(chunks, buildSSEEvent("content_block_start", toolStart))
+
+		// content_block_delta for tool input
+		toolDelta := buildToolUseDeltaEvent(call)
+		toolDelta["index"] = blockIndex
+		chunks = append(chunks, buildSSEEvent("content_block_delta", toolDelta))
+
+		// content_block_stop
+		toolStop := buildContentBlockStopEvent()
+		toolStop["index"] = blockIndex
+		chunks = append(chunks, buildSSEEvent("content_block_stop", toolStop))
+	}
+
+	// message_delta with usage
+	messageDelta := buildMessageDeltaEvent(len(toolCalls) > 0)
+	chunks = append(chunks, buildSSEEvent("message_delta", messageDelta))
+
+	// message_stop
+	messageStop := buildMessageStopEvent()
+	chunks = append(chunks, buildSSEEvent("message_stop", messageStop))
+
+	return chunks
+}
+
+// Helper functions for building SSE event components
+
+// buildMessageStartEvent creates the message_start event structure
+func buildMessageStartEvent(model string) map[string]any {
+	return map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
 			"id":      fmt.Sprintf("msg_%s", uuid.NewString()),
@@ -457,130 +512,110 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 			},
 		},
 	}
-	if data, err := json.Marshal(messageStart); err == nil {
-		chunks = append(chunks, data)
+}
+
+// buildContentBlockStartEvent creates the content_block_start event structure
+func buildContentBlockStartEvent() map[string]any {
+	return map[string]any{
+		"type": "content_block_start",
+		"index": 0,
+		"content_block": map[string]any{
+			"type": "text",
+			"text": "",
+		},
+	}
+}
+
+// buildContentBlockDeltaEvent creates the content_block_delta event structure for text
+func buildContentBlockDeltaEvent(content string) map[string]any {
+	return map[string]any{
+		"type": "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": content,
+		},
+	}
+}
+
+// buildContentBlockStopEvent creates the content_block_stop event structure
+func buildContentBlockStopEvent() map[string]any {
+	return map[string]any{
+		"type": "content_block_stop",
+		"index": 0,
+	}
+}
+
+// buildToolUseStartEvent creates the content_block_start event structure for tool_use
+func buildToolUseStartEvent(call OpenAIToolCall, blockIndex int) map[string]any {
+	return map[string]any{
+		"type": "content_block_start",
+		"index": blockIndex,
+		"content_block": map[string]any{
+			"type": "tool_use",
+			"id":   call.ID,
+			"name": call.Name,
+			"input": map[string]any{},
+		},
+	}
+}
+
+// buildToolUseDeltaEvent creates the content_block_delta event structure for tool input
+func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
+	var input map[string]any
+	if call.Arguments != "" && call.Arguments != "null" {
+		if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
+			input = map[string]any{"value": call.Arguments}
+		}
+	} else {
+		input = map[string]any{}
 	}
 
-	// Content block chunks
-	if strings.TrimSpace(content) != "" {
-		// content_block_start
-		contentStart := map[string]any{
-			"type": "content_block_start",
-			"index": 0,
-			"content_block": map[string]any{
-				"type": "text",
-				"text": "",
-			},
-		}
-		if data, err := json.Marshal(contentStart); err == nil {
-			chunks = append(chunks, data)
-		}
+	return map[string]any{
+		"type": "content_block_delta",
+		"index": 0, // Will be updated by caller
+		"delta": map[string]any{
+			"type": "input_json_delta",
+			"partial_json": string(marshalJSON(input)),
+		},
+	}
+}
 
-		// content_block_delta (text content)
-		contentDelta := map[string]any{
-			"type": "content_block_delta",
-			"index": 0,
-			"delta": map[string]any{
-				"type": "text_delta",
-				"text": content,
-			},
-		}
-		if data, err := json.Marshal(contentDelta); err == nil {
-			chunks = append(chunks, data)
-		}
-
-		// content_block_stop
-		contentStop := map[string]any{
-			"type": "content_block_stop",
-			"index": 0,
-		}
-		if data, err := json.Marshal(contentStop); err == nil {
-			chunks = append(chunks, data)
-		}
+// buildMessageDeltaEvent creates the message_delta event structure
+func buildMessageDeltaEvent(hasToolCalls bool) map[string]any {
+	stopReason := "end_turn"
+	stopSequence := "end_turn"
+	if hasToolCalls {
+		stopReason = "tool_use"
+		stopSequence = "tool_use"
 	}
 
-	// Tool use chunks
-	for i, call := range toolCalls {
-		blockIndex := i
-		if strings.TrimSpace(content) != "" {
-			blockIndex++ // Account for text block
-		}
-
-		// content_block_start for tool_use
-		toolStart := map[string]any{
-			"type": "content_block_start",
-			"index": blockIndex,
-			"content_block": map[string]any{
-				"type": "tool_use",
-				"id":   call.ID,
-				"name": call.Name,
-				"input": map[string]any{},
-			},
-		}
-		if data, err := json.Marshal(toolStart); err == nil {
-			chunks = append(chunks, data)
-		}
-
-		// content_block_delta for tool input
-		var input map[string]any
-		if call.Arguments != "" && call.Arguments != "null" {
-			if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
-				input = map[string]any{"value": call.Arguments}
-			}
-		} else {
-			input = map[string]any{}
-		}
-
-		toolDelta := map[string]any{
-			"type": "content_block_delta",
-			"index": blockIndex,
-			"delta": map[string]any{
-				"type": "input_json_delta",
-				"partial_json": string(marshalJSON(input)),
-			},
-		}
-		if data, err := json.Marshal(toolDelta); err == nil {
-			chunks = append(chunks, data)
-		}
-
-		// content_block_stop
-		toolStop := map[string]any{
-			"type": "content_block_stop",
-			"index": blockIndex,
-		}
-		if data, err := json.Marshal(toolStop); err == nil {
-			chunks = append(chunks, data)
-		}
-	}
-
-	// message_delta with usage
-	messageDelta := map[string]any{
+	return map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": "end_turn",
-			"stop_sequence": "end_turn",
+			"stop_reason": stopReason,
+			"stop_sequence": stopSequence,
 		},
 		"usage": map[string]any{
 			"output_tokens": 0, // Would be calculated based on actual usage
 		},
 	}
-	if len(toolCalls) > 0 {
-		messageDelta["delta"].(map[string]any)["stop_reason"] = "tool_use"
-		messageDelta["delta"].(map[string]any)["stop_sequence"] = "tool_use"
-	}
-	if data, err := json.Marshal(messageDelta); err == nil {
-		chunks = append(chunks, data)
-	}
+}
 
-	// message_stop
-	messageStop := map[string]any{
+// buildMessageStopEvent creates the message_stop event structure
+func buildMessageStopEvent() map[string]any {
+	return map[string]any{
 		"type": "message_stop",
 	}
-	if data, err := json.Marshal(messageStop); err == nil {
-		chunks = append(chunks, data)
-	}
+}
 
-	return chunks
+// buildSSEEvent creates a properly formatted SSE event string
+func buildSSEEvent(eventType string, payload map[string]any) []byte {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return []byte{}
+	}
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(data)))
 }
 
 // Helper function to marshal JSON without errors
@@ -589,7 +624,3 @@ func marshalJSON(v any) []byte {
 	return data
 }
 
-func marshalStreamChunk(payload map[string]any) []byte {
-	data, _ := json.Marshal(payload)
-	return data
-}
