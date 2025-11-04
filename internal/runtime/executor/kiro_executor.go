@@ -214,14 +214,15 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 
 	text, toolCalls := kirotranslator.ParseResponse(data)
 
-	// Filter out "Thinking" content from streaming responses
-	if strings.Contains(text, "Thinking") {
-		parts := strings.Split(text, "Thinking")
-		if len(parts) > 1 {
-			text = strings.TrimSpace(parts[1])
-		} else {
-			text = ""
-		}
+	// Filter out "Thinking" content from streaming responses while preserving actual response content
+	originalText := text
+	text = FilterThinkingContent(text)
+
+	// Debug logging to understand truncation
+	if len(text) != len(originalText) {
+		log.Debugf("FilterThinkingContent: %d -> %d chars", len(originalText), len(text))
+		log.Debugf("Original: %q", originalText)
+		log.Debugf("Filtered: %q", text)
 	}
 	promptTokens, _ := estimatePromptTokens(req.Model, req.Payload)
 	completionTokens := estimateCompletionTokens(text, toolCalls)
@@ -233,4 +234,57 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
 	}, nil
+}
+
+// FilterThinkingContent removes Thinking sections from text while preserving actual response content.
+// This function handles various Thinking section formats and preserves content that appears before,
+// between, and after Thinking sections.
+func FilterThinkingContent(text string) string {
+	if text == "" {
+		return text
+	}
+
+	// If no Thinking content, return as-is
+	if !strings.Contains(text, "Thinking") {
+		return text
+	}
+
+	// Split by lines to handle Thinking sections properly
+	lines := strings.Split(text, "\n")
+	var filteredLines []string
+	var inThinkingBlock bool
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+
+		// Check if this line starts a Thinking section
+		if strings.HasPrefix(trimmedLine, "Thinking") || strings.HasPrefix(trimmedLine, "Thinking:") {
+			inThinkingBlock = true
+			continue
+		}
+
+		// Check if this line ends a Thinking block (next section starts)
+		if inThinkingBlock && trimmedLine != "" && !strings.HasPrefix(trimmedLine, " ") && !strings.HasPrefix(trimmedLine, "\t") {
+			// This appears to be a new section, end Thinking block
+			inThinkingBlock = false
+		}
+
+		// Skip lines that are part of Thinking blocks
+		if inThinkingBlock {
+			continue
+		}
+
+		// Include non-Thinking lines
+		filteredLines = append(filteredLines, line)
+	}
+
+	// Join the filtered lines and clean up extra whitespace
+	result := strings.Join(filteredLines, "\n")
+
+	// Clean up multiple consecutive newlines
+	for strings.Contains(result, "\n\n\n") {
+		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
+	}
+
+	return strings.TrimSpace(result)
 }
