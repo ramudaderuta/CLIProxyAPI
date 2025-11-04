@@ -320,6 +320,47 @@ func sanitizeJSON(input string) string {
 
 func firstValidJSON(block string) []byte {
 	block = strings.TrimSpace(block)
+	if block == "" {
+		return nil
+	}
+
+	// Try to find complete JSON objects/arrays by tracking structure
+	braceCount := 0
+	inString := false
+	escapeNext := false
+
+	for i, char := range block {
+		if escapeNext {
+			escapeNext = false
+			continue
+		}
+
+		switch char {
+		case '\\':
+			if inString {
+				escapeNext = true
+			}
+		case '"':
+			inString = !inString
+		case '{', '[':
+			if !inString {
+				braceCount++
+			}
+		case '}', ']':
+			if !inString {
+				braceCount--
+				if braceCount == 0 {
+					// Found complete JSON structure
+					candidate := strings.TrimSpace(block[:i+1])
+					if json.Valid([]byte(candidate)) {
+						return []byte(candidate)
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback: try original approach for edge cases, but preserve more content
 	for i := len(block); i > 0; i-- {
 		snippet := strings.TrimSpace(block[:i])
 		if len(snippet) == 0 {
@@ -329,6 +370,7 @@ func firstValidJSON(block string) []byte {
 			return []byte(snippet)
 		}
 	}
+
 	return nil
 }
 
