@@ -97,6 +97,14 @@ data: {"type":"message_stop"}
 	assert.Contains(t, responseStr, "event: message_start", "Should contain message_start event")
 	assert.Contains(t, responseStr, "data: {\"message\":", "Should contain message_start data")
 	assert.Contains(t, responseStr, "event: message_stop", "Should contain message_stop event")
+
+	// CRITICAL BUG FIXES: Verify stop_sequence is null per Anthropic spec
+	assert.Contains(t, responseStr, `"stop_sequence":null`, "stop_sequence should be null per Anthropic spec")
+	assert.NotContains(t, responseStr, `"stop_sequence":"end_turn"`, "stop_sequence should not be 'end_turn'")
+	assert.NotContains(t, responseStr, `"stop_sequence":"tool_use"`, "stop_sequence should not be 'tool_use'")
+
+	// CRITICAL BUG FIXES: Verify output_tokens is calculated (not hardcoded 0)
+	assert.Regexp(t, `"output_tokens":[1-9][0-9]*`, responseStr, "output_tokens should be calculated, not 0")
 }
 
 // TestKiroExecutor_Integration_SSEFormatConsistency tests that SSE format is consistent with iflow provider
@@ -246,4 +254,60 @@ func parseSSEEvents(sseResponse string) map[string]string {
 	}
 
 	return events
+}
+
+// TestKiroExecutor_Integration_IncrementalStreaming validates proper incremental streaming behavior
+func TestKiroExecutor_Integration_IncrementalStreaming(t *testing.T) {
+	fixtures := NewKiroTestFixtures()
+	cfg := &config.Config{}
+	exec := executor.NewKiroExecutor(cfg)
+	auth := fixtures.NewTestAuth(nil, nil)
+
+	// Test with longer content to verify incremental streaming
+	longContent := "This is a longer response that should be streamed properly with multiple characters to test the incremental streaming functionality and ensure content is not truncated."
+
+	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(bytes.NewReader([]byte(`data: {"content":"` + longContent + `"}`))),
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		}, nil
+	})
+
+	ctx := fixtures.WithRoundTripper(context.Background(), rt)
+	req := cliproxyexecutor.Request{
+		Model:   "claude-sonnet-4-5",
+		Payload: fixtures.AnthropicChatPayload(t, []map[string]any{{"role": "user", "content": "Test streaming"}}, nil),
+	}
+
+	stream, err := exec.ExecuteStream(ctx, auth, req, cliproxyexecutor.Options{})
+	require.NoError(t, err)
+
+	// Collect all chunks
+	var chunks []cliproxyexecutor.StreamChunk
+	for chunk := range stream {
+		if chunk.Err != nil {
+			t.Fatalf("received chunk error: %v", chunk.Err)
+		}
+		chunks = append(chunks, chunk)
+	}
+
+	require.Greater(t, len(chunks), 0, "Should receive streaming chunks")
+
+	// Verify content completeness
+	var fullResponse strings.Builder
+	for _, chunk := range chunks {
+		fullResponse.Write(chunk.Payload)
+	}
+	responseStr := fullResponse.String()
+
+	// CRITICAL BUG FIX: Verify content is not truncated and appears in text_delta
+	assert.Contains(t, responseStr, `"text":"`+longContent+`"`, "Content should be complete in text_delta")
+	assert.Contains(t, responseStr, "text_delta", "Should use proper text_delta event type")
+
+	// Verify proper SSE structure
+	assert.Contains(t, responseStr, "event: content_block_delta", "Should have content_block_delta events")
+	assert.Contains(t, responseStr, `"type":"text_delta"`, "Should have text_delta type")
+
+	t.Log("Incremental streaming test passed - content properly streamed:", len(longContent), "characters")
 }

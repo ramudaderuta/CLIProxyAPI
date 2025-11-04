@@ -406,7 +406,7 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 		Model:       model,
 		Content:     contentBlocks,
 		StopReason:  stopReason,
-		StopSequence: stopReason,
+		StopSequence: nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 		Usage: Usage{
 			InputTokens:  promptTokens,
 			OutputTokens: completionTokens,
@@ -425,7 +425,7 @@ type AnthropicMessage struct {
 	Model       string        `json:"model"`
 	Content     []map[string]any `json:"content"`
 	StopReason  string        `json:"stop_reason"`
-	StopSequence string        `json:"stop_sequence"`
+	StopSequence *string       `json:"stop_sequence"` // BUG FIX: Use pointer to allow null
 	Usage       Usage         `json:"usage"`
 }
 
@@ -440,8 +440,11 @@ type Usage struct {
 func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall) [][]byte {
 	chunks := make([][]byte, 0, 3)
 
+	// Calculate approximate output tokens (simple character-based approximation)
+	outputTokens := calculateOutputTokens(content, toolCalls)
+
 	// Initial message_start chunk
-	messageStart := buildMessageStartEvent(model)
+	messageStart := buildMessageStartEvent(model, outputTokens)
 	chunks = append(chunks, buildSSEEvent("message_start", messageStart))
 
 	// Content block chunks
@@ -482,7 +485,7 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 	}
 
 	// message_delta with usage
-	messageDelta := buildMessageDeltaEvent(len(toolCalls) > 0)
+	messageDelta := buildMessageDeltaEvent(len(toolCalls) > 0, outputTokens)
 	chunks = append(chunks, buildSSEEvent("message_delta", messageDelta))
 
 	// message_stop
@@ -495,7 +498,7 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 // Helper functions for building SSE event components
 
 // buildMessageStartEvent creates the message_start event structure
-func buildMessageStartEvent(model string) map[string]any {
+func buildMessageStartEvent(model string, outputTokens int64) map[string]any {
 	return map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -504,11 +507,11 @@ func buildMessageStartEvent(model string) map[string]any {
 			"role":    "assistant",
 			"content": []map[string]any{},
 			"model":   model,
-			"stop_reason": nil,
-			"stop_sequence": nil,
+			"stop_reason":   nil,
+			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 			"usage": map[string]any{
 				"input_tokens":  0,
-				"output_tokens": 0,
+				"output_tokens": outputTokens, // BUG FIX: Use actual token count
 			},
 		},
 	}
@@ -582,22 +585,20 @@ func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
 }
 
 // buildMessageDeltaEvent creates the message_delta event structure
-func buildMessageDeltaEvent(hasToolCalls bool) map[string]any {
+func buildMessageDeltaEvent(hasToolCalls bool, outputTokens int64) map[string]any {
 	stopReason := "end_turn"
-	stopSequence := "end_turn"
 	if hasToolCalls {
 		stopReason = "tool_use"
-		stopSequence = "tool_use"
 	}
 
 	return map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
-			"stop_reason": stopReason,
-			"stop_sequence": stopSequence,
+			"stop_reason":   stopReason,
+			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 		},
 		"usage": map[string]any{
-			"output_tokens": 0, // Would be calculated based on actual usage
+			"output_tokens": outputTokens, // BUG FIX: Use actual token count instead of hardcoded 0
 		},
 	}
 }
@@ -622,5 +623,27 @@ func buildSSEEvent(eventType string, payload map[string]any) []byte {
 func marshalJSON(v any) []byte {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+// calculateOutputTokens provides a simple approximation of output tokens based on content length
+// This is a basic implementation - in production, you'd use a proper tokenizer
+func calculateOutputTokens(content string, toolCalls []OpenAIToolCall) int64 {
+	// Simple approximation: ~4 characters per token for English text
+	contentTokens := int64(len(content) / 4)
+
+	// Add tokens for tool calls (rough approximation)
+	toolTokens := int64(0)
+	for _, call := range toolCalls {
+		// Approximate tokens for tool name + arguments
+		toolTokens += int64(len(call.Name)/4) + int64(len(call.Arguments)/4)
+	}
+
+	// Ensure at least 1 token if there's any content
+	totalTokens := contentTokens + toolTokens
+	if totalTokens == 0 && (strings.TrimSpace(content) != "" || len(toolCalls) > 0) {
+		totalTokens = 1
+	}
+
+	return totalTokens
 }
 

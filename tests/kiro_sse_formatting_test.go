@@ -47,6 +47,16 @@ func TestKiroExecutor_SSEFormatting_SimpleText(t *testing.T) {
 	assert.Contains(t, currentOutputStr, `"type":"message_delta"`, "Should contain message_delta JSON")
 	assert.Contains(t, currentOutputStr, `"type":"message_stop"`, "Should contain message_stop JSON")
 
+	// CRITICAL BUG FIX: Verify stop_sequence is null (not "end_turn")
+	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null in message_start")
+	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null in message_delta")
+
+	// CRITICAL BUG FIX: Verify output_tokens is properly counted (not hardcoded 0)
+	assert.NotContains(t, currentOutputStr, `"output_tokens":0`, "output_tokens should not be hardcoded to 0")
+
+	// Verify proper SSE structure with incremental streaming
+	assert.Contains(t, currentOutputStr, `"text":"Hello, world!"`, "Should have proper text_delta with content")
+
 	// This test should now PASS because we've fixed the SSE formatting
 	t.Log("Kiro output (CORRECT - SSE formatted):", currentOutputStr)
 	t.Log("SSE format with 'event:' and 'data:' prefixes is working correctly")
@@ -82,6 +92,12 @@ func TestKiroExecutor_SSEFormatting_WithToolCalls(t *testing.T) {
 	assert.Contains(t, currentOutputStr, "event: content_block_delta", "Should have SSE event prefix for tool delta")
 	assert.Contains(t, currentOutputStr, "data: ", "Should have SSE data prefix")
 
+	// CRITICAL BUG FIX: Verify stop_sequence is null for tool_use (not "tool_use")
+	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null even for tool_use")
+
+	// CRITICAL BUG FIX: Verify output_tokens is properly counted for tool calls
+	assert.NotContains(t, currentOutputStr, `"output_tokens":0`, "output_tokens should not be hardcoded to 0 for tool calls")
+
 	// This test should now PASS because we've fixed the SSE formatting
 	t.Log("Tool call SSE formatting working correctly:", currentOutputStr)
 }
@@ -113,6 +129,12 @@ func TestKiroExecutor_SSEFormatting_EmptyContent(t *testing.T) {
 	assert.NotContains(t, currentOutputStr, "event: content_block_start", "Should NOT have content_block_start for empty content")
 	assert.NotContains(t, currentOutputStr, "event: content_block_delta", "Should NOT have content_block_delta for empty content")
 	assert.NotContains(t, currentOutputStr, "event: content_block_stop", "Should NOT have content_block_stop for empty content")
+
+	// CRITICAL BUG FIX: Verify stop_sequence is null for empty responses
+	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null for empty responses")
+
+	// CRITICAL BUG FIX: Verify output_tokens is not hardcoded (should be 0 for empty content, but calculated)
+	assert.Contains(t, currentOutputStr, `"output_tokens":0`, "output_tokens should be 0 for empty content")
 
 	// This test should now PASS because we've fixed the SSE formatting
 	t.Log("Empty content SSE formatting working correctly:", currentOutputStr)
