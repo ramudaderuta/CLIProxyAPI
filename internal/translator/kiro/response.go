@@ -454,9 +454,12 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 		contentStart := buildContentBlockStartEvent()
 		chunks = append(chunks, buildSSEEvent("content_block_start", contentStart))
 
-		// content_block_delta (text content)
-		contentDelta := buildContentBlockDeltaEvent(content)
-		chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
+		// content_block_delta events (incremental streaming)
+		contentChunks := splitContentForStreaming(content)
+		for _, chunk := range contentChunks {
+			contentDelta := buildContentBlockDeltaEvent(chunk)
+			chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
+		}
 
 		// content_block_stop
 		contentStop := buildContentBlockStopEvent()
@@ -625,6 +628,35 @@ func buildSSEEvent(eventType string, payload map[string]any) []byte {
 func marshalJSON(v any) []byte {
 	data, _ := json.Marshal(v)
 	return data
+}
+
+// splitContentForStreaming splits content into incremental chunks for proper SSE streaming
+func splitContentForStreaming(content string) []string {
+	if strings.TrimSpace(content) == "" {
+		return []string{}
+	}
+
+	// For proper streaming, split content into smaller chunks
+	// Using word-based streaming for better readability
+	chunks := make([]string, 0)
+
+	// Split by spaces to get words, then stream them with spaces
+	words := strings.Fields(content)
+	for i, word := range words {
+		// Add the word
+		chunks = append(chunks, word)
+
+		// Add space after word (except for last word and punctuation)
+		if i < len(words)-1 {
+			// Check if we need a space (don't add after punctuation)
+			lastChar := rune(word[len(word)-1])
+			if !strings.ContainsRune(".,!?;:", lastChar) {
+				chunks = append(chunks, " ")
+			}
+		}
+	}
+
+	return chunks
 }
 
 // calculateOutputTokens provides a more accurate approximation of output tokens based on content length

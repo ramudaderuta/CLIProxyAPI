@@ -62,7 +62,9 @@ func TestKiroExecutor_SSEFormatting_SimpleText(t *testing.T) {
 	}
 
 	// Verify proper SSE structure with incremental streaming
-	assert.Contains(t, currentOutputStr, `"text":"Hello, world!"`, "Should have proper text_delta with content")
+	// Content is now split into multiple delta events, so check for both parts
+	assert.Contains(t, currentOutputStr, `"text":"Hello,"`, "Should have first text_delta with 'Hello,'")
+	assert.Contains(t, currentOutputStr, `"text":"world!"`, "Should have second text_delta with 'world!'")
 
 	// This test should now PASS because we've fixed the SSE formatting
 	t.Log("Kiro output (CORRECT - SSE formatted):", currentOutputStr)
@@ -196,4 +198,38 @@ data: {"type":"message_stop"}`
 	}
 
 	t.Log("Expected SSE format documented correctly")
+}
+
+// TestKiroExecutor_IncrementalStreaming tests that content is split into multiple delta events
+func TestKiroExecutor_IncrementalStreaming(t *testing.T) {
+	content := "Hello! How are you today?"
+	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, content, []kirotranslator.OpenAIToolCall{})
+
+	require.Greater(t, len(chunks), 0, "Should produce chunks")
+
+	var currentOutput strings.Builder
+	for _, chunk := range chunks {
+		currentOutput.Write(chunk)
+	}
+	currentOutputStr := currentOutput.String()
+
+	// Count content_block_delta events
+	deltaCount := strings.Count(currentOutputStr, "event: content_block_delta")
+	assert.Greater(t, deltaCount, 1, "Should have multiple content_block_delta events for incremental streaming")
+
+	// Should have individual words/parts streamed
+	assert.Contains(t, currentOutputStr, `"text":"Hello!"`, "Should stream 'Hello!'")
+	assert.Contains(t, currentOutputStr, `"text":"How"`, "Should stream 'How'")
+	assert.Contains(t, currentOutputStr, `"text":"are"`, "Should stream 'are'")
+	assert.Contains(t, currentOutputStr, `"text":"you"`, "Should stream 'you'")
+	assert.Contains(t, currentOutputStr, `"text":"today?"`, "Should stream 'today?'")
+
+	// Should still have proper SSE structure
+	assert.Contains(t, currentOutputStr, "event: message_start", "Should have SSE event prefix for message_start")
+	assert.Contains(t, currentOutputStr, "event: content_block_start", "Should have SSE event prefix for content_block_start")
+	assert.Contains(t, currentOutputStr, "event: content_block_stop", "Should have SSE event prefix for content_block_stop")
+	assert.Contains(t, currentOutputStr, "event: message_delta", "Should have SSE event prefix for message_delta")
+	assert.Contains(t, currentOutputStr, "event: message_stop", "Should have SSE event prefix for message_stop")
+
+	t.Log("Incremental streaming working correctly:", currentOutputStr)
 }
