@@ -131,6 +131,43 @@ func TestParseResponseFromAnthropicToolStream(t *testing.T) {
 	require.JSONEq(t, `{"location":"Tokyo","unit":"°C"}`, calls[0].Arguments)
 }
 
+func TestParseResponseFromAnthropicJSONMessage(t *testing.T) {
+	body := []byte(`{
+        "id": "msg_test",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "I don"},
+            {"type": "text", "text": "'t have access to data."}
+        ],
+        "stop_reason": "end_turn"
+    }`)
+
+	text, calls := kiro.ParseResponse(body)
+	require.Equal(t, "I don't have access to data.", text)
+	require.Empty(t, calls)
+}
+
+func TestParseResponseFromAnthropicJSONWithToolUse(t *testing.T) {
+	body := []byte(`{
+        "id": "msg_tool",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Sure, calling the weather tool."},
+            {"type": "tool_use", "id": "toolu_2", "name": "get_weather", "input": {"city": "Tokyo", "unit": "°C"}}
+        ],
+        "stop_reason": "tool_use"
+    }`)
+
+	text, calls := kiro.ParseResponse(body)
+	require.Contains(t, text, "Sure, calling the weather tool.")
+	require.Len(t, calls, 1)
+	require.Equal(t, "toolu_2", calls[0].ID)
+	require.Equal(t, "get_weather", calls[0].Name)
+	require.JSONEq(t, `{"city":"Tokyo","unit":"°C"}`, calls[0].Arguments)
+}
+
 func TestBuildOpenAIChatCompletionPayload(t *testing.T) {
 	payload, err := kiro.BuildOpenAIChatCompletionPayload("claude-sonnet-4-5", "hi", []kiro.OpenAIToolCall{
 		{ID: "call-1", Name: "lookup", Arguments: `{"foo":"bar"}`},

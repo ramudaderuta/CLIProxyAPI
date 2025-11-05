@@ -60,7 +60,22 @@ func ParseResponse(data []byte) (string, []OpenAIToolCall) {
 			}
 		}
 
-		return content, toolCalls
+		// Fallback to Anthropic-style message bodies when conversationState is absent.
+		if strings.TrimSpace(content) == "" {
+			if anthropic := collectTextFromContent(root.Get("content")); anthropic != "" {
+				content = anthropic
+			} else if anthropicMsg := collectTextFromContent(root.Get("message.content")); anthropicMsg != "" {
+				content = anthropicMsg
+			} else if message := collectTextFromContent(root.Get("message")); message != "" {
+				content = message
+			}
+		}
+
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("content"))...)
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message.content"))...)
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message"))...)
+
+		return strings.TrimSpace(content), deduplicateToolCalls(toolCalls)
 	}
 	return parseEventStream(string(data))
 }
@@ -97,6 +112,104 @@ func extractToolCalls(toolUses []gjson.Result) []OpenAIToolCall {
 		})
 	}
 	return toolCalls
+}
+
+func collectTextFromContent(result gjson.Result) string {
+	if !result.Exists() {
+		return ""
+	}
+
+	var builder strings.Builder
+	var visit func(gjson.Result)
+
+	visit = func(node gjson.Result) {
+		if !node.Exists() {
+			return
+		}
+		if node.IsArray() {
+			for _, item := range node.Array() {
+				visit(item)
+			}
+			return
+		}
+		if node.IsObject() {
+			if text := node.Get("text"); text.Exists() {
+				visit(text)
+			}
+			if nested := node.Get("content"); nested.Exists() {
+				visit(nested)
+			}
+			return
+		}
+
+		value := node.String()
+		if value == "" {
+			return
+		}
+		builder.WriteString(strings.ReplaceAll(value, `\n`, "\n"))
+	}
+
+	visit(result)
+	return builder.String()
+}
+
+func extractToolCallsFromContent(result gjson.Result) []OpenAIToolCall {
+	if !result.Exists() {
+		return nil
+	}
+
+	calls := make([]OpenAIToolCall, 0)
+
+	var visit func(gjson.Result)
+	visit = func(node gjson.Result) {
+		if !node.Exists() {
+			return
+		}
+
+		if node.IsArray() {
+			for _, item := range node.Array() {
+				visit(item)
+			}
+			return
+		}
+
+		if node.IsObject() {
+			if node.Get("type").String() == "tool_use" {
+				id := node.Get("id").String()
+				if id == "" {
+					id = node.Get("toolUseId").String()
+				}
+				name := node.Get("name").String()
+
+				var arguments string
+				if input := node.Get("input"); input.Exists() {
+					raw := strings.TrimSpace(input.Raw)
+					if raw != "" && raw != "null" && raw != "{}" {
+						if normalized := normalizeArguments(raw); normalized != "" {
+							arguments = normalized
+						} else {
+							arguments = raw
+						}
+					}
+				}
+
+				calls = append(calls, OpenAIToolCall{
+					ID:        id,
+					Name:      name,
+					Arguments: arguments,
+				})
+				return
+			}
+
+			if nested := node.Get("content"); nested.Exists() {
+				visit(nested)
+			}
+			return
+		}
+	}
+
+	visit(result)
+	return calls
 }
 
 // BuildOpenAIChatCompletionPayload generates a non-streaming OpenAI-compatible chat completion response.
