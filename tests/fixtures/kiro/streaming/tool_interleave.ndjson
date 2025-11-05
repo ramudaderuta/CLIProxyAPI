@@ -1,4 +1,4 @@
-{"content": "Save file"}
-{"name": "write_file", "toolUseId": "t1"}
-{"input": {"path": "a.txt"}}
-{"stop": true}
+{"content": "Save"}
+{"content": " "}
+{"content": "file"}
+{"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "write_file", "input": {"path": "test.txt"}}}

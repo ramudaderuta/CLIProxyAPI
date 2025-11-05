@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"context"

@@ -1,10 +1,12 @@
-package tests
+package kiro_test
 
 import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroThinkingContentTruncation tests the specific issue where "Thinking" content filtering
@@ -55,16 +57,16 @@ func TestKiroThinkingContentTruncation(t *testing.T) {
 			}
 
 			// Verify apostrophes are preserved
-			if containsString(tt.expectedAfterThinkingFilter, "'") && !containsString(filteredContent, "'") {
+			if testutil.ContainsString(tt.expectedAfterThinkingFilter, "'") && !testutil.ContainsString(filteredContent, "'") {
 				t.Errorf("Apostrophes were lost after Thinking filtering! Expected: %q, Got: %q",
 					tt.expectedAfterThinkingFilter, filteredContent)
 			}
 
 			// Verify no truncation occurred
-			if containsString(filteredContent, "I don") && !containsString(tt.expectedAfterThinkingFilter, "I don") {
+			if testutil.ContainsString(filteredContent, "I don") && !testutil.ContainsString(tt.expectedAfterThinkingFilter, "I don") {
 				t.Errorf("Found truncation 'I don' in filtered result: %q", filteredContent)
 			}
-			if containsString(filteredContent, "I can") && !containsString(tt.expectedAfterThinkingFilter, "I can") {
+			if testutil.ContainsString(filteredContent, "I can") && !testutil.ContainsString(tt.expectedAfterThinkingFilter, "I can") {
 				t.Errorf("Found truncation 'I can' in filtered result: %q", filteredContent)
 			}
 		})
@@ -113,7 +115,7 @@ func TestKiroResponseParsingWithThinking(t *testing.T) {
 			}
 
 			// Verify apostrophes are preserved
-			if containsString(tt.expectedContent, "'") && !containsString(filteredContent, "'") {
+			if testutil.ContainsString(tt.expectedContent, "'") && !testutil.ContainsString(filteredContent, "'") {
 				t.Errorf("Apostrophes were lost in response parsing! Expected: %q, Got: %q",
 					tt.expectedContent, filteredContent)
 			}

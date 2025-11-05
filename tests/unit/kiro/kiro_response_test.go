@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"encoding/json"
@@ -242,7 +242,7 @@ func TestBuildAnthropicMessagePayload_BasicTextResponse(t *testing.T) {
 
 	// Check stop reason
 	assert.Equal(t, "end_turn", result["stop_reason"], "Stop reason should be 'end_turn'")
-	assert.Equal(t, "end_turn", result["stop_sequence"], "Stop sequence should be 'end_turn'")
+	assert.Nil(t, result["stop_sequence"], "Stop sequence should be null per Anthropic spec")
 }
 
 func TestBuildAnthropicMessagePayload_ToolUseResponse(t *testing.T) {

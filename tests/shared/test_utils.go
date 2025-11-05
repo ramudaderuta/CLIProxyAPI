@@ -1,4 +1,4 @@
-package tests
+package testutil
 
 import (
 	"context"
@@ -170,15 +170,15 @@ func newTestAuth(token *authkiro.KiroTokenStorage, attrs map[string]string) *cli
 	}
 }
 
-func containsString(s, substr string) bool {
+func ContainsString(s, substr string) bool {
 	if substr == "" {
 		return true
 	}
 	return strings.Contains(s, substr)
 }
 
-func containsSubstring(s, substr string) bool {
-	return containsString(s, substr)
+func ContainsSubstring(s, substr string) bool {
+	return ContainsString(s, substr)
 }
 
 // Deprecated: Use KiroTestFixtures instead

@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"encoding/json"
@@ -22,7 +22,7 @@ import (
 // where content gets clipped to ".txt"}\n\nTool usage" instead of preserving full content + tool_calls
 func TestKiroBugReproduction_ContentClipping(t *testing.T) {
 	// Load the bug reproduction fixture
-	fixturePath := filepath.Join("fixtures", "kiro", "nonstream", "bug_reproduction.json")
+	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "bug_reproduction.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err, "Should be able to load bug reproduction fixture")
 
@@ -166,7 +166,7 @@ func TestKiroBugReproduction_DelimiterSafety(t *testing.T) {
 // TestKiroBugReproduction_TextOnlyNoClipping ensures text-only responses don't get clipped
 func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
 	// Load text-only fixture
-	fixturePath := filepath.Join("fixtures", "kiro", "nonstream", "text_only.json")
+	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "text_only.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -198,7 +198,7 @@ func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
 // TestKiroBugReproduction_TextThenToolProperSeparation tests proper text + tool separation
 func TestKiroBugReproduction_TextThenToolProperSeparation(t *testing.T) {
 	// Load text + tool fixture
-	fixturePath := filepath.Join("fixtures", "kiro", "nonstream", "text_then_tool.json")
+	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "text_then_tool.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 

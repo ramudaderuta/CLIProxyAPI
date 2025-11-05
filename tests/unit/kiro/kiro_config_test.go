@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"context"
@@ -132,7 +132,7 @@ func TestKiroConfig_NativeTokenEnhancement(t *testing.T) {
 	}
 
 	// The test passes if no errors occurred and the auth was refreshed
-	// The actual enhancement is tested in the auth/kiro package tests
+	// The actual enhancement is tested in the auth/kiro package kiro_test
 }
 
 // TestKiroConfig_BackwardCompatibility validates that existing Kiro token files

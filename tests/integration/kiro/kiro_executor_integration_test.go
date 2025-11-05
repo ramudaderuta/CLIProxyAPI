@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"bytes"
@@ -16,17 +16,19 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroExecutor_Execute validates the basic non-streaming request execution
 func TestKiroExecutor_Execute(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, map[string]string{"region": "ap-southeast-1"})
 
 	var captured []byte
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		body, err := io.ReadAll(req.Body)
 		if err != nil {
 			t.Fatalf("read request body: %v", err)
@@ -126,7 +128,7 @@ func TestKiroExecutor_Execute(t *testing.T) {
 
 // TestKiroExecutor_ExecuteStream validates streaming request execution
 func TestKiroExecutor_ExecuteStream(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -138,7 +140,7 @@ data: {"name":"get_weather","toolUseId":"call_1","stop":true}
 data: {"content":"It is sunny","followupPrompt":false}
 `
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(sse))),
@@ -210,12 +212,12 @@ data: {"content":"It is sunny","followupPrompt":false}
 
 // TestKiroExecutor_ErrorPropagation validates that errors are properly propagated
 func TestKiroExecutor_ErrorPropagation(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`{"message":"quota exceeded"}`))),
@@ -243,13 +245,13 @@ func TestKiroExecutor_ErrorPropagation(t *testing.T) {
 
 // TestKiroExecutor_ConcurrentExecute validates concurrent execution
 func TestKiroExecutor_ConcurrentExecute(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
 
 	var calls atomic.Int32
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		calls.Add(1)
 		response := map[string]any{
 			"conversationState": map[string]any{
@@ -303,7 +305,7 @@ func TestKiroExecutor_ConcurrentExecute(t *testing.T) {
 
 // TestKiroExecutor_TokenRefresh validates token refresh functionality
 func TestKiroExecutor_TokenRefresh(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	// Create an expired token to test refresh functionality
 	expiredToken := &authkiro.KiroTokenStorage{
 		AccessToken:  "expired-access-token",
@@ -320,7 +322,7 @@ func TestKiroExecutor_TokenRefresh(t *testing.T) {
 	auth := fixtures.NewTestAuth(expiredToken, map[string]string{"region": "us-west-2"})
 
 	// Mock the refresh endpoint
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		// Check if this is a refresh request
 		if req.URL.Path == "/refreshToken" || req.URL.Path == "/token" {
 			// Return a successful refresh response

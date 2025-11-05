@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"testing"
@@ -13,6 +13,7 @@ import (
 // These tests will fail because format detection logic doesn't exist yet
 
 func TestKiroExecutor_FormatDetection_OpenAIFormat(t *testing.T) {
+	t.Parallel()
 	// Test format detection for OpenAI format requests
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
@@ -33,6 +34,7 @@ func TestKiroExecutor_FormatDetection_OpenAIFormat(t *testing.T) {
 }
 
 func TestKiroExecutor_FormatDetection_AnthropicFormat(t *testing.T) {
+	t.Parallel()
 	// Test format detection for Anthropic format requests
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
@@ -54,6 +56,7 @@ func TestKiroExecutor_FormatDetection_AnthropicFormat(t *testing.T) {
 }
 
 func TestKiroExecutor_FormatDetection_InvalidFormat(t *testing.T) {
+	t.Parallel()
 	// Test format detection for invalid format requests
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
@@ -70,6 +73,7 @@ func TestKiroExecutor_FormatDetection_InvalidFormat(t *testing.T) {
 }
 
 func TestKiroExecutor_FormatDetection_EdgeCases(t *testing.T) {
+	t.Parallel()
 	// Test format detection for edge cases
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)

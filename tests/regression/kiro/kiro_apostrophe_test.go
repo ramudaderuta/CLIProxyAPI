@@ -1,10 +1,12 @@
-package tests
+package kiro_test
 
 import (
 	"encoding/json"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 func TestKiroApostropheHandling(t *testing.T) {
@@ -70,14 +72,14 @@ func TestKiroApostropheHandling(t *testing.T) {
 
 			// Check that apostrophe-containing text is preserved
 			for _, expected := range tt.shouldContain {
-				if !containsString(content, expected) {
+				if !testutil.ContainsString(content, expected) {
 					t.Errorf("Expected result to contain %q, but got: %q", expected, content)
 				}
 			}
 
 			// Check that unwanted text is not present
 			for _, unexpected := range tt.shouldNotContain {
-				if containsString(content, unexpected) {
+				if testutil.ContainsString(content, unexpected) {
 					t.Errorf("Expected result NOT to contain %q, but got: %q", unexpected, content)
 				}
 			}
@@ -97,7 +99,7 @@ func TestKiroApostropheHandling(t *testing.T) {
 				for _, expected := range tt.shouldContain {
 					found := false
 					for _, call := range toolCalls {
-						if containsString(call.Arguments, expected) {
+						if testutil.ContainsString(call.Arguments, expected) {
 							found = true
 							break
 						}
@@ -146,7 +148,7 @@ func TestFirstValidJSONWithApostrophes(t *testing.T) {
 
 			// For content extraction tests, we're mainly checking that apostrophes are preserved
 			// The exact JSON structure might be transformed by extraction process
-			if !containsString(content, "'") && containsString(tt.input, "'") {
+			if !testutil.ContainsString(content, "'") && testutil.ContainsString(tt.input, "'") {
 				t.Errorf("Apostrophes were lost! Input: %q, Result: %q", tt.input, content)
 			}
 		})
@@ -170,7 +172,7 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 			input := `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "This contains ` + testCase + ` in the sentence"}}}}`
 			content, _ := kiro.ParseResponse([]byte(input))
 
-			if !containsString(content, testCase) {
+			if !testutil.ContainsString(content, testCase) {
 				t.Errorf("Expected result to contain contraction %q, but got: %q", testCase, content)
 			}
 		})
@@ -221,7 +223,7 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 			input := `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Test symbol ` + testCase.symbol + ` here"}}}}`
 			content, _ := kiro.ParseResponse([]byte(input))
 
-			if !containsString(content, testCase.symbol) {
+			if !testutil.ContainsString(content, testCase.symbol) {
 				t.Errorf("Expected result to contain symbol %q, but got: %q", testCase.symbol, content)
 			}
 		})
@@ -289,7 +291,7 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 		t.Run("EdgeCase_"+testCase.name, func(t *testing.T) {
 			content, _ := kiro.ParseResponse([]byte(testCase.input))
 
-			if !containsString(content, testCase.expected) {
+			if !testutil.ContainsString(content, testCase.expected) {
 				t.Errorf("Expected result to contain %q, but got: %q", testCase.expected, content)
 			}
 		})

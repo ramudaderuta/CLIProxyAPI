@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"bytes"
@@ -15,11 +15,13 @@ import (
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroExecutor_Integration_SSEFormatting tests the complete SSE formatting in the executor
 func TestKiroExecutor_Integration_SSEFormatting(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, map[string]string{"region": "ap-southeast-1"})
@@ -38,7 +40,7 @@ event: message_stop
 data: {"type":"message_stop"}
 `
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(kiroSSEResponse))),
@@ -109,7 +111,7 @@ data: {"type":"message_stop"}
 
 // TestKiroExecutor_Integration_SSEFormatConsistency tests that SSE format is consistent with iflow provider
 func TestKiroExecutor_Integration_SSEFormatConsistency(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -118,7 +120,7 @@ func TestKiroExecutor_Integration_SSEFormatConsistency(t *testing.T) {
 	kiroResponse := `data: {"content":"Simple response"}
 `
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(kiroResponse))),
@@ -167,7 +169,7 @@ func TestKiroExecutor_Integration_SSEFormatConsistency(t *testing.T) {
 
 // TestKiroExecutor_Integration_SSEPerformance tests performance of SSE formatting
 func TestKiroExecutor_Integration_SSEPerformance(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -176,7 +178,7 @@ func TestKiroExecutor_Integration_SSEPerformance(t *testing.T) {
 	kiroResponse := `data: {"content":"This is a test response with some content to process"}
 `
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(kiroResponse))),
@@ -258,7 +260,7 @@ func parseSSEEvents(sseResponse string) map[string]string {
 
 // TestKiroExecutor_Integration_IncrementalStreaming validates proper incremental streaming behavior
 func TestKiroExecutor_Integration_IncrementalStreaming(t *testing.T) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -266,7 +268,7 @@ func TestKiroExecutor_Integration_IncrementalStreaming(t *testing.T) {
 	// Test with longer content to verify incremental streaming
 	longContent := "This is a longer response that should be streamed properly with multiple characters to test the incremental streaming functionality and ensure content is not truncated."
 
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader([]byte(`data: {"content":"` + longContent + `"}`))),

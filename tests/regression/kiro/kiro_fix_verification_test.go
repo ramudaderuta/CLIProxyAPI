@@ -1,9 +1,11 @@
-package tests
+package kiro_test
 
 import (
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroFixVerification verifies that our fix for the "I don't know" truncation issue works correctly
@@ -60,16 +62,16 @@ func TestKiroFixVerification(t *testing.T) {
 			}
 
 			// Verify apostrophes are preserved when expected
-			if containsString(tc.expectedOutput, "'") && !containsString(result, "'") {
+			if testutil.ContainsString(tc.expectedOutput, "'") && !testutil.ContainsString(result, "'") {
 				t.Errorf("Apostrophes were lost in %s! Expected: %q, Got: %q",
 					tc.name, tc.expectedOutput, result)
 			}
 
 			// Verify no truncation occurred
-			if containsString(result, "I don") && !containsString(tc.expectedOutput, "I don") {
+			if testutil.ContainsString(result, "I don") && !testutil.ContainsString(tc.expectedOutput, "I don") {
 				t.Errorf("Found truncation 'I don' in result for %s: %q", tc.name, result)
 			}
-			if containsString(result, "I can") && !containsString(tc.expectedOutput, "I can") {
+			if testutil.ContainsString(result, "I can") && !testutil.ContainsString(tc.expectedOutput, "I can") {
 				t.Errorf("Found truncation 'I can' in result for %s: %q", tc.name, result)
 			}
 

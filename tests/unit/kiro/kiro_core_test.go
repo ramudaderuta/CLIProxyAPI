@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"bufio"
@@ -274,7 +274,7 @@ func TestKiroBuildOpenAIChatCompletionPayload_ValidatesOutputFormat(t *testing.T
 // TestKiroStreaming_TextChunks tests streaming text content aggregation
 func TestKiroStreaming_TextChunks(t *testing.T) {
 	// Load streaming text chunks fixture
-	fixturePath := filepath.Join("fixtures", "kiro", "streaming", "text_chunks.ndjson")
+	fixturePath := filepath.Join("../../fixtures/kiro/streaming", "text_chunks.ndjson")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -301,7 +301,7 @@ func TestKiroStreaming_TextChunks(t *testing.T) {
 // TestKiroStreaming_ToolInterleave tests streaming with interleaved text and tool calls
 func TestKiroStreaming_ToolInterleave(t *testing.T) {
 	// Load streaming tool interleave fixture
-	fixturePath := filepath.Join("fixtures", "kiro", "streaming", "tool_interleave.ndjson")
+	fixturePath := filepath.Join("../../fixtures/kiro/streaming", "tool_interleave.ndjson")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 

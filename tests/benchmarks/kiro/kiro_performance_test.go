@@ -1,4 +1,4 @@
-package tests
+package kiro_test
 
 import (
 	"bytes"
@@ -11,10 +11,12 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+
+	"github.com/router-for-me/CLIProxyAPI/v6/shared/testutil"
 )
 
 func BenchmarkKiroExecutorExecute(b *testing.B) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -29,7 +31,7 @@ func BenchmarkKiroExecutorExecute(b *testing.B) {
 		},
 	}
 	raw, _ := json.Marshal(response)
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(raw)),
@@ -51,7 +53,7 @@ func BenchmarkKiroExecutorExecute(b *testing.B) {
 }
 
 func BenchmarkKiroExecutorExecuteParallel(b *testing.B) {
-	fixtures := NewKiroTestFixtures()
+	fixtures := testutil.NewKiroTestFixtures()
 	cfg := &config.Config{}
 	exec := executor.NewKiroExecutor(cfg)
 	auth := fixtures.NewTestAuth(nil, nil)
@@ -66,7 +68,7 @@ func BenchmarkKiroExecutorExecuteParallel(b *testing.B) {
 		},
 	}
 	raw, _ := json.Marshal(response)
-	rt := RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	rt := testutil.RoundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Body:       io.NopCloser(bytes.NewReader(raw)),
