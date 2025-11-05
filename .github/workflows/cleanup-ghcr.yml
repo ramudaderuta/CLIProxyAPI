@@ -1,0 +1,34 @@
+name: Cleanup GHCR
+
+on:
+  schedule:
+    # 每天 03:30 UTC 运行（日本时间 JST=UTC+9 → 每天 12:30）
+    - cron: "30 3 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write  # 需要删除包版本
+
+env:
+  # GHCR 容器包名通常与仓库名一致（小写）
+  PKG_NAME: cliproxyapi
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete old UNTAGGED container versions (keep last 10 untagged)
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ env.PKG_NAME }}
+          package-type: container
+          delete-only-untagged-versions: "true"
+          min-versions-to-keep: 10
+
+      - name: Keep only the latest 30 total versions (delete the rest)
+        uses: actions/delete-package-versions@v5
+        with:
+          package-name: ${{ env.PKG_NAME }}
+          package-type: container
+          min-versions-to-keep: 30
