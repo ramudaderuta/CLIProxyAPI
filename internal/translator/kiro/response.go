@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -59,7 +60,22 @@ func ParseResponse(data []byte) (string, []OpenAIToolCall) {
 			}
 		}
 
-		return content, toolCalls
+		// Fallback to Anthropic-style message bodies when conversationState is absent.
+		if strings.TrimSpace(content) == "" {
+			if anthropic := collectTextFromContent(root.Get("content")); anthropic != "" {
+				content = anthropic
+			} else if anthropicMsg := collectTextFromContent(root.Get("message.content")); anthropicMsg != "" {
+				content = anthropicMsg
+			} else if message := collectTextFromContent(root.Get("message")); message != "" {
+				content = message
+			}
+		}
+
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("content"))...)
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message.content"))...)
+		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message"))...)
+
+		return strings.TrimSpace(content), deduplicateToolCalls(toolCalls)
 	}
 	return parseEventStream(string(data))
 }
@@ -96,6 +112,104 @@ func extractToolCalls(toolUses []gjson.Result) []OpenAIToolCall {
 		})
 	}
 	return toolCalls
+}
+
+func collectTextFromContent(result gjson.Result) string {
+	if !result.Exists() {
+		return ""
+	}
+
+	var builder strings.Builder
+	var visit func(gjson.Result)
+
+	visit = func(node gjson.Result) {
+		if !node.Exists() {
+			return
+		}
+		if node.IsArray() {
+			for _, item := range node.Array() {
+				visit(item)
+			}
+			return
+		}
+		if node.IsObject() {
+			if text := node.Get("text"); text.Exists() {
+				visit(text)
+			}
+			if nested := node.Get("content"); nested.Exists() {
+				visit(nested)
+			}
+			return
+		}
+
+		value := node.String()
+		if value == "" {
+			return
+		}
+		builder.WriteString(strings.ReplaceAll(value, `\n`, "\n"))
+	}
+
+	visit(result)
+	return builder.String()
+}
+
+func extractToolCallsFromContent(result gjson.Result) []OpenAIToolCall {
+	if !result.Exists() {
+		return nil
+	}
+
+	calls := make([]OpenAIToolCall, 0)
+
+	var visit func(gjson.Result)
+	visit = func(node gjson.Result) {
+		if !node.Exists() {
+			return
+		}
+
+		if node.IsArray() {
+			for _, item := range node.Array() {
+				visit(item)
+			}
+			return
+		}
+
+		if node.IsObject() {
+			if node.Get("type").String() == "tool_use" {
+				id := node.Get("id").String()
+				if id == "" {
+					id = node.Get("toolUseId").String()
+				}
+				name := node.Get("name").String()
+
+				var arguments string
+				if input := node.Get("input"); input.Exists() {
+					raw := strings.TrimSpace(input.Raw)
+					if raw != "" && raw != "null" && raw != "{}" {
+						if normalized := normalizeArguments(raw); normalized != "" {
+							arguments = normalized
+						} else {
+							arguments = raw
+						}
+					}
+				}
+
+				calls = append(calls, OpenAIToolCall{
+					ID:        id,
+					Name:      name,
+					Arguments: arguments,
+				})
+				return
+			}
+
+			if nested := node.Get("content"); nested.Exists() {
+				visit(nested)
+			}
+			return
+		}
+	}
+
+	visit(result)
+	return calls
 }
 
 // BuildOpenAIChatCompletionPayload generates a non-streaming OpenAI-compatible chat completion response.
@@ -212,53 +326,203 @@ func parseEventStream(raw string) (string, []OpenAIToolCall) {
 	if raw == "" {
 		return "", nil
 	}
-	result := strings.Builder{}
-	toolCalls := make([]OpenAIToolCall, 0)
-	var currentCall *OpenAIToolCall
 
-	lines := strings.Split(raw, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if idx := strings.Index(line, "{"); idx >= 0 {
-			line = line[idx:]
-		}
-		event := firstValidJSON(line)
-		if len(event) == 0 {
-			continue
-		}
-		node := gjson.ParseBytes(event)
-		if name := node.Get("name").String(); name != "" && node.Get("toolUseId").Exists() {
-			if currentCall == nil {
-				currentCall = &OpenAIToolCall{
-					ID:   node.Get("toolUseId").String(),
-					Name: name,
-				}
-			}
-			if input := node.Get("input"); input.Exists() {
-				currentCall.Arguments += input.Raw
-			}
-			if node.Get("stop").Bool() && currentCall != nil {
-				if args := normalizeArguments(currentCall.Arguments); args != "" {
-					currentCall.Arguments = args
-				}
-				toolCalls = append(toolCalls, *currentCall)
-				currentCall = nil
-			}
-			continue
-		}
-		if content := node.Get("content").String(); content != "" && !node.Get("followupPrompt").Bool() {
-			decoded := strings.ReplaceAll(content, `\n`, "\n")
-			result.WriteString(decoded)
-		}
+	type toolAccumulator struct {
+		call      OpenAIToolCall
+		fragments strings.Builder
+		hasStream bool
+		finalized bool
 	}
-	if currentCall != nil {
-		if args := normalizeArguments(currentCall.Arguments); args != "" {
-			currentCall.Arguments = args
+
+	textBuilder := strings.Builder{}
+	toolOrder := make([]string, 0)
+	toolByID := make(map[string]*toolAccumulator)
+	toolIndex := make(map[int]string)
+
+	ensureAccumulator := func(id, name string) *toolAccumulator {
+		if id == "" {
+			return nil
 		}
-		toolCalls = append(toolCalls, *currentCall)
+		if acc, ok := toolByID[id]; ok {
+			if acc.call.Name == "" && name != "" {
+				acc.call.Name = name
+			}
+			return acc
+		}
+		acc := &toolAccumulator{call: OpenAIToolCall{ID: id, Name: name}}
+		toolByID[id] = acc
+		toolOrder = append(toolOrder, id)
+		return acc
+	}
+
+	appendText := func(value gjson.Result) {
+		if !value.Exists() {
+			return
+		}
+
+		var visit func(gjson.Result)
+		visit = func(v gjson.Result) {
+			if !v.Exists() {
+				return
+			}
+			if v.IsArray() {
+				for _, item := range v.Array() {
+					visit(item)
+				}
+				return
+			}
+			if v.IsObject() {
+				if text := v.Get("text"); text.Exists() {
+					visit(text)
+				}
+				if nested := v.Get("content"); nested.Exists() {
+					visit(nested)
+				}
+				return
+			}
+			text := v.String()
+			if text == "" {
+				return
+			}
+			decoded := strings.ReplaceAll(text, `\n`, "\n")
+			textBuilder.WriteString(decoded)
+		}
+
+		visit(value)
+	}
+
+	finalize := func(id string) {
+		if id == "" {
+			return
+		}
+		acc, ok := toolByID[id]
+		if !ok || acc.finalized {
+			return
+		}
+
+		rawArgs := strings.TrimSpace(acc.call.Arguments)
+		if acc.hasStream {
+			rawArgs = strings.TrimSpace(acc.fragments.String())
+		}
+		if rawArgs != "" {
+			if normalized := normalizeArguments(rawArgs); normalized != "" {
+				acc.call.Arguments = normalized
+			} else {
+				acc.call.Arguments = rawArgs
+			}
+		} else {
+			acc.call.Arguments = ""
+		}
+		acc.finalized = true
+	}
+
+	remaining := raw
+	for len(remaining) > 0 {
+		idx := strings.Index(remaining, "{")
+		if idx < 0 {
+			break
+		}
+		segment := remaining[idx:]
+		event := firstValidJSON(segment)
+		if len(event) == 0 {
+			_, size := utf8.DecodeRuneInString(remaining)
+			if size <= 0 {
+				break
+			}
+			remaining = remaining[size:]
+			continue
+		}
+
+		node := gjson.ParseBytes(event)
+		eventType := node.Get("type").String()
+
+		switch eventType {
+		case "content_block_start":
+			block := node.Get("content_block")
+			if block.Exists() && block.Get("type").String() == "tool_use" {
+				id := block.Get("id").String()
+				if id == "" {
+					id = block.Get("toolUseId").String()
+				}
+				name := block.Get("name").String()
+				if acc := ensureAccumulator(id, name); acc != nil {
+					if input := block.Get("input"); input.Exists() {
+						rawInput := strings.TrimSpace(input.Raw)
+						if rawInput != "" && rawInput != "null" && rawInput != "{}" {
+							acc.call.Arguments = rawInput
+						}
+					}
+					if idxVal := node.Get("index"); idxVal.Exists() {
+						toolIndex[int(idxVal.Int())] = id
+					}
+				}
+			} else {
+				appendText(block)
+			}
+		case "content_block_delta":
+			appendText(node.Get("delta"))
+			if partial := node.Get("delta.partial_json").String(); partial != "" {
+				idxVal := int(node.Get("index").Int())
+				if id := toolIndex[idxVal]; id != "" {
+					if acc := ensureAccumulator(id, ""); acc != nil {
+						acc.fragments.WriteString(partial)
+						acc.hasStream = true
+					}
+				}
+			}
+		case "content_block_stop":
+			idxVal := int(node.Get("index").Int())
+			if id := toolIndex[idxVal]; id != "" {
+				finalize(id)
+			}
+		case "message_start":
+			appendText(node.Get("message"))
+		case "message_delta":
+			appendText(node.Get("delta"))
+		case "message":
+			appendText(node.Get("content"))
+			appendText(node.Get("message"))
+		default:
+			if node.Get("followupPrompt").Bool() {
+				break
+			}
+
+			if name := node.Get("name").String(); name != "" {
+				id := node.Get("toolUseId").String()
+				if id == "" {
+					id = node.Get("tool_use_id").String()
+				}
+				if acc := ensureAccumulator(id, name); acc != nil {
+					if input := node.Get("input"); input.Exists() {
+						rawInput := strings.TrimSpace(input.Raw)
+						if rawInput != "" && rawInput != "null" {
+							acc.fragments.WriteString(rawInput)
+							acc.hasStream = true
+						}
+					}
+					if node.Get("stop").Bool() {
+						finalize(id)
+					}
+				}
+			} else {
+				appendText(node.Get("content"))
+				appendText(node.Get("delta"))
+				appendText(node.Get("message"))
+			}
+		}
+
+		remaining = segment[len(event):]
+	}
+
+	for _, id := range toolOrder {
+		finalize(id)
+	}
+
+	toolCalls := make([]OpenAIToolCall, 0, len(toolOrder))
+	for _, id := range toolOrder {
+		if acc, ok := toolByID[id]; ok && acc.finalized {
+			toolCalls = append(toolCalls, acc.call)
+		}
 	}
 
 	bracketCalls := parseBracketToolCalls(raw)
@@ -266,7 +530,7 @@ func parseEventStream(raw string) (string, []OpenAIToolCall) {
 		toolCalls = append(toolCalls, bracketCalls...)
 	}
 
-	content := strings.TrimSpace(result.String())
+	content := strings.TrimSpace(textBuilder.String())
 	if content == "" {
 		content = strings.TrimSpace(raw)
 	}
@@ -442,12 +706,12 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 
 	// Build the payload with proper structure
 	payload := AnthropicMessage{
-		ID:          fmt.Sprintf("msg_%s", uuid.NewString()),
-		Type:        "message",
-		Role:        "assistant",
-		Model:       model,
-		Content:     contentBlocks,
-		StopReason:  stopReason,
+		ID:           fmt.Sprintf("msg_%s", uuid.NewString()),
+		Type:         "message",
+		Role:         "assistant",
+		Model:        model,
+		Content:      contentBlocks,
+		StopReason:   stopReason,
 		StopSequence: nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 		Usage: Usage{
 			InputTokens:  promptTokens,
@@ -461,21 +725,21 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 
 // AnthropicMessage represents the Anthropic messages API response structure
 type AnthropicMessage struct {
-	ID          string        `json:"id"`
-	Type        string        `json:"type"`
-	Role        string        `json:"role"`
-	Model       string        `json:"model"`
-	Content     []map[string]any `json:"content"`
-	StopReason  string        `json:"stop_reason"`
-	StopSequence *string       `json:"stop_sequence"` // BUG FIX: Use pointer to allow null
-	Usage       Usage         `json:"usage"`
+	ID           string           `json:"id"`
+	Type         string           `json:"type"`
+	Role         string           `json:"role"`
+	Model        string           `json:"model"`
+	Content      []map[string]any `json:"content"`
+	StopReason   string           `json:"stop_reason"`
+	StopSequence *string          `json:"stop_sequence"` // BUG FIX: Use pointer to allow null
+	Usage        Usage            `json:"usage"`
 }
 
 // Usage represents token usage with int64 types
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens int64 `json:"total_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
 }
 
 // BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks formatted as SSE events.
@@ -548,11 +812,11 @@ func buildMessageStartEvent(model string, inputTokens int64) map[string]any {
 	return map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id":      fmt.Sprintf("msg_%s", uuid.NewString()),
-			"type":    "message",
-			"role":    "assistant",
-			"content": []map[string]any{},
-			"model":   model,
+			"id":            fmt.Sprintf("msg_%s", uuid.NewString()),
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []map[string]any{},
+			"model":         model,
 			"stop_reason":   nil,
 			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 			"usage": map[string]any{
@@ -566,7 +830,7 @@ func buildMessageStartEvent(model string, inputTokens int64) map[string]any {
 // buildContentBlockStartEvent creates the content_block_start event structure
 func buildContentBlockStartEvent() map[string]any {
 	return map[string]any{
-		"type": "content_block_start",
+		"type":  "content_block_start",
 		"index": 0,
 		"content_block": map[string]any{
 			"type": "text",
@@ -578,7 +842,7 @@ func buildContentBlockStartEvent() map[string]any {
 // buildContentBlockDeltaEvent creates the content_block_delta event structure for text
 func buildContentBlockDeltaEvent(content string) map[string]any {
 	return map[string]any{
-		"type": "content_block_delta",
+		"type":  "content_block_delta",
 		"index": 0,
 		"delta": map[string]any{
 			"type": "text_delta",
@@ -590,7 +854,7 @@ func buildContentBlockDeltaEvent(content string) map[string]any {
 // buildContentBlockStopEvent creates the content_block_stop event structure
 func buildContentBlockStopEvent() map[string]any {
 	return map[string]any{
-		"type": "content_block_stop",
+		"type":  "content_block_stop",
 		"index": 0,
 	}
 }
@@ -598,12 +862,12 @@ func buildContentBlockStopEvent() map[string]any {
 // buildToolUseStartEvent creates the content_block_start event structure for tool_use
 func buildToolUseStartEvent(call OpenAIToolCall, blockIndex int) map[string]any {
 	return map[string]any{
-		"type": "content_block_start",
+		"type":  "content_block_start",
 		"index": blockIndex,
 		"content_block": map[string]any{
-			"type": "tool_use",
-			"id":   call.ID,
-			"name": call.Name,
+			"type":  "tool_use",
+			"id":    call.ID,
+			"name":  call.Name,
 			"input": map[string]any{},
 		},
 	}
@@ -621,10 +885,10 @@ func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
 	}
 
 	return map[string]any{
-		"type": "content_block_delta",
+		"type":  "content_block_delta",
 		"index": 0, // Will be updated by caller
 		"delta": map[string]any{
-			"type": "input_json_delta",
+			"type":         "input_json_delta",
 			"partial_json": string(marshalJSON(input)),
 		},
 	}
@@ -744,4 +1008,3 @@ func calculateOutputTokens(content string, toolCalls []OpenAIToolCall) int64 {
 
 	return totalTokens
 }
-
