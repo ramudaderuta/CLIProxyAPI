@@ -53,6 +53,84 @@ func TestParseResponseFromEventStream(t *testing.T) {
 	}
 }
 
+func TestParseResponseFromEventStreamWithControlDelimiters(t *testing.T) {
+	raw := strings.Join([]string{
+		`:message-typeevent{"content":"I don"}`,
+		"\v:message-typeevent{\"content\":\"'t have access\"}",
+		"\v:message-typeevent{\"content\":\" to data.\"}",
+		"\v:metering-event{\"unit\":\"credit\",\"usage\":0.01}",
+	}, "")
+
+	text, calls := kiro.ParseResponse([]byte(raw))
+	require.Equal(t, "I don't have access to data.", text)
+	require.Empty(t, calls)
+}
+
+func TestParseResponseFromAnthropicStyleStream(t *testing.T) {
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"content":[{"type":"text","text":""}]}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I don"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"'t have access"}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" to data."}}`,
+		"",
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":0}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	text, calls := kiro.ParseResponse([]byte(stream))
+	require.Equal(t, "I don't have access to data.", text)
+	require.Empty(t, calls)
+}
+
+func TestParseResponseFromAnthropicToolStream(t *testing.T) {
+	stream := strings.Join([]string{
+		"event: message_start",
+		`data: {"type":"message_start","message":{"content":[{"type":"text","text":""}]}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":"Let me check that."}}`,
+		"",
+		"event: content_block_start",
+		`data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'm fetching the forecast."}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"tool_use_delta","partial_json":"{\"location\": \"Tokyo\""}}`,
+		"",
+		"event: content_block_delta",
+		`data: {"type":"content_block_delta","index":1,"delta":{"type":"tool_use_delta","partial_json":", \"unit\": \"°C\"}"}}`,
+		"",
+		"event: content_block_stop",
+		`data: {"type":"content_block_stop","index":1}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	text, calls := kiro.ParseResponse([]byte(stream))
+	require.Contains(t, text, "Let me check that.")
+	require.Contains(t, text, "I'm fetching the forecast.")
+	require.Len(t, calls, 1)
+	require.Equal(t, "toolu_1", calls[0].ID)
+	require.Equal(t, "get_weather", calls[0].Name)
+	require.JSONEq(t, `{"location":"Tokyo","unit":"°C"}`, calls[0].Arguments)
+}
+
 func TestBuildOpenAIChatCompletionPayload(t *testing.T) {
 	payload, err := kiro.BuildOpenAIChatCompletionPayload("claude-sonnet-4-5", "hi", []kiro.OpenAIToolCall{
 		{ID: "call-1", Name: "lookup", Arguments: `{"foo":"bar"}`},
@@ -297,15 +375,15 @@ func TestBuildAnthropicMessagePayload_MixedContentResponses(t *testing.T) {
 func TestBuildAnthropicMessagePayload_StopReasonMapping(t *testing.T) {
 	// Test stop reason mapping from OpenAI to Anthropic format
 	testCases := []struct {
-		name     string
-		content  string
-		toolCalls []kiro.OpenAIToolCall
+		name               string
+		content            string
+		toolCalls          []kiro.OpenAIToolCall
 		expectedStopReason string
 	}{
 		{
-			name:    "end_turn",
-			content: "Hello world",
-			toolCalls: []kiro.OpenAIToolCall{},
+			name:               "end_turn",
+			content:            "Hello world",
+			toolCalls:          []kiro.OpenAIToolCall{},
 			expectedStopReason: "end_turn",
 		},
 		{
@@ -317,9 +395,9 @@ func TestBuildAnthropicMessagePayload_StopReasonMapping(t *testing.T) {
 			expectedStopReason: "tool_use",
 		},
 		{
-			name:    "max_tokens",
-			content: "This is a long response that should be cut off due to max tokens",
-			toolCalls: []kiro.OpenAIToolCall{},
+			name:               "max_tokens",
+			content:            "This is a long response that should be cut off due to max tokens",
+			toolCalls:          []kiro.OpenAIToolCall{},
 			expectedStopReason: "max_tokens",
 		},
 	}
@@ -374,40 +452,40 @@ func TestBuildAnthropicMessagePayload_UsageTokenMapping(t *testing.T) {
 func TestBuildAnthropicMessagePayload_ErrorHandlingMalformedResponses(t *testing.T) {
 	// Test error handling for malformed responses
 	testCases := []struct {
-		name        string
-		model       string
-		content     string
-		toolCalls   []kiro.OpenAIToolCall
-		promptTokens int64
+		name             string
+		model            string
+		content          string
+		toolCalls        []kiro.OpenAIToolCall
+		promptTokens     int64
 		completionTokens int64
-		expectedError string
+		expectedError    string
 	}{
 		{
-			name:        "empty_model",
-			model:       "",
-			content:     "test",
-			toolCalls:   []kiro.OpenAIToolCall{},
-			promptTokens: 10,
+			name:             "empty_model",
+			model:            "",
+			content:          "test",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     10,
 			completionTokens: 5,
-			expectedError: "model cannot be empty",
+			expectedError:    "model cannot be empty",
 		},
 		{
-			name:        "negative_tokens",
-			model:       "claude-sonnet-4-5",
-			content:     "test",
-			toolCalls:   []kiro.OpenAIToolCall{},
-			promptTokens: -1,
+			name:             "negative_tokens",
+			model:            "claude-sonnet-4-5",
+			content:          "test",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     -1,
 			completionTokens: 5,
-			expectedError: "token count cannot be negative",
+			expectedError:    "token count cannot be negative",
 		},
 		{
-			name:        "valid_tool_call_with_empty_id",
-			model:       "claude-sonnet-4-5",
-			content:     "test",
-			toolCalls:   []kiro.OpenAIToolCall{{ID: "", Name: "test", Arguments: "{}"}},
-			promptTokens: 10,
+			name:             "valid_tool_call_with_empty_id",
+			model:            "claude-sonnet-4-5",
+			content:          "test",
+			toolCalls:        []kiro.OpenAIToolCall{{ID: "", Name: "test", Arguments: "{}"}},
+			promptTokens:     10,
 			completionTokens: 5,
-			expectedError: "",
+			expectedError:    "",
 		},
 	}
 
@@ -479,57 +557,56 @@ func TestBuildAnthropicMessagePayload_StreamingResponseFormat(t *testing.T) {
 	}
 }
 
-
 // FAILING TESTS FOR EDGE CASES AND ERROR SCENARIOS
 
 func TestBuildAnthropicMessagePayload_EdgeCases(t *testing.T) {
 	// Test edge cases for kiro.BuildAnthropicMessagePayload
 	testCases := []struct {
-		name     string
-		model    string
-		content  string
-		toolCalls []kiro.OpenAIToolCall
-		promptTokens int64
+		name             string
+		model            string
+		content          string
+		toolCalls        []kiro.OpenAIToolCall
+		promptTokens     int64
 		completionTokens int64
 	}{
 		{
-			name:    "empty_content",
-			model:   "claude-sonnet-4-5",
-			content: "",
-			toolCalls: []kiro.OpenAIToolCall{},
-			promptTokens: 10,
+			name:             "empty_content",
+			model:            "claude-sonnet-4-5",
+			content:          "",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     10,
 			completionTokens: 0,
 		},
 		{
-			name:    "whitespace_content",
-			model:   "claude-sonnet-4-5",
-			content: "   ",
-			toolCalls: []kiro.OpenAIToolCall{},
-			promptTokens: 10,
+			name:             "whitespace_content",
+			model:            "claude-sonnet-4-5",
+			content:          "   ",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     10,
 			completionTokens: 0,
 		},
 		{
-			name:    "zero_tokens",
-			model:   "claude-sonnet-4-5",
-			content: "test",
-			toolCalls: []kiro.OpenAIToolCall{},
-			promptTokens: 0,
+			name:             "zero_tokens",
+			model:            "claude-sonnet-4-5",
+			content:          "test",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     0,
 			completionTokens: 0,
 		},
 		{
-			name:    "large_token_count",
-			model:   "claude-sonnet-4-5",
-			content: "test",
-			toolCalls: []kiro.OpenAIToolCall{},
-			promptTokens: 1000000,
+			name:             "large_token_count",
+			model:            "claude-sonnet-4-5",
+			content:          "test",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     1000000,
 			completionTokens: 500000,
 		},
 		{
-			name:    "special_characters_content",
-			model:   "claude-sonnet-4-5",
-			content: "Hello 🌍 World! \n\t Test",
-			toolCalls: []kiro.OpenAIToolCall{},
-			promptTokens: 20,
+			name:             "special_characters_content",
+			model:            "claude-sonnet-4-5",
+			content:          "Hello 🌍 World! \n\t Test",
+			toolCalls:        []kiro.OpenAIToolCall{},
+			promptTokens:     20,
 			completionTokens: 10,
 		},
 	}
@@ -558,35 +635,35 @@ func TestBuildAnthropicMessagePayload_EdgeCases(t *testing.T) {
 func TestBuildAnthropicMessagePayload_ToolCallEdgeCases(t *testing.T) {
 	// Test edge cases for tool calls in kiro.BuildAnthropicMessagePayload
 	testCases := []struct {
-		name     string
+		name      string
 		toolCalls []kiro.OpenAIToolCall
 	}{
 		{
-			name:    "empty_tool_call_id",
+			name: "empty_tool_call_id",
 			toolCalls: []kiro.OpenAIToolCall{
 				{ID: "", Name: "test", Arguments: "{}"},
 			},
 		},
 		{
-			name:    "empty_tool_call_name",
+			name: "empty_tool_call_name",
 			toolCalls: []kiro.OpenAIToolCall{
 				{ID: "call_1", Name: "", Arguments: "{}"},
 			},
 		},
 		{
-			name:    "empty_tool_call_arguments",
+			name: "empty_tool_call_arguments",
 			toolCalls: []kiro.OpenAIToolCall{
 				{ID: "call_1", Name: "test", Arguments: ""},
 			},
 		},
 		{
-			name:    "malformed_tool_call_arguments",
+			name: "malformed_tool_call_arguments",
 			toolCalls: []kiro.OpenAIToolCall{
 				{ID: "call_1", Name: "test", Arguments: "{ invalid json }"},
 			},
 		},
 		{
-			name:    "null_tool_call_arguments",
+			name: "null_tool_call_arguments",
 			toolCalls: []kiro.OpenAIToolCall{
 				{ID: "call_1", Name: "test", Arguments: "null"},
 			},

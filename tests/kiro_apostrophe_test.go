@@ -9,10 +9,10 @@ import (
 
 func TestKiroApostropheHandling(t *testing.T) {
 	tests := []struct {
-		name           string
-		input          string
-		expectedText   string
-		shouldContain  []string
+		name             string
+		input            string
+		expectedText     string
+		shouldContain    []string
 		shouldNotContain []string
 	}{
 		{
@@ -178,7 +178,7 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 
 	// Test special symbols and punctuation that could cause truncation
 	specialSymbols := []struct {
-		name  string
+		name   string
 		symbol string
 	}{
 		{"Apostrophe", "'"},
@@ -229,59 +229,59 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 
 	// Test edge cases that could trigger truncation
 	edgeCases := []struct {
-		name  string
-		input string
+		name     string
+		input    string
 		expected string
 	}{
 		{
 			name:     "Multiple apostrophes in sequence",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Don't, won't, can't, shouldn't"}}}}`,
-			expected:  "Don't, won't, can't, shouldn't",
+			expected: "Don't, won't, can't, shouldn't",
 		},
 		{
 			name:     "Apostrophe at start of text",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "'Tis the season"}}}}`,
-			expected:  "'Tis the season",
+			expected: "'Tis the season",
 		},
 		{
 			name:     "Apostrophe at end of text",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "That's all folks'"}}}`,
-			expected:  "That's all folks'",
+			expected: "That's all folks'",
 		},
 		{
 			name:     "Mixed apostrophes and quotes",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "He said \"It's fine\" and \"don't worry\""}}}}`,
-			expected:  `He said "It's fine" and "don't worry"`,
+			expected: `He said "It's fine" and "don't worry"`,
 		},
 		{
 			name:     "Unicode with apostrophes",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Café's résumé isn't finished"}}}}`,
-			expected:  "Café's résumé isn't finished",
+			expected: "Café's résumé isn't finished",
 		},
 		{
 			name:     "Numbers and apostrophes",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Class of '99 and students' grades"}}}}`,
-			expected:  "Class of '99 and students' grades",
+			expected: "Class of '99 and students' grades",
 		},
 		{
 			name:     "Multiple consecutive apostrophes",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Rock 'n' roll is good"}}}}`,
-			expected:  "Rock 'n' roll is good",
+			expected: "Rock 'n' roll is good",
 		},
 		{
 			name:     "Apostrophe in technical terms",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Don't use eval() - it's dangerous"}}}}`,
-			expected:  "Don't use eval() - it's dangerous",
+			expected: "Don't use eval() - it's dangerous",
 		},
 		{
 			name:     "Apostrophe in code examples",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Use printf() not cout() for C++"}}}}`,
-			expected:  "Use printf() not cout() for C++",
+			expected: "Use printf() not cout() for C++",
 		},
 		{
 			name:     "Apostrophe in file paths",
 			input:    `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Check user's home directory"}}}}`,
-			expected:  "Check user's home directory",
+			expected: "Check user's home directory",
 		},
 	}
 
@@ -294,19 +294,4 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Helper function to check if a string contains a substring
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) >= len(substr) && containsSubstring(s, substr)))
-}
-
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

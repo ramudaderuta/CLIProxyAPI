@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +168,17 @@ func newTestAuth(token *authkiro.KiroTokenStorage, attrs map[string]string) *cli
 		CreatedAt:  time.Now(),
 		UpdatedAt:  time.Now(),
 	}
+}
+
+func containsString(s, substr string) bool {
+	if substr == "" {
+		return true
+	}
+	return strings.Contains(s, substr)
+}
+
+func containsSubstring(s, substr string) bool {
+	return containsString(s, substr)
 }
 
 // Deprecated: Use KiroTestFixtures instead
