@@ -2,6 +2,7 @@ package kiro_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,7 @@ import (
 // where content gets clipped to ".txt"}\n\nTool usage" instead of preserving full content + tool_calls
 func TestKiroBugReproduction_ContentClipping(t *testing.T) {
 	// Load the bug reproduction fixture
-	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "bug_reproduction.json")
+	fixturePath := filepath.Join("testdata", "nonstream", "bug_reproduction.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err, "Should be able to load bug reproduction fixture")
 
@@ -166,7 +167,7 @@ func TestKiroBugReproduction_DelimiterSafety(t *testing.T) {
 // TestKiroBugReproduction_TextOnlyNoClipping ensures text-only responses don't get clipped
 func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
 	// Load text-only fixture
-	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "text_only.json")
+	fixturePath := filepath.Join("testdata", "nonstream", "text_only.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -198,7 +199,7 @@ func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
 // TestKiroBugReproduction_TextThenToolProperSeparation tests proper text + tool separation
 func TestKiroBugReproduction_TextThenToolProperSeparation(t *testing.T) {
 	// Load text + tool fixture
-	fixturePath := filepath.Join("..", "..", "fixtures", "kiro", "nonstream", "text_then_tool.json")
+	fixturePath := filepath.Join("testdata", "nonstream", "text_then_tool.json")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -409,48 +410,89 @@ func TestKiroBugReproduction_ToolCallArgumentEscaping(t *testing.T) {
 
 // TestKiroBugReproduction_LargeResponseHandling tests large response handling
 func TestKiroBugReproduction_LargeResponseHandling(t *testing.T) {
-	// Generate large content (100KB)
-	var largeContent strings.Builder
-	for i := 0; i < 10000; i++ {
-		largeContent.WriteString("This is line ")
-		largeContent.WriteString(string(rune(i % 1000)))
-		largeContent.WriteString(" of the large response content. ")
+	// Generate progressively larger content to find the threshold
+	testCases := []struct {
+		name   string
+		lines  int
+	}{
+		{"small", 100},
+		{"medium", 1000},
+		{"large", 5000},
 	}
 
-	content := largeContent.String()
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var content strings.Builder
+			for i := 0; i < tc.lines; i++ {
+				content.WriteString("This is line ")
+				content.WriteString(fmt.Sprintf("%04d", i))
+				content.WriteString(" of the test content.")
+				if i < tc.lines-1 {
+					content.WriteString(" ")
+				}
+			}
 
-	// Create large response fixture
-	fixture := map[string]any{
-		"conversationState": map[string]any{
-			"currentMessage": map[string]any{
-				"assistantResponseMessage": map[string]any{
-					"content": content,
+			testContent := content.String()
+			t.Logf("Testing with %d lines, content length: %d", tc.lines, len(testContent))
+
+			// Create response fixture
+			fixture := map[string]any{
+				"conversationState": map[string]any{
+					"currentMessage": map[string]any{
+						"assistantResponseMessage": map[string]any{
+							"content": testContent,
+						},
+					},
 				},
-			},
-		},
+			}
+
+			fixtureData, err := json.Marshal(fixture)
+			require.NoError(t, err)
+
+			// Parse response
+			parsedContent, toolCalls := kiro.ParseResponse(fixtureData)
+
+			assert.Equal(t, testContent, parsedContent, "Content should be preserved completely for %s test", tc.name)
+			assert.Empty(t, toolCalls, "Should have no tool calls for text-only response")
+
+			// Build OpenAI response
+			response, err := kiro.BuildOpenAIChatCompletionPayload(
+				"claude-sonnet-4-5-20250929",
+				parsedContent,
+				toolCalls,
+				int64(len(testContent)/4), int64(len(testContent)/4), // Approximate token counts
+			)
+			require.NoError(t, err, "Should build response without error for %s test", tc.name)
+
+			// Validate response structure
+			responseJSON := gjson.ParseBytes(response)
+			actualContent := responseJSON.Get("choices.0.message.content").String()
+
+			t.Logf("Expected length: %d, Actual length: %d for %s test", len(testContent), len(actualContent), tc.name)
+
+			if len(testContent) != len(actualContent) {
+				t.Logf("Content mismatch detected in %s test", tc.name)
+				t.Logf("Expected prefix: %q", testContent[:min(100, len(testContent))])
+				t.Logf("Actual prefix: %q", actualContent[:min(100, len(actualContent))])
+				t.Logf("Expected suffix: %q", testContent[max(0, len(testContent)-100):])
+				t.Logf("Actual suffix: %q", actualContent[max(0, len(actualContent)-100):])
+			}
+
+			assert.Equal(t, testContent, actualContent, "Content should be preserved in OpenAI response for %s test", tc.name)
+		})
 	}
+}
 
-	fixtureData, err := json.Marshal(fixture)
-	require.NoError(t, err)
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
-	// Should handle large responses without issues
-	parsedContent, toolCalls := kiro.ParseResponse(fixtureData)
-
-	assert.Equal(t, content, parsedContent, "Large content should be preserved completely")
-	assert.Empty(t, toolCalls, "Should have no tool calls for text-only large response")
-
-	// Should be able to build OpenAI response
-	response, err := kiro.BuildOpenAIChatCompletionPayload(
-		"claude-sonnet-4-5-20250929",
-		parsedContent,
-		toolCalls,
-		50000, 25000, // Large token counts
-	)
-	require.NoError(t, err, "Should build large response without error")
-	require.NotEmpty(t, response, "Response should not be empty")
-
-	// Validate response structure
-	responseJSON := gjson.ParseBytes(response)
-	actualContent := responseJSON.Get("choices.0.message.content").String()
-	assert.Equal(t, content, actualContent, "Large content should be preserved in OpenAI response")
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

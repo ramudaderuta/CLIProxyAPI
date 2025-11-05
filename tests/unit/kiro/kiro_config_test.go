@@ -14,6 +14,7 @@ import (
 // TestKiroConfig_TokenFilePrecedence validates that explicitly configured
 // token files take precedence over auto-detected files.
 func TestKiroConfig_TokenFilePrecedence(t *testing.T) {
+	t.Parallel()
 	// Create temporary directory for test
 	tempDir := t.TempDir()
 

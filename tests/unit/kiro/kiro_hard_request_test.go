@@ -15,8 +15,9 @@ import (
 
 // TestKiroHardRequestParsing tests the Kiro response parsing using the complex hard request fixture
 func TestKiroHardRequestParsing(t *testing.T) {
+	t.Parallel()
 	// Read the hard request fixture
-	fixtureData, err := os.ReadFile("../../fixtures/test_hard_request.json")
+	fixtureData, err := os.ReadFile("testdata/nonstream/test_hard_request.json")
 	if err != nil {
 		t.Fatalf("Failed to read test_hard_request.json fixture: %v", err)
 	}
@@ -122,8 +123,9 @@ func TestKiroHardRequestParsing(t *testing.T) {
 
 // TestKiroHardRequestStreaming tests streaming behavior with the complex fixture
 func TestKiroHardRequestStreaming(t *testing.T) {
+	t.Parallel()
 	// Read the hard request fixture
-	fixtureData, err := os.ReadFile("../../fixtures/test_hard_request.json")
+	fixtureData, err := os.ReadFile("testdata/nonstream/test_hard_request.json")
 	if err != nil {
 		t.Fatalf("Failed to read test_hard_request.json fixture: %v", err)
 	}

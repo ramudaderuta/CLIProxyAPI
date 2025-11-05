@@ -12,7 +12,8 @@ import (
 
 // TestKiroExecutor_SSEFormatting_SimpleText tests that streaming responses are properly formatted as SSE events
 func TestKiroExecutor_SSEFormatting_SimpleText(t *testing.T) {
-	// This test should PASS with the corrected implementation
+	t.Parallel()
+	// This test should PASS with corrected implementation
 	// because Kiro now returns SSE-formatted events instead of raw JSON
 
 	// Build the chunks that Kiro now produces (SSE-FORMATTED - CORRECT)
@@ -107,7 +108,7 @@ func TestKiroExecutor_SSEFormatting_WithToolCalls(t *testing.T) {
 	// CRITICAL BUG FIX: Verify output_tokens is properly counted for tool calls
 	// message_start should have output_tokens: 0, but message_delta should have actual count
 	assert.Contains(t, currentOutputStr, `"output_tokens":0`, "message_start should have output_tokens: 0")
-	// Verify message_delta has non-zero output_tokens for tool calls
+	// Verify message_delta has non-zero output_tokens for tool calls (updated for new calculation)
 	assert.Contains(t, currentOutputStr, `"output_tokens":11`, "message_delta should have calculated output_tokens for tool calls")
 
 	// This test should now PASS because we've fixed the SSE formatting

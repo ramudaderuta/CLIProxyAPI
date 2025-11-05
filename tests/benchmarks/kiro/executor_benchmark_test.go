@@ -12,7 +12,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/shared/testutil"
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 func BenchmarkKiroExecutorExecute(b *testing.B) {

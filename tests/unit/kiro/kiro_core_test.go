@@ -22,6 +22,7 @@ import (
 
 // TestKiroParseResponse_EmptyInput tests edge cases for empty input
 func TestKiroParseResponse_EmptyInput(t *testing.T) {
+	t.Parallel()
 	content, toolCalls := kiro.ParseResponse([]byte{})
 	assert.Equal(t, "", content, "Empty input should return empty content")
 	assert.Empty(t, toolCalls, "Empty input should return no tool calls")
@@ -33,6 +34,7 @@ func TestKiroParseResponse_EmptyInput(t *testing.T) {
 
 // TestKiroParseResponse_InvalidJSON tests handling of invalid JSON input
 func TestKiroParseResponse_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	invalidInputs := []string{
 		"invalid json string",
 		"{ malformed json }",
@@ -58,6 +60,7 @@ func TestKiroParseResponse_InvalidJSON(t *testing.T) {
 
 // TestKiroParseResponse_ValidJSONNoContent tests JSON with no content field
 func TestKiroParseResponse_ValidJSONNoContent(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name     string
 		jsonData string
@@ -157,6 +160,7 @@ func TestKiroParseResponse_ContentExtraction(t *testing.T) {
 
 // TestKiroParseResponse_HistoryFallback tests fallback to conversation history
 func TestKiroParseResponse_HistoryFallback(t *testing.T) {
+	t.Parallel()
 	jsonData := `{
 		"conversationState": {
 			"history": [
@@ -178,6 +182,7 @@ func TestKiroParseResponse_HistoryFallback(t *testing.T) {
 
 // TestKiroBuildOpenAIChatCompletionPayload_ValidatesOutputFormat
 func TestKiroBuildOpenAIChatCompletionPayload_ValidatesOutputFormat(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name        string
 		model       string
@@ -274,7 +279,7 @@ func TestKiroBuildOpenAIChatCompletionPayload_ValidatesOutputFormat(t *testing.T
 // TestKiroStreaming_TextChunks tests streaming text content aggregation
 func TestKiroStreaming_TextChunks(t *testing.T) {
 	// Load streaming text chunks fixture
-	fixturePath := filepath.Join("../../fixtures/kiro/streaming", "text_chunks.ndjson")
+	fixturePath := filepath.Join("testdata", "streaming", "text_chunks.ndjson")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 
@@ -301,7 +306,7 @@ func TestKiroStreaming_TextChunks(t *testing.T) {
 // TestKiroStreaming_ToolInterleave tests streaming with interleaved text and tool calls
 func TestKiroStreaming_ToolInterleave(t *testing.T) {
 	// Load streaming tool interleave fixture
-	fixturePath := filepath.Join("../../fixtures/kiro/streaming", "tool_interleave.ndjson")
+	fixturePath := filepath.Join("testdata", "streaming", "tool_interleave.ndjson")
 	fixtureData, err := os.ReadFile(fixturePath)
 	require.NoError(t, err)
 

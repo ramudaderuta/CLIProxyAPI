@@ -1,0 +1,9 @@
+{
+  "conversationState": {
+    "currentMessage": {
+      "assistantResponseMessage": {
+        "content": "Hello world"
+      }
+    }
+  }
+}

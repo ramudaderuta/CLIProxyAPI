@@ -14,7 +14,7 @@ var update = flag.Bool("update", false, "update golden files")
 // AssertGoldenBytes compares bytes with golden file content or updates the golden file
 func AssertGoldenBytes(t *testing.T, name string, got []byte) {
 	t.Helper()
-	p := filepath.Join("fixtures", "golden", name+".golden")
+	p := filepath.Join("testdata", "golden", name+".golden")
 	if *update {
 		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
 		require.NoError(t, os.WriteFile(p, got, 0o644))

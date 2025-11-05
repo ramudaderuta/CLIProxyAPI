@@ -7,37 +7,46 @@ These rules apply to everything under the `tests/` directory. They do **not** re
 
 ---
 
+## Design Rationale (Short)
+
+- **Clarity & Speed**: Separate categories align with intent; default jobs stay fast.
+- **Stability**: `testdata/` and golden testing reduce flakiness; deterministic env/time/random.
+- **Scalability**: A single `shared/testutil` avoids copy‑paste while keeping domain data local.
+
+---
+
 ## Target Directory Layout
 
 ```
 tests/
 ├── unit/
 │   └── kiro/
-│       ├── config_test.go
-│       ├── core_test.go
-│       ├── executor_test.go
-│       ├── response_test.go
-│       ├── sse_formatting_test.go
-│       ├── translation_test.go
-│       ├── hard_request_test.go
+│       ├── kiro_config_test.go
+│       ├── kiro_core_test.go
+│       ├── kiro_executor_test.go
+│       ├── kiro_response_test.go
+│       ├── kiro_sse_formatting_test.go
+│       ├── kiro_translation_test.go
+│       ├── kiro_hard_request_test.go
 │       └── testdata/
 │           ├── nonstream/*.json
 │           ├── streaming/*.ndjson
-│           └── golden/*.golden
+│           ├── golden/*.golden
+│           └── errors/*.json
 ├── integration/
 │   └── kiro/
-│       ├── executor_integration_test.go   //go:build integration
-│       ├── sse_integration_test.go        //go:build integration
-│       ├── translation_integration_test.go//go:build integration
+│       ├── kiro_executor_integration_test.go   //go:build integration
+│       ├── kiro_sse_integration_test.go        //go:build integration
+│       ├── kiro_translation_integration_test.go//go:build integration
 │       └── testdata/ (mirrors the needed fixtures)
 ├── regression/
 │   └── kiro/
-│       ├── apostrophe_test.go
-│       ├── backward_compatibility_test.go
-│       ├── bug_regression_test.go
-│       ├── tool_result_bug_test.go
-│       ├── thinking_truncation_test.go
-│       └── fix_verification_test.go
+│       ├── kiro_apostrophe_test.go
+│       ├── kiro_backward_compatibility_test.go
+│       ├── kiro_bug_regression_test.go
+│       ├── kiro_tool_result_bug_test.go
+│       ├── kiro_thinking_truncation_test.go
+│       └── kiro_fix_verification_test.go
 ├── benchmarks/
 │   └── kiro/
 │       └── executor_benchmark_test.go
@@ -125,6 +134,13 @@ require.NoError(t, err)
 ```
 
 - Use `t.TempDir()` for ephemeral writes.
+
+### Testdata Directory Structure
+The `testdata/` directory organizes test fixtures by type:
+- **nonstream/**: Non-streaming request/response JSON files
+- **streaming/**: Streaming test data in NDJSON format
+- **golden/**: Golden reference files with `.golden` extension
+- **errors/**: Error case test data for negative testing
 
 ### Golden testing
 - Golden files live at `testdata/golden/*.golden`.
@@ -246,54 +262,6 @@ go test -tags=integration ./tests/integration/... -run 'SSE' -v
 
 ---
 
-## CI Recommendations
-
-- Default jobs:
-  - **unit+regression**: `-race -cover -v`
-  - Cache modules and test build cache.
-- Optional jobs:
-  - **integration**: behind tag/label or nightly workflow.
-  - **benchmarks**: manual trigger.
-- Artifacts:
-  - `-coverprofile=coverage.out`; publish HTML via `go tool cover -html=coverage.out -o coverage.html`.
-
----
-
-## Migration Plan (Zero-Risk First)
-
-**T01: Layout Only**
-1. Create the directory tree shown above.
-2. Move existing tests into the appropriate category folders (no code changes).
-3. Move all data under the closest `testdata/` folder and fix read paths.
-4. Ensure `go test ./tests/...` still passes.
-
-**T02: Utilities & Golden**
-1. Introduce `shared/testutil` with `golden.go`, `http.go`, `payloads.go`, `env.go`, `fs.go`.
-2. Convert stable-output tests (e.g., formatting/streaming/translation) to golden assertions.
-3. Add `t.Parallel()` where safe and split any shared-write tests.
-
-**T03: Templates & Examples**
-1. Add a canonical table-driven example in `tests/unit/kiro/...` that new tests can copy.
-2. For integration, prefer `httptest.Server` and minimize external dependencies.
-3. Document new cases in file headers (what is covered, what is out of scope).
-
----
-
-## Acceptance Checklist (for each PR)
-
-- [ ] Directory matches the target layout.
-- [ ] No test reads from paths **outside** `testdata/`.
-- [ ] Unit tests are parallelized (`t.Parallel()`) unless serialized for a reason.
-- [ ] Assertions use `require` for blockers and `assert` for value checks.
-- [ ] Integration tests are guarded by `//go:build integration`.
-- [ ] Golden helpers in place; `-update` works.
-- [ ] CI jobs and `README` snippets updated.
-- [ ] Benchmarks do not run in default pipelines.
-- [ ] No nondeterministic sleeps or timeouts without comments/justification.
-- [ ] Test names are grep-friendly and precise.
-
----
-
 ## Quick Command Reference
 
 ```
@@ -311,13 +279,10 @@ go test ./tests/unit/... -run 'SSE|Translation' -v -update
 
 # Benchmarks
 go test ./tests/benchmarks/... -bench . -benchmem -run ^$
+
+# Run specific test patterns
+go test ./tests/unit/kiro -run 'SSEFormatting' -v
+go test ./tests/unit/kiro -run 'Translation' -v
+go test ./tests/unit/kiro -run 'HardRequest' -v
+go test ./tests/regression/kiro -run 'BackwardCompatibility' -v
 ```
-
----
-
-## Design Rationale (Short)
-
-- **Clarity & Speed**: Separate categories align with intent; default jobs stay fast.
-- **Stability**: `testdata/` and golden testing reduce flakiness; deterministic env/time/random.
-- **Scalability**: A single `shared/testutil` avoids copy‑paste while keeping domain data local.
-- **Incrementality**: Three small PRs keep review load low and rollbacks simple.

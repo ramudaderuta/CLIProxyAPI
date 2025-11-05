@@ -6,11 +6,230 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
+
+// JSONProcessor provides a unified interface for JSON parsing operations
+type JSONProcessor interface {
+	IsValidJSON(data []byte) bool
+	ParseJSON(data []byte) gjson.Result
+	ExtractJSONObjects(line string) []string
+	SanitizeJSON(input string) string
+	NormalizeArguments(args string) string
+}
+
+// KiroJSONProcessor implements JSONProcessor with gjson-based parsing
+type KiroJSONProcessor struct{}
+
+// NewJSONProcessor creates a new JSONProcessor instance
+func NewJSONProcessor() JSONProcessor {
+	return &KiroJSONProcessor{}
+}
+
+// IsValidJSON checks if the provided data is valid JSON
+func (p *KiroJSONProcessor) IsValidJSON(data []byte) bool {
+	return gjson.ValidBytes(data)
+}
+
+// ParseJSON parses the provided data and returns a gjson.Result
+func (p *KiroJSONProcessor) ParseJSON(data []byte) gjson.Result {
+	return gjson.ParseBytes(data)
+}
+
+// ExtractJSONObjects extracts all valid JSON objects from a string
+func (p *KiroJSONProcessor) ExtractJSONObjects(line string) []string {
+	return extractJSONFromLine(line)
+}
+
+// SanitizeJSON sanitizes malformed JSON strings
+func (p *KiroJSONProcessor) SanitizeJSON(input string) string {
+	return sanitizeJSON(input)
+}
+
+// NormalizeArguments normalizes tool call arguments
+func (p *KiroJSONProcessor) NormalizeArguments(args string) string {
+	return normalizeArguments(args)
+}
+
+// ContentExtractor defines interface for extracting content from JSON structures
+type ContentExtractor interface {
+	ExtractTextFromContent(result gjson.Result) string
+	ExtractToolCallsFromContent(result gjson.Result) []OpenAIToolCall
+}
+
+// KiroContentExtractor implements ContentExtractor for Kiro responses
+type KiroContentExtractor struct{}
+
+// NewContentExtractor creates a new ContentExtractor instance
+func NewContentExtractor() ContentExtractor {
+	return &KiroContentExtractor{}
+}
+
+// ExtractTextFromContent extracts text content from nested JSON structures
+func (e *KiroContentExtractor) ExtractTextFromContent(result gjson.Result) string {
+	return collectTextFromContent(result)
+}
+
+// ExtractToolCallsFromContent extracts tool calls from nested JSON structures
+func (e *KiroContentExtractor) ExtractToolCallsFromContent(result gjson.Result) []OpenAIToolCall {
+	return extractToolCallsFromContent(result)
+}
+
+// ResponseParser defines the main parsing interface
+type ResponseParser interface {
+	ParseResponse(data []byte) (string, []OpenAIToolCall)
+}
+
+// KiroResponseParser implements ResponseParser with dependency injection
+type KiroResponseParser struct {
+	jsonProcessor  JSONProcessor
+	contentExtractor ContentExtractor
+}
+
+// NewResponseParser creates a new ResponseParser with injected dependencies
+func NewResponseParser(processor JSONProcessor, extractor ContentExtractor) ResponseParser {
+	if processor == nil {
+		processor = NewJSONProcessor()
+	}
+	if extractor == nil {
+		extractor = NewContentExtractor()
+	}
+	return &KiroResponseParser{
+		jsonProcessor:  processor,
+		contentExtractor: extractor,
+	}
+}
+
+// ParseResponse extracts assistant text and tool calls from a Kiro upstream payload.
+func (p *KiroResponseParser) ParseResponse(data []byte) (string, []OpenAIToolCall) {
+	if len(data) == 0 {
+		return "", nil
+	}
+
+	// Try to parse as JSON first
+	if p.jsonProcessor.IsValidJSON(data) {
+		return p.parseJSONResponse(data)
+	}
+
+	// If not valid JSON, try to parse as SSE stream
+	content, toolCalls := parseEventStream(string(data))
+
+	// If SSE parsing also returns empty content and we have non-empty input,
+	// return the input as-is (for plain text fallback)
+	if content == "" && len(data) > 0 {
+		content = p.handleMalformedInput(data)
+	}
+
+	return content, toolCalls
+}
+
+// parseJSONResponse handles parsing of valid JSON responses
+func (p *KiroResponseParser) parseJSONResponse(data []byte) (string, []OpenAIToolCall) {
+	root := p.jsonProcessor.ParseJSON(data)
+
+	// Extract content using strategy pattern
+	content := p.extractContentFromConversationState(root)
+
+	// If no content found, try fallback strategies
+	if strings.TrimSpace(content) == "" {
+		content = p.extractContentWithFallbacks(root)
+	}
+
+	// Extract tool calls
+	toolCalls := p.extractAllToolCalls(root)
+
+	return strings.TrimSpace(content), deduplicateToolCalls(toolCalls)
+}
+
+// extractContentFromConversationState extracts content from conversation state
+func (p *KiroResponseParser) extractContentFromConversationState(root gjson.Result) string {
+	var content string
+
+	// Try currentMessage first
+	if contentField := root.Get("conversationState.currentMessage.assistantResponseMessage.content"); contentField.Exists() {
+		content = contentField.String()
+	} else if history := root.Get("conversationState.history"); history.Exists() && history.IsArray() {
+		// Look for content in history if not in currentMessage
+		for i := len(history.Array()) - 1; i >= 0; i-- {
+			item := history.Array()[i]
+			if contentField := item.Get("assistantResponseMessage.content"); contentField.Exists() {
+				content = contentField.String()
+				break
+			}
+		}
+	}
+
+	return content
+}
+
+// extractContentWithFallbacks tries multiple fallback strategies for content extraction
+func (p *KiroResponseParser) extractContentWithFallbacks(root gjson.Result) string {
+	// Try Anthropic-style message bodies in order of preference
+	fallbackPaths := []string{"content", "message.content", "message"}
+
+	for _, path := range fallbackPaths {
+		if content := p.contentExtractor.ExtractTextFromContent(root.Get(path)); content != "" {
+			return content
+		}
+	}
+
+	return ""
+}
+
+// extractAllToolCalls extracts tool calls from all possible locations
+func (p *KiroResponseParser) extractAllToolCalls(root gjson.Result) []OpenAIToolCall {
+	var toolCalls []OpenAIToolCall
+
+	// Extract from conversationState
+	toolCalls = append(toolCalls, p.extractToolCallsFromConversationState(root)...)
+
+	// Extract from content structures
+	contentPaths := []string{"content", "message.content", "message"}
+	for _, path := range contentPaths {
+		toolCalls = append(toolCalls, p.contentExtractor.ExtractToolCallsFromContent(root.Get(path))...)
+	}
+
+	return toolCalls
+}
+
+// extractToolCallsFromConversationState extracts tool calls from conversation state
+func (p *KiroResponseParser) extractToolCallsFromConversationState(root gjson.Result) []OpenAIToolCall {
+	var toolCalls []OpenAIToolCall
+
+	// Check for toolUse at currentMessage level
+	toolUsePaths := []string{
+		"conversationState.currentMessage.toolUse",
+		"conversationState.currentMessage.assistantResponseMessage.toolUse",
+	}
+
+	for _, path := range toolUsePaths {
+		if toolUse := root.Get(path); toolUse.Exists() {
+			if toolUse.IsArray() {
+				toolCalls = append(toolCalls, extractToolCalls(toolUse.Array())...)
+			} else {
+				toolCalls = append(toolCalls, extractToolCalls([]gjson.Result{toolUse})...)
+			}
+			break // Found tool calls, no need to check other paths
+		}
+	}
+
+	return toolCalls
+}
+
+// handleMalformedInput processes input that isn't valid JSON
+func (p *KiroResponseParser) handleMalformedInput(data []byte) string {
+	inputStr := string(data)
+
+	// Check if the input looks like plain text (no JSON-like structures)
+	if !strings.Contains(inputStr, "{") && !strings.Contains(inputStr, "data:") {
+		return strings.TrimSpace(inputStr)
+	}
+
+	// For malformed JSON-like input, try to extract any plain text content
+	return extractPlainTextFromMalformedInput(inputStr)
+}
 
 // OpenAIToolCall represents a function/tool call in an OpenAI-compatible response.
 type OpenAIToolCall struct {
@@ -20,64 +239,10 @@ type OpenAIToolCall struct {
 }
 
 // ParseResponse extracts assistant text and tool calls from a Kiro upstream payload.
+// This function maintains backward compatibility by using default implementations.
 func ParseResponse(data []byte) (string, []OpenAIToolCall) {
-	if len(data) == 0 {
-		return "", nil
-	}
-	if gjson.ValidBytes(data) {
-		root := gjson.ParseBytes(data)
-
-		// Extract content from currentMessage
-		var content string
-		if contentField := root.Get("conversationState.currentMessage.assistantResponseMessage.content"); contentField.Exists() {
-			content = contentField.String()
-		} else if history := root.Get("conversationState.history"); history.Exists() && history.IsArray() {
-			// Look for content in history if not in currentMessage
-			for i := len(history.Array()) - 1; i >= 0; i-- {
-				item := history.Array()[i]
-				if contentField := item.Get("assistantResponseMessage.content"); contentField.Exists() {
-					content = contentField.String()
-					break
-				}
-			}
-		}
-
-		// Extract tool calls from currentMessage (check both locations)
-		var toolCalls []OpenAIToolCall
-		// Check for toolUse at currentMessage level
-		if toolUse := root.Get("conversationState.currentMessage.toolUse"); toolUse.Exists() {
-			if toolUse.IsArray() {
-				toolCalls = extractToolCalls(toolUse.Array())
-			} else {
-				toolCalls = extractToolCalls([]gjson.Result{toolUse})
-			}
-		} else if toolUse := root.Get("conversationState.currentMessage.assistantResponseMessage.toolUse"); toolUse.Exists() {
-			// Check for toolUse nested inside assistantResponseMessage
-			if toolUse.IsArray() {
-				toolCalls = extractToolCalls(toolUse.Array())
-			} else {
-				toolCalls = extractToolCalls([]gjson.Result{toolUse})
-			}
-		}
-
-		// Fallback to Anthropic-style message bodies when conversationState is absent.
-		if strings.TrimSpace(content) == "" {
-			if anthropic := collectTextFromContent(root.Get("content")); anthropic != "" {
-				content = anthropic
-			} else if anthropicMsg := collectTextFromContent(root.Get("message.content")); anthropicMsg != "" {
-				content = anthropicMsg
-			} else if message := collectTextFromContent(root.Get("message")); message != "" {
-				content = message
-			}
-		}
-
-		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("content"))...)
-		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message.content"))...)
-		toolCalls = append(toolCalls, extractToolCallsFromContent(root.Get("message"))...)
-
-		return strings.TrimSpace(content), deduplicateToolCalls(toolCalls)
-	}
-	return parseEventStream(string(data))
+	parser := NewResponseParser(nil, nil)
+	return parser.ParseResponse(data)
 }
 
 // extractToolCalls converts gjson toolUse objects into OpenAIToolCall structures
@@ -322,219 +487,516 @@ func BuildStreamingChunks(id, model string, created int64, content string, toolC
 }
 
 func parseEventStream(raw string) (string, []OpenAIToolCall) {
+	// Parse SSE stream properly, handling large JSON objects and thinking blocks
+	return parseSSEStreamWithThinkingSupport(raw)
+}
+
+// parseSSEStreamWithThinkingSupport handles SSE streams with proper buffer management
+// and thinking block support to prevent truncation
+
+// toolAccumulator represents a tool call being accumulated across multiple SSE events
+type toolAccumulator struct {
+	call      OpenAIToolCall
+	fragments strings.Builder
+	hasStream bool
+	finalized bool
+}
+
+// extractPlainTextFromMalformedInput extracts plain text from malformed JSON-like input
+func extractPlainTextFromMalformedInput(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+
+	// Remove surrounding braces if present
+	if strings.HasPrefix(input, "{") && strings.HasSuffix(input, "}") {
+		input = strings.TrimSpace(input[1 : len(input)-1])
+	}
+
+	// Split by common JSON separators and take the most text-like part
+	parts := strings.FieldsFunc(input, func(r rune) bool {
+		return r == ':' || r == ',' || r == '[' || r == ']' || r == '{' || r == '}'
+	})
+
+	// Find the longest part that looks like text
+	var bestPart string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		// Remove quotes if present
+		if strings.HasPrefix(part, `"`) && strings.HasSuffix(part, `"`) {
+			part = strings.TrimSpace(part[1 : len(part)-1])
+		}
+		if len(part) > len(bestPart) && len(part) > 1 {
+			bestPart = part
+		}
+	}
+
+	if bestPart != "" {
+		return bestPart
+	}
+
+	// Fallback: return the cleaned input
+	return input
+}
+
+// extractJSONFromLine extracts all JSON objects from a line that may contain
+// multiple JSON objects concatenated with control characters
+func extractJSONFromLine(line string) []string {
+	var jsonObjects []string
+	start := strings.Index(line, "{")
+
+	for start != -1 {
+		// Look for the matching closing brace, handling unescaped quotes
+		braceCount := 0
+		inString := false
+		escapeNext := false
+
+		for i := start; i < len(line); i++ {
+			char := rune(line[i])
+			if escapeNext {
+				escapeNext = false
+				continue
+			}
+
+			switch char {
+			case '\\':
+				if inString {
+					escapeNext = true
+				}
+			case '"':
+				inString = !inString
+			case '{':
+				if !inString {
+					braceCount++
+				}
+			case '}':
+				if !inString {
+					braceCount--
+					if braceCount == 0 {
+						candidate := line[start : i+1]
+						if gjson.Valid(candidate) {
+							jsonObjects = append(jsonObjects, candidate)
+						}
+						// Look for next JSON object
+						start = strings.Index(line[i+1:], "{")
+						if start != -1 {
+							start = i + 1 + start
+						}
+						break
+					}
+				}
+			}
+		}
+
+		if start == -1 || start >= len(line) {
+			break
+		}
+
+		// Prevent infinite loops by advancing start if we didn't find a complete JSON
+		if braceCount > 0 {
+			break // Incomplete JSON, exit loop
+		}
+	}
+
+	return jsonObjects
+}
+
+// SSEEventProcessor defines interface for processing SSE events
+type SSEEventProcessor interface {
+	ProcessEvent(eventType string, node gjson.Result, context *SSEProcessingContext)
+}
+
+// SSEProcessingContext holds the state and accumulators for SSE processing
+type SSEProcessingContext struct {
+	TextBuilder   strings.Builder
+	ToolOrder     []string
+	ToolByID      map[string]*toolAccumulator
+	ToolIndex     map[int]string
+	JSONProcessor JSONProcessor
+}
+
+// NewSSEProcessingContext creates a new SSE processing context
+func NewSSEProcessingContext(jsonProcessor JSONProcessor) *SSEProcessingContext {
+	if jsonProcessor == nil {
+		jsonProcessor = NewJSONProcessor()
+	}
+	return &SSEProcessingContext{
+		ToolOrder:     make([]string, 0),
+		ToolByID:      make(map[string]*toolAccumulator),
+		ToolIndex:     make(map[int]string),
+		JSONProcessor: jsonProcessor,
+	}
+}
+
+// KiroSSEEventProcessor implements SSEEventProcessor for Kiro-style SSE streams
+type KiroSSEEventProcessor struct{}
+
+// NewSSEEventProcessor creates a new SSEEventProcessor
+func NewSSEEventProcessor() SSEEventProcessor {
+	return &KiroSSEEventProcessor{}
+}
+
+// ProcessEvent processes a single SSE event based on its type
+func (p *KiroSSEEventProcessor) ProcessEvent(eventType string, node gjson.Result, context *SSEProcessingContext) {
+	switch eventType {
+	case "content_block_start":
+		p.handleContentBlockStart(node, context)
+	case "content_block_delta":
+		p.handleContentBlockDelta(node, context)
+	case "content_block_stop":
+		p.handleContentBlockStop(node, context)
+	case "message_start":
+		p.appendTextFromNode(node.Get("message"), context)
+	case "message_delta":
+		p.appendTextFromNode(node.Get("delta"), context)
+	case "message":
+		p.appendTextFromNode(node.Get("content"), context)
+		p.appendTextFromNode(node.Get("message"), context)
+	default:
+		p.handleDefaultEvent(node, context)
+	}
+}
+
+// handleContentBlockStart processes content_block_start events
+func (p *KiroSSEEventProcessor) handleContentBlockStart(node gjson.Result, context *SSEProcessingContext) {
+	block := node.Get("content_block")
+	if block.Exists() && block.Get("type").String() == "tool_use" {
+		p.handleToolUseStart(block, node, context)
+	} else {
+		p.appendTextFromNode(block, context)
+	}
+}
+
+// handleToolUseStart processes tool_use start events
+func (p *KiroSSEEventProcessor) handleToolUseStart(block, node gjson.Result, context *SSEProcessingContext) {
+	id := p.extractToolID(block)
+	name := block.Get("name").String()
+
+	if acc := context.ensureAccumulator(id, name); acc != nil {
+		if input := block.Get("input"); input.Exists() {
+			rawInput := strings.TrimSpace(input.Raw)
+			if rawInput != "" && rawInput != "null" && rawInput != "{}" {
+				acc.call.Arguments = rawInput
+			}
+		}
+		if idxVal := node.Get("index"); idxVal.Exists() {
+			context.ToolIndex[int(idxVal.Int())] = id
+		}
+	}
+}
+
+// extractToolID extracts tool ID from various possible fields
+func (p *KiroSSEEventProcessor) extractToolID(block gjson.Result) string {
+	if id := block.Get("id").String(); id != "" {
+		return id
+	}
+	return block.Get("toolUseId").String()
+}
+
+// handleContentBlockDelta processes content_block_delta events
+func (p *KiroSSEEventProcessor) handleContentBlockDelta(node gjson.Result, context *SSEProcessingContext) {
+	delta := node.Get("delta")
+	deltaType := delta.Get("type").String()
+
+	switch deltaType {
+	case "text_delta":
+		if text := delta.Get("text"); text.Exists() {
+			p.appendTextFromNode(text, context)
+		}
+	case "input_json_delta":
+		p.handleInputJSONDelta(node, context)
+	default:
+		// Generic delta handling for backward compatibility
+		p.appendTextFromNode(delta, context)
+		if partial := node.Get("delta.partial_json").String(); partial != "" {
+			p.handlePartialJSON(node, partial, context)
+		}
+	}
+}
+
+// handleInputJSONDelta processes input_json_delta events
+func (p *KiroSSEEventProcessor) handleInputJSONDelta(node gjson.Result, context *SSEProcessingContext) {
+	if partial := node.Get("delta.partial_json").String(); partial != "" {
+		p.handlePartialJSON(node, partial, context)
+	}
+}
+
+// handlePartialJSON processes partial JSON data
+func (p *KiroSSEEventProcessor) handlePartialJSON(node gjson.Result, partial string, context *SSEProcessingContext) {
+	idxVal := int(node.Get("index").Int())
+	if id := context.ToolIndex[idxVal]; id != "" {
+		if acc := context.ensureAccumulator(id, ""); acc != nil {
+			acc.fragments.WriteString(partial)
+			acc.hasStream = true
+		}
+	}
+}
+
+// handleContentBlockStop processes content_block_stop events
+func (p *KiroSSEEventProcessor) handleContentBlockStop(node gjson.Result, context *SSEProcessingContext) {
+	idxVal := int(node.Get("index").Int())
+	if id := context.ToolIndex[idxVal]; id != "" {
+		context.finalizeToolCall(id)
+	}
+}
+
+// handleDefaultEvent handles unknown event types
+func (p *KiroSSEEventProcessor) handleDefaultEvent(node gjson.Result, context *SSEProcessingContext) {
+	if node.Get("followupPrompt").Bool() {
+		return
+	}
+
+	if name := node.Get("name").String(); name != "" {
+		p.handleLegacyToolCall(node, context)
+	} else {
+		p.appendTextFromNode(node.Get("content"), context)
+		p.appendTextFromNode(node.Get("delta"), context)
+		p.appendTextFromNode(node.Get("message"), context)
+	}
+}
+
+// handleLegacyToolCall processes legacy tool call events
+func (p *KiroSSEEventProcessor) handleLegacyToolCall(node gjson.Result, context *SSEProcessingContext) {
+	name := node.Get("name").String()
+	id := p.extractLegacyToolID(node)
+
+	if acc := context.ensureAccumulator(id, name); acc != nil {
+		if input := node.Get("input"); input.Exists() {
+			rawInput := strings.TrimSpace(input.Raw)
+			if rawInput != "" && rawInput != "null" {
+				acc.fragments.WriteString(rawInput)
+				acc.hasStream = true
+			}
+		}
+		if node.Get("stop").Bool() {
+			context.finalizeToolCall(id)
+		}
+	}
+}
+
+// extractLegacyToolID extracts tool ID from legacy event formats
+func (p *KiroSSEEventProcessor) extractLegacyToolID(node gjson.Result) string {
+	if id := node.Get("toolUseId").String(); id != "" {
+		return id
+	}
+	return node.Get("tool_use_id").String()
+}
+
+// appendTextFromNode extracts and appends text content from a JSON node
+func (p *KiroSSEEventProcessor) appendTextFromNode(value gjson.Result, context *SSEProcessingContext) {
+	if !value.Exists() {
+		return
+	}
+
+	var visit func(gjson.Result)
+	visit = func(v gjson.Result) {
+		if !v.Exists() {
+			return
+		}
+		if v.IsArray() {
+			for _, item := range v.Array() {
+				visit(item)
+			}
+			return
+		}
+		if v.IsObject() {
+			if text := v.Get("text"); text.Exists() {
+				visit(text)
+			}
+			if nested := v.Get("content"); nested.Exists() {
+				visit(nested)
+			}
+			return
+		}
+		text := v.String()
+		if text == "" {
+			return
+		}
+		decoded := strings.ReplaceAll(text, `\n`, "\n")
+		context.TextBuilder.WriteString(decoded)
+	}
+
+	visit(value)
+}
+
+// ensureAccumulator ensures a tool accumulator exists for the given ID
+func (c *SSEProcessingContext) ensureAccumulator(id, name string) *toolAccumulator {
+	if id == "" {
+		return nil
+	}
+	if acc, ok := c.ToolByID[id]; ok {
+		if acc.call.Name == "" && name != "" {
+			acc.call.Name = name
+		}
+		return acc
+	}
+	acc := &toolAccumulator{call: OpenAIToolCall{ID: id, Name: name}}
+	c.ToolByID[id] = acc
+	c.ToolOrder = append(c.ToolOrder, id)
+	return acc
+}
+
+// finalizeToolCall finalizes a tool call with proper argument normalization
+func (c *SSEProcessingContext) finalizeToolCall(id string) {
+	if id == "" {
+		return
+	}
+	acc, ok := c.ToolByID[id]
+	if !ok || acc.finalized {
+		return
+	}
+
+	rawArgs := strings.TrimSpace(acc.call.Arguments)
+	if acc.hasStream {
+		rawArgs = strings.TrimSpace(acc.fragments.String())
+	}
+	if rawArgs != "" {
+		acc.call.Arguments = c.JSONProcessor.NormalizeArguments(rawArgs)
+	} else {
+		acc.call.Arguments = ""
+	}
+	acc.finalized = true
+}
+
+// SSEStreamParser defines interface for parsing SSE streams
+type SSEStreamParser interface {
+	ParseStream(raw string) (string, []OpenAIToolCall)
+}
+
+// KiroSSEStreamParser implements SSEStreamParser for Kiro-style streams
+type KiroSSEStreamParser struct {
+	eventProcessor SSEEventProcessor
+	jsonProcessor  JSONProcessor
+}
+
+// NewSSEStreamParser creates a new SSEStreamParser with injected dependencies
+func NewSSEStreamParser(eventProcessor SSEEventProcessor, jsonProcessor JSONProcessor) SSEStreamParser {
+	if eventProcessor == nil {
+		eventProcessor = NewSSEEventProcessor()
+	}
+	if jsonProcessor == nil {
+		jsonProcessor = NewJSONProcessor()
+	}
+	return &KiroSSEStreamParser{
+		eventProcessor: eventProcessor,
+		jsonProcessor:  jsonProcessor,
+	}
+}
+
+// ParseStream parses an SSE stream and returns content and tool calls
+func (p *KiroSSEStreamParser) ParseStream(raw string) (string, []OpenAIToolCall) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", nil
 	}
 
-	type toolAccumulator struct {
-		call      OpenAIToolCall
-		fragments strings.Builder
-		hasStream bool
-		finalized bool
-	}
+	// Create processing context
+	context := NewSSEProcessingContext(p.jsonProcessor)
 
-	textBuilder := strings.Builder{}
-	toolOrder := make([]string, 0)
-	toolByID := make(map[string]*toolAccumulator)
-	toolIndex := make(map[int]string)
+	// Parse SSE lines
+	p.parseSSELines(raw, context)
 
-	ensureAccumulator := func(id, name string) *toolAccumulator {
-		if id == "" {
-			return nil
-		}
-		if acc, ok := toolByID[id]; ok {
-			if acc.call.Name == "" && name != "" {
-				acc.call.Name = name
-			}
-			return acc
-		}
-		acc := &toolAccumulator{call: OpenAIToolCall{ID: id, Name: name}}
-		toolByID[id] = acc
-		toolOrder = append(toolOrder, id)
-		return acc
-	}
+	// Finalize all pending tool calls
+	p.finalizeAllToolCalls(context)
 
-	appendText := func(value gjson.Result) {
-		if !value.Exists() {
-			return
-		}
+	// Extract results
+	content := strings.TrimSpace(context.TextBuilder.String())
+	toolCalls := p.extractToolCalls(context)
 
-		var visit func(gjson.Result)
-		visit = func(v gjson.Result) {
-			if !v.Exists() {
-				return
-			}
-			if v.IsArray() {
-				for _, item := range v.Array() {
-					visit(item)
-				}
-				return
-			}
-			if v.IsObject() {
-				if text := v.Get("text"); text.Exists() {
-					visit(text)
-				}
-				if nested := v.Get("content"); nested.Exists() {
-					visit(nested)
-				}
-				return
-			}
-			text := v.String()
-			if text == "" {
-				return
-			}
-			decoded := strings.ReplaceAll(text, `\n`, "\n")
-			textBuilder.WriteString(decoded)
-		}
-
-		visit(value)
-	}
-
-	finalize := func(id string) {
-		if id == "" {
-			return
-		}
-		acc, ok := toolByID[id]
-		if !ok || acc.finalized {
-			return
-		}
-
-		rawArgs := strings.TrimSpace(acc.call.Arguments)
-		if acc.hasStream {
-			rawArgs = strings.TrimSpace(acc.fragments.String())
-		}
-		if rawArgs != "" {
-			if normalized := normalizeArguments(rawArgs); normalized != "" {
-				acc.call.Arguments = normalized
-			} else {
-				acc.call.Arguments = rawArgs
-			}
-		} else {
-			acc.call.Arguments = ""
-		}
-		acc.finalized = true
-	}
-
-	remaining := raw
-	for len(remaining) > 0 {
-		idx := strings.Index(remaining, "{")
-		if idx < 0 {
-			break
-		}
-		segment := remaining[idx:]
-		event := firstValidJSON(segment)
-		if len(event) == 0 {
-			_, size := utf8.DecodeRuneInString(remaining)
-			if size <= 0 {
-				break
-			}
-			remaining = remaining[size:]
-			continue
-		}
-
-		node := gjson.ParseBytes(event)
-		eventType := node.Get("type").String()
-
-		switch eventType {
-		case "content_block_start":
-			block := node.Get("content_block")
-			if block.Exists() && block.Get("type").String() == "tool_use" {
-				id := block.Get("id").String()
-				if id == "" {
-					id = block.Get("toolUseId").String()
-				}
-				name := block.Get("name").String()
-				if acc := ensureAccumulator(id, name); acc != nil {
-					if input := block.Get("input"); input.Exists() {
-						rawInput := strings.TrimSpace(input.Raw)
-						if rawInput != "" && rawInput != "null" && rawInput != "{}" {
-							acc.call.Arguments = rawInput
-						}
-					}
-					if idxVal := node.Get("index"); idxVal.Exists() {
-						toolIndex[int(idxVal.Int())] = id
-					}
-				}
-			} else {
-				appendText(block)
-			}
-		case "content_block_delta":
-			appendText(node.Get("delta"))
-			if partial := node.Get("delta.partial_json").String(); partial != "" {
-				idxVal := int(node.Get("index").Int())
-				if id := toolIndex[idxVal]; id != "" {
-					if acc := ensureAccumulator(id, ""); acc != nil {
-						acc.fragments.WriteString(partial)
-						acc.hasStream = true
-					}
-				}
-			}
-		case "content_block_stop":
-			idxVal := int(node.Get("index").Int())
-			if id := toolIndex[idxVal]; id != "" {
-				finalize(id)
-			}
-		case "message_start":
-			appendText(node.Get("message"))
-		case "message_delta":
-			appendText(node.Get("delta"))
-		case "message":
-			appendText(node.Get("content"))
-			appendText(node.Get("message"))
-		default:
-			if node.Get("followupPrompt").Bool() {
-				break
-			}
-
-			if name := node.Get("name").String(); name != "" {
-				id := node.Get("toolUseId").String()
-				if id == "" {
-					id = node.Get("tool_use_id").String()
-				}
-				if acc := ensureAccumulator(id, name); acc != nil {
-					if input := node.Get("input"); input.Exists() {
-						rawInput := strings.TrimSpace(input.Raw)
-						if rawInput != "" && rawInput != "null" {
-							acc.fragments.WriteString(rawInput)
-							acc.hasStream = true
-						}
-					}
-					if node.Get("stop").Bool() {
-						finalize(id)
-					}
-				}
-			} else {
-				appendText(node.Get("content"))
-				appendText(node.Get("delta"))
-				appendText(node.Get("message"))
-			}
-		}
-
-		remaining = segment[len(event):]
-	}
-
-	for _, id := range toolOrder {
-		finalize(id)
-	}
-
-	toolCalls := make([]OpenAIToolCall, 0, len(toolOrder))
-	for _, id := range toolOrder {
-		if acc, ok := toolByID[id]; ok && acc.finalized {
-			toolCalls = append(toolCalls, acc.call)
-		}
-	}
-
+	// Parse bracket-style tool calls as fallback
 	bracketCalls := parseBracketToolCalls(raw)
 	if len(bracketCalls) > 0 {
 		toolCalls = append(toolCalls, bracketCalls...)
 	}
 
-	content := strings.TrimSpace(textBuilder.String())
-	if content == "" {
-		content = strings.TrimSpace(raw)
-	}
 	return content, deduplicateToolCalls(toolCalls)
+}
+
+// parseSSELines processes individual SSE lines
+func (p *KiroSSEStreamParser) parseSSELines(raw string, context *SSEProcessingContext) {
+	lines := strings.Split(raw, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		// Clean SSE prefix
+		cleanLine := p.cleanSSELine(line)
+		if cleanLine == "" {
+			continue
+		}
+
+		// Process the line
+		p.processSSELine(cleanLine, context)
+	}
+}
+
+// cleanSSELine removes SSE prefixes from a line
+func (p *KiroSSEStreamParser) cleanSSELine(line string) string {
+	// Handle SSE "data: " prefix
+	if strings.HasPrefix(line, "data: ") {
+		line = strings.TrimPrefix(line, "data: ")
+		return strings.TrimSpace(line)
+	}
+	if strings.HasPrefix(line, "data:") {
+		line = strings.TrimPrefix(line, "data:")
+		return strings.TrimSpace(line)
+	}
+	return line
+}
+
+// processSSELine processes a single SSE line
+func (p *KiroSSEStreamParser) processSSELine(line string, context *SSEProcessingContext) {
+	// Handle malformed data - extract JSON from malformed lines
+	if !p.jsonProcessor.IsValidJSON([]byte(line)) {
+		p.processMalformedLine(line, context)
+		return
+	}
+
+	// Process valid JSON line
+	node := p.jsonProcessor.ParseJSON([]byte(line))
+	eventType := node.Get("type").String()
+	p.eventProcessor.ProcessEvent(eventType, node, context)
+}
+
+// processMalformedLine handles lines that contain malformed JSON
+func (p *KiroSSEStreamParser) processMalformedLine(line string, context *SSEProcessingContext) {
+	jsonObjects := p.jsonProcessor.ExtractJSONObjects(line)
+	for _, jsonObj := range jsonObjects {
+		if p.jsonProcessor.IsValidJSON([]byte(jsonObj)) {
+			node := p.jsonProcessor.ParseJSON([]byte(jsonObj))
+			eventType := node.Get("type").String()
+			p.eventProcessor.ProcessEvent(eventType, node, context)
+		}
+	}
+}
+
+// finalizeAllToolCalls finalizes all accumulated tool calls
+func (p *KiroSSEStreamParser) finalizeAllToolCalls(context *SSEProcessingContext) {
+	for _, id := range context.ToolOrder {
+		context.finalizeToolCall(id)
+	}
+}
+
+// extractToolCalls extracts finalized tool calls from context
+func (p *KiroSSEStreamParser) extractToolCalls(context *SSEProcessingContext) []OpenAIToolCall {
+	toolCalls := make([]OpenAIToolCall, 0, len(context.ToolOrder))
+	for _, id := range context.ToolOrder {
+		if acc, ok := context.ToolByID[id]; ok && acc.finalized {
+			toolCalls = append(toolCalls, acc.call)
+		}
+	}
+	return toolCalls
+}
+
+// parseSSEStreamWithThinkingSupport parses SSE streams with thinking support
+// This function maintains backward compatibility by using default implementations
+func parseSSEStreamWithThinkingSupport(raw string) (string, []OpenAIToolCall) {
+	parser := NewSSEStreamParser(nil, nil)
+	return parser.ParseStream(raw)
 }
 
 func parseBracketToolCalls(raw string) []OpenAIToolCall {

@@ -12,6 +12,7 @@ import (
 )
 
 func TestParseResponseFromJSON(t *testing.T) {
+	t.Parallel()
 	body := []byte(`{
         "conversationState": {
             "currentMessage": {

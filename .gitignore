@@ -117,9 +117,6 @@ archived/
 # Documentation
 docs/*
 !docs/kiro-token-migration.md
-AGENTS.md
-CLAUDE.md
-GEMINI.md
 
 # OpenSpec working directory
 # openspec/

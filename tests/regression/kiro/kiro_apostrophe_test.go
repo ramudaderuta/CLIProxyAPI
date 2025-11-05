@@ -220,7 +220,18 @@ func TestSpecialCharacterPreservation(t *testing.T) {
 
 	for _, testCase := range specialSymbols {
 		t.Run("Symbol_Preserve_"+testCase.name, func(t *testing.T) {
-			input := `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Test symbol ` + testCase.symbol + ` here"}}}}`
+			// Properly escape symbols for JSON to avoid parsing issues
+			var escapedSymbol string
+			switch testCase.symbol {
+			case `"`:
+				escapedSymbol = `\"`
+			case `\`:
+				escapedSymbol = `\\`
+			default:
+				escapedSymbol = testCase.symbol
+			}
+
+			input := `{"conversationState": {"currentMessage": {"assistantResponseMessage": {"content": "Test symbol ` + escapedSymbol + ` here"}}}}`
 			content, _ := kiro.ParseResponse([]byte(input))
 
 			if !testutil.ContainsString(content, testCase.symbol) {
