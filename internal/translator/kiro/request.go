@@ -175,10 +175,10 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 				resultContent := extractNestedContent(part.Get("content"))
 				// Remove incorrect fallback to non-existent "text" field
 				// Tool results use content field, not text field
-				toolUseId := firstString(
+				toolUseId := SanitizeToolCallID(firstString(
 					part.Get("tool_use_id").String(),
 					part.Get("tool_useId").String(),
-				)
+				))
 				// Always create tool result entry, even with empty content
 				toolResults = append(toolResults, map[string]any{
 					"content": []map[string]string{{"text": resultContent}},
@@ -188,7 +188,7 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 			case "tool_use":
 				toolUses = append(toolUses, map[string]any{
 					"name":      part.Get("name").String(),
-					"toolUseId": firstString(part.Get("id").String(), part.Get("tool_use_id").String()),
+					"toolUseId": SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String())),
 					"input":     parseJSONSafely(part.Get("input"), part.Get("arguments")),
 				})
 			case "image", "input_image":
@@ -219,7 +219,7 @@ func extractAssistantMessage(msg gjson.Result) (string, []map[string]any) {
 			case "tool_use":
 				toolUses = append(toolUses, map[string]any{
 					"name":      part.Get("name").String(),
-					"toolUseId": firstString(part.Get("id").String(), part.Get("tool_use_id").String()),
+					"toolUseId": SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String())),
 					"input":     parseJSONSafely(part.Get("input"), part.Get("arguments")),
 				})
 			}
@@ -335,4 +335,32 @@ func firstString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// ValidateToolCallID checks if a tool_call_id is in a valid format
+// Valid formats should not contain colons or triple-asterisk patterns
+func ValidateToolCallID(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return false
+	}
+	// Reject IDs with colons (like "***.TodoWrite:3")
+	if strings.Contains(trimmed, ":") {
+		return false
+	}
+	// Reject IDs with triple-asterisk patterns
+	if strings.Contains(trimmed, "***") {
+		return false
+	}
+	return true
+}
+
+// SanitizeToolCallID ensures a tool_call_id is valid
+// If invalid, generates a new valid UUID; otherwise returns the original
+func SanitizeToolCallID(id string) string {
+	if ValidateToolCallID(id) {
+		return id
+	}
+	// Generate a new valid UUID for invalid IDs
+	return "call_" + uuid.New().String()
 }

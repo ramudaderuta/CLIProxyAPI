@@ -399,6 +399,64 @@ go test ./tests/regression/kiro -run 'ThinkingTruncation' -v
 
 The following changes have been implemented to improve test coverage and reliability:
 
+### **Tool Call ID Sanitization (TDD Implementation)**
+- Added comprehensive tool_call_id validation and sanitization tests in `tests/unit/kiro/kiro_tool_call_id_test.go`
+- **Problem Solved**: Prevents "Unexpected tool_call_id returns" errors from upstream LLM caused by malformed Claude Code tool IDs like `"***.TodoWrite:3"`, `"***.Edit:6"`, `"***.Bash:8"`
+- **Solution**: Validates and sanitizes all tool_call_id values before sending to upstream systems
+- **Test Coverage**:
+  - **Validation Tests**: 11 test cases covering valid UUID formats, OpenAI tool formats, and invalid patterns (colons, triple-asterisks)
+  - **Sanitization Tests**: 8 test cases ensuring invalid IDs are replaced with valid UUIDs while preserving valid formats
+  - **Integration Tests**: 3 test cases verifying real-world usage with mixed valid/invalid inputs
+  - **Performance Tests**: Ensures fast processing of valid IDs (no unnecessary generation)
+  - **Uniqueness Tests**: Verifies generated UUIDs are unique across multiple calls
+
+**Implementation Details**:
+```go
+// ValidateToolCallID checks if a tool_call_id is in a valid format
+func ValidateToolCallID(id string) bool {
+    trimmed := strings.TrimSpace(id)
+    if trimmed == "" {
+        return false
+    }
+    // Reject IDs with colons (like "***.TodoWrite:3")
+    if strings.Contains(trimmed, ":") {
+        return false
+    }
+    // Reject IDs with triple-asterisk patterns
+    if strings.Contains(trimmed, "***") {
+        return false
+    }
+    return true
+}
+
+// SanitizeToolCallID ensures a tool_call_id is valid
+func SanitizeToolCallID(id string) string {
+    if ValidateToolCallID(id) {
+        return id
+    }
+    // Generate a new valid UUID for invalid IDs
+    return "call_" + uuid.New().String()
+}
+```
+
+**Integration Points**:
+- User message tool results sanitization (line 178 in request.go)
+- User message tool uses sanitization (line 191 in request.go)
+- Assistant message tool uses sanitization (line 222 in request.go)
+
+**Test Execution**:
+```bash
+# Run tool_call_id specific tests
+go test ./tests/unit/kiro -run 'ToolCallID' -v
+
+# All tool_call_id tests passing
+PASS: TestValidateToolCallID (0.00s)
+PASS: TestSanitizeToolCallID (0.00s)
+PASS: TestSanitizeToolCallIDUniqueness (0.00s)
+PASS: TestSanitizeToolCallIDPerformance (0.00s)
+PASS: TestToolCallIDIntegration (0.00s)
+```
+
 ### **SSE Buffer Safety & Large Content Handling**
 - Added comprehensive buffer limit tests in `tests/regression/kiro/kiro_sse_buffer_test.go`
 - Verified all SSE streaming implementations use 20MB buffers (326x larger than default 64KB)
