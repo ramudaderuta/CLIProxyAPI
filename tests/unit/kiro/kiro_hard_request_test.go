@@ -2,12 +2,12 @@ package kiro_test
 
 import (
 	"encoding/json"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
@@ -17,10 +17,7 @@ import (
 func TestKiroHardRequestParsing(t *testing.T) {
 	t.Parallel()
 	// Read the hard request fixture
-	fixtureData, err := os.ReadFile("testdata/nonstream/test_hard_request.json")
-	if err != nil {
-		t.Fatalf("Failed to read test_hard_request.json fixture: %v", err)
-	}
+	fixtureData := testutil.LoadTestData(t, "nonstream/test_hard_request.json")
 
 	// Parse the fixture to understand the request structure
 	var request map[string]any
@@ -125,10 +122,7 @@ func TestKiroHardRequestParsing(t *testing.T) {
 func TestKiroHardRequestStreaming(t *testing.T) {
 	t.Parallel()
 	// Read the hard request fixture
-	fixtureData, err := os.ReadFile("testdata/nonstream/test_hard_request.json")
-	if err != nil {
-		t.Fatalf("Failed to read test_hard_request.json fixture: %v", err)
-	}
+	fixtureData := testutil.LoadTestData(t, "nonstream/test_hard_request.json")
 
 	// Parse the fixture
 	var request map[string]any

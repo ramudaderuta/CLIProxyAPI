@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -118,12 +122,40 @@ func (f *KiroTestFixtures) AnthropicChatPayload(t testing.TB, messages []map[str
 
 // Common test data
 var (
-	// NativeTokenFilePath is the path to the native Kiro token file (without "type": "kiro")
-	NativeTokenFilePath = "/home/build/code/CLIProxyAPI/tmp/kiro-test/kiro-auth-token.json"
-
-	// EnhancedTokenFilePath is the path to the enhanced Kiro token file (with "type": "kiro")
-	EnhancedTokenFilePath = "/home/build/.cli-proxy-api/kiro-auth-token.json"
+	// NativeTokenFilePath is dynamically generated for each test
+	// Use a function to get the path to avoid hardcoding
+	nativeTokenFilePath string
+	enhancedTokenFilePath string
 )
+
+// CreateTestTokenFile creates a test Kiro token file in the specified directory
+func CreateTestTokenFile(t *testing.T, dir string, withType bool) string {
+	t.Helper()
+
+	tokenPath := filepath.Join(dir, "kiro-auth-token.json")
+
+	// Create token data
+	tokenData := map[string]any{
+		"accessToken":  "test-access-token",
+		"refreshToken": "test-refresh-token",
+		"profileArn":   "arn:aws:codewhisperer:us-west-2:123456789012:profile/test",
+		"expiresAt":    time.Now().Add(30 * time.Minute).Format(time.RFC3339),
+		"authMethod":   "social",
+		"provider":     "Github",
+	}
+
+	if withType {
+		tokenData["type"] = "kiro"
+	}
+
+	tokenJSON, err := json.Marshal(tokenData)
+	require.NoError(t, err, "Failed to marshal token data")
+
+	err = os.WriteFile(tokenPath, tokenJSON, 0644)
+	require.NoError(t, err, "Failed to write token file")
+
+	return tokenPath
+}
 
 // Deprecated: Use KiroTestFixtures instead
 type roundTripperFunc func(*http.Request) (*http.Response, error)

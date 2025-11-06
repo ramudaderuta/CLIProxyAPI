@@ -1,9 +1,1 @@
-{
-  "conversationState": {
-    "currentMessage": {
-      "assistantResponseMessage": {
-        "content": "Hello world"
-      }
-    }
-  }
-}
+../../../../shared/testdata/nonstream/text_only.json

@@ -2,10 +2,9 @@ package kiro_test
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
@@ -18,25 +17,8 @@ func TestKiroConfig_TokenFilePrecedence(t *testing.T) {
 	// Create temporary directory for test
 	tempDir := t.TempDir()
 
-	// Copy the native token file to temp directory (auto-detected location)
-	nativeTokenPath := filepath.Join(tempDir, "kiro-auth-token.json")
-	nativeTokenContent, err := os.ReadFile("/home/build/code/CLIProxyAPI/tmp/kiro-test/kiro-auth-token.json")
-	if err != nil {
-		t.Fatalf("Failed to read native token file: %v", err)
-	}
-	if err := os.WriteFile(nativeTokenPath, nativeTokenContent, 0644); err != nil {
-		t.Fatalf("Failed to write native token file: %v", err)
-	}
-
-	// Create a different token file for explicit configuration
-	explicitTokenPath := filepath.Join(tempDir, "explicit-kiro-token.json")
-	explicitTokenContent, err := os.ReadFile("/home/build/.cli-proxy-api/kiro-auth-token.json")
-	if err != nil {
-		t.Fatalf("Failed to read enhanced token file: %v", err)
-	}
-	if err := os.WriteFile(explicitTokenPath, explicitTokenContent, 0644); err != nil {
-		t.Fatalf("Failed to write explicit token file: %v", err)
-	}
+	// Create a token file for explicit configuration with type field
+	explicitTokenPath := testutil.CreateTestTokenFile(t, tempDir, true)
 
 	// Create configuration with explicit token file path
 	cfg := &config.Config{
@@ -88,15 +70,8 @@ func TestKiroConfig_NativeTokenEnhancement(t *testing.T) {
 	// Create temporary directory for test
 	tempDir := t.TempDir()
 
-	// Copy the native token file (without type field) to temp directory
-	nativeTokenPath := filepath.Join(tempDir, "kiro-auth-token.json")
-	nativeTokenContent, err := os.ReadFile("/home/build/code/CLIProxyAPI/tmp/kiro-test/kiro-auth-token.json")
-	if err != nil {
-		t.Fatalf("Failed to read native token file: %v", err)
-	}
-	if err := os.WriteFile(nativeTokenPath, nativeTokenContent, 0644); err != nil {
-		t.Fatalf("Failed to write native token file: %v", err)
-	}
+	// Create native token file (without type field) for auto-detection
+	_ = testutil.CreateTestTokenFile(t, tempDir, false)
 
 	// Create basic configuration that relies on auto-detection
 	cfg := &config.Config{
@@ -142,16 +117,16 @@ func TestKiroConfig_BackwardCompatibility(t *testing.T) {
 	// Test both native and enhanced token files for backward compatibility
 
 	testCases := []struct {
-		name       string
-		tokenPath  string
+		name      string
+		hasType   bool  // Whether the token should have "type": "kiro"
 	}{
 		{
-			name:      "NativeTokenFile",
-			tokenPath: "/home/build/code/CLIProxyAPI/tmp/kiro-test/kiro-auth-token.json",
+			name:    "NativeTokenFile",
+			hasType: false, // Native token without type field
 		},
 		{
-			name:      "EnhancedTokenFile",
-			tokenPath: "/home/build/.cli-proxy-api/kiro-auth-token.json",
+			name:    "EnhancedTokenFile",
+			hasType: true, // Enhanced token with type field
 		},
 	}
 
@@ -160,16 +135,9 @@ func TestKiroConfig_BackwardCompatibility(t *testing.T) {
 			// Create temporary directory for test
 			tempDir := t.TempDir()
 
-			// Copy the token file to temp directory
-			tokenContent, err := os.ReadFile(tc.tokenPath)
-			if err != nil {
-				t.Fatalf("Failed to read token file: %v", err)
-			}
-
-			testTokenPath := filepath.Join(tempDir, "kiro-auth-token.json")
-			if err := os.WriteFile(testTokenPath, tokenContent, 0644); err != nil {
-				t.Fatalf("Failed to write token file: %v", err)
-			}
+			// Create token file with or without type field in the temp directory
+			// This will be auto-detected by the configuration
+			_ = testutil.CreateTestTokenFile(t, tempDir, tc.hasType)
 
 			// Create configuration
 			cfg := &config.Config{
@@ -207,15 +175,8 @@ func TestKiroConfig_HotReloading(t *testing.T) {
 	// Create temporary directory for test
 	tempDir := t.TempDir()
 
-	// Start with native token file
-	nativeTokenPath := filepath.Join(tempDir, "kiro-auth-token.json")
-	nativeTokenContent, err := os.ReadFile("/home/build/code/CLIProxyAPI/tmp/kiro-test/kiro-auth-token.json")
-	if err != nil {
-		t.Fatalf("Failed to read native token file: %v", err)
-	}
-	if err := os.WriteFile(nativeTokenPath, nativeTokenContent, 0644); err != nil {
-		t.Fatalf("Failed to write native token file: %v", err)
-	}
+	// Create native token file (without type field) for initial auto-detection
+	_ = testutil.CreateTestTokenFile(t, tempDir, false)
 
 	// Create initial configuration
 	cfg := &config.Config{
@@ -235,21 +196,13 @@ func TestKiroConfig_HotReloading(t *testing.T) {
 	}
 
 	// Initial refresh should work with native token
-	_, err = exec.Refresh(context.Background(), auth)
+	_, err := exec.Refresh(context.Background(), auth)
 	if err != nil {
 		t.Fatalf("Initial refresh failed: %v", err)
 	}
 
-	// Now update configuration to use explicit token file path
-	enhancedTokenContent, err := os.ReadFile("/home/build/.cli-proxy-api/kiro-auth-token.json")
-	if err != nil {
-		t.Fatalf("Failed to read enhanced token file: %v", err)
-	}
-
-	explicitTokenPath := filepath.Join(tempDir, "explicit-kiro-token.json")
-	if err := os.WriteFile(explicitTokenPath, enhancedTokenContent, 0644); err != nil {
-		t.Fatalf("Failed to write explicit token file: %v", err)
-	}
+	// Now update configuration to use explicit token file path (with type field)
+	explicitTokenPath := testutil.CreateTestTokenFile(t, tempDir, true)
 
 	// Update configuration to use explicit path
 	cfg.KiroTokenFiles = []config.KiroTokenFile{

@@ -3,8 +3,6 @@ package kiro_test
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -12,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 )
 
@@ -23,9 +22,7 @@ import (
 // where content gets clipped to ".txt"}\n\nTool usage" instead of preserving full content + tool_calls
 func TestKiroBugReproduction_ContentClipping(t *testing.T) {
 	// Load the bug reproduction fixture
-	fixturePath := filepath.Join("testdata", "nonstream", "bug_reproduction.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	require.NoError(t, err, "Should be able to load bug reproduction fixture")
+	fixtureData := testutil.LoadTestData(t, "nonstream/bug_reproduction.json")
 
 	// Parse the response using current implementation
 	content, toolCalls := kiro.ParseResponse(fixtureData)
@@ -166,10 +163,8 @@ func TestKiroBugReproduction_DelimiterSafety(t *testing.T) {
 
 // TestKiroBugReproduction_TextOnlyNoClipping ensures text-only responses don't get clipped
 func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
-	// Load text-only fixture
-	fixturePath := filepath.Join("testdata", "nonstream", "text_only.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	require.NoError(t, err)
+	// Load text-only fixture using centralized test data loader
+	fixtureData := testutil.LoadTestData(t, "nonstream/text_only.json")
 
 	// Parse response
 	content, toolCalls := kiro.ParseResponse(fixtureData)
@@ -198,10 +193,8 @@ func TestKiroBugReproduction_TextOnlyNoClipping(t *testing.T) {
 
 // TestKiroBugReproduction_TextThenToolProperSeparation tests proper text + tool separation
 func TestKiroBugReproduction_TextThenToolProperSeparation(t *testing.T) {
-	// Load text + tool fixture
-	fixturePath := filepath.Join("testdata", "nonstream", "text_then_tool.json")
-	fixtureData, err := os.ReadFile(fixturePath)
-	require.NoError(t, err)
+	// Load text + tool fixture using centralized test data loader
+	fixtureData := testutil.LoadTestData(t, "nonstream/text_then_tool.json")
 
 	// Parse response
 	content, toolCalls := kiro.ParseResponse(fixtureData)

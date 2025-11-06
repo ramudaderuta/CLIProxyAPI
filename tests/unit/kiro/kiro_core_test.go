@@ -3,16 +3,15 @@ package kiro_test
 import (
 	"bufio"
 	"bytes"
-	"os"
-	"path/filepath"
-	"strings"
 	"testing"
+	"strings"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
 
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 )
 
@@ -279,9 +278,7 @@ func TestKiroBuildOpenAIChatCompletionPayload_ValidatesOutputFormat(t *testing.T
 // TestKiroStreaming_TextChunks tests streaming text content aggregation
 func TestKiroStreaming_TextChunks(t *testing.T) {
 	// Load streaming text chunks fixture
-	fixturePath := filepath.Join("testdata", "streaming", "text_chunks.ndjson")
-	fixtureData, err := os.ReadFile(fixturePath)
-	require.NoError(t, err)
+	fixtureData := testutil.LoadTestData(t, "streaming/text_chunks.ndjson")
 
 	// Simulate streaming by concatenating chunks
 	var streamingData strings.Builder
@@ -306,9 +303,7 @@ func TestKiroStreaming_TextChunks(t *testing.T) {
 // TestKiroStreaming_ToolInterleave tests streaming with interleaved text and tool calls
 func TestKiroStreaming_ToolInterleave(t *testing.T) {
 	// Load streaming tool interleave fixture
-	fixturePath := filepath.Join("testdata", "streaming", "tool_interleave.ndjson")
-	fixtureData, err := os.ReadFile(fixturePath)
-	require.NoError(t, err)
+	fixtureData := testutil.LoadTestData(t, "streaming/tool_interleave.ndjson")
 
 	// Simulate streaming response
 	var streamingData strings.Builder
