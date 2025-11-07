@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	iflowauth "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/iflow"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
@@ -114,7 +115,11 @@ func (e *IFlowExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 
 	var param any
 	out := sdktranslator.TranslateNonStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), body, data, &param)
-	resp = cliproxyexecutor.Response{Payload: []byte(out)}
+
+	// Sanitize tool call IDs in the response to remove Claude Code tool names
+	sanitizedOut := SanitizeToolCallIDsInResponse(out)
+
+	resp = cliproxyexecutor.Response{Payload: []byte(sanitizedOut)}
 	return resp, nil
 }
 
@@ -208,7 +213,9 @@ func (e *IFlowExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 			}
 			chunks := sdktranslator.TranslateStream(ctx, to, from, req.Model, bytes.Clone(opts.OriginalRequest), body, bytes.Clone(line), &param)
 			for i := range chunks {
-				out <- cliproxyexecutor.StreamChunk{Payload: []byte(chunks[i])}
+				// Sanitize tool call IDs in each streaming chunk
+				sanitizedChunk := SanitizeToolCallIDsInResponse(chunks[i])
+				out <- cliproxyexecutor.StreamChunk{Payload: []byte(sanitizedChunk)}
 			}
 		}
 		if errScan := scanner.Err(); errScan != nil {
@@ -344,4 +351,91 @@ func ensureToolsArray(body []byte) []byte {
 		return body
 	}
 	return updated
+}
+
+// SanitizeToolCallIDsInResponse sanitizes tool call IDs in OpenAI-format responses
+func SanitizeToolCallIDsInResponse(response string) string {
+	// Parse the JSON response
+	root := gjson.Parse(response)
+
+	// Check if this is a valid JSON response with choices
+	if !root.Exists() || !root.Get("choices").Exists() {
+		return response
+	}
+
+	var modified bool
+	out := response
+
+	// Process each choice
+	root.Get("choices").ForEach(func(key, choice gjson.Result) bool {
+		// Check for tool calls in the choice
+		if toolCalls := choice.Get("message.tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
+			for i := 0; i < len(toolCalls.Array()); i++ {
+				toolCallPath := "choices." + key.String() + ".message.tool_calls." + fmt.Sprintf("%d", i)
+				toolCallID := toolCalls.Array()[i].Get("id").String()
+
+				// Sanitize the tool call ID if it's invalid
+				sanitizedID := SanitizeToolCallID(toolCallID)
+				if sanitizedID != toolCallID {
+					// Update the tool call ID in the response
+					out, _ = sjson.Set(out, toolCallPath+".id", sanitizedID)
+					modified = true
+				}
+			}
+		}
+
+		// Check for tool calls in delta (streaming)
+		if toolCalls := choice.Get("delta.tool_calls"); toolCalls.Exists() && toolCalls.IsArray() {
+			for i := 0; i < len(toolCalls.Array()); i++ {
+				toolCallPath := "choices." + key.String() + ".delta.tool_calls." + fmt.Sprintf("%d", i)
+				toolCallID := toolCalls.Array()[i].Get("id").String()
+
+				// Sanitize the tool call ID if it's invalid
+				sanitizedID := SanitizeToolCallID(toolCallID)
+				if sanitizedID != toolCallID {
+					// Update the tool call ID in the response
+					out, _ = sjson.Set(out, toolCallPath+".id", sanitizedID)
+					modified = true
+				}
+			}
+		}
+
+		return true
+	})
+
+	// If we made modifications, return the updated response
+	if modified {
+		return out
+	}
+
+	// Return original response if no modifications were needed
+	return response
+}
+
+// ValidateToolCallID checks if a tool_call_id is in a valid format
+// Valid formats should not contain colons or triple-asterisk patterns
+func ValidateToolCallID(id string) bool {
+	trimmed := strings.TrimSpace(id)
+	if trimmed == "" {
+		return false
+	}
+	// Reject IDs with colons (like "***.TodoWrite:3")
+	if strings.Contains(trimmed, ":") {
+		return false
+	}
+	// Reject IDs with triple-asterisk patterns
+	if strings.Contains(trimmed, "***") {
+		return false
+	}
+	return true
+}
+
+// SanitizeToolCallID ensures a tool_call_id is valid
+// If invalid, generates a new valid UUID; otherwise returns the original
+func SanitizeToolCallID(id string) string {
+	if ValidateToolCallID(id) {
+		return id
+	}
+	// Generate a new valid UUID for invalid IDs
+	return "call_" + uuid.New().String()
 }
