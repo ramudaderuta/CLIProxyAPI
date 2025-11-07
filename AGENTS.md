@@ -17,6 +17,31 @@ Keep this managed block so 'openspec update' can refresh the instructions.
 
 <!-- OPENSPEC:END -->
 
+## PROJECT GUIDELINE   
+  
+Here’s an improved and professional version of your **“How to build and start”** section in English 👇
+
+---
+
+## Quick Command Reference
+
+```
+# All (excluding integration & benchmarks)
+go test ./tests/unit/... ./tests/regression/... -race -cover -v
+
+# Only a domain/family
+go test ./tests/unit/kiro -run 'Executor' -v
+
+# Integration
+go test -tags=integration ./tests/integration/... -v
+
+# Update goldens
+go test ./tests/unit/... -run 'SSE|Translation' -v -update
+
+# Benchmarks
+go test ./tests/benchmarks/... -bench . -benchmem -run ^$
+```
+
 ### How to Build and Start
 
 ```bash
@@ -80,3 +105,10 @@ To gracefully stop the server process:
 ```bash
 pkill cli-proxy-api
 ```
+
+
+## Recent Changes  
+- Kiro AI support via token-based authentication (import kiro-auth-token.json)
+- Refactor kiro architecture
+> [!NOTE]  
+> Original kiro token for testing is located at /home/build/.cli-proxy-api/kiro-auth-token.json

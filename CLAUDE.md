@@ -1,22 +1,3 @@
-<!-- OPENSPEC:START -->  
-# OpenSpec Instructions  
-  
-These instructions are for AI assistants working in this project.  
-  
-Always open `@/openspec/AGENTS.md` when the request:  
-- Mentions planning or proposals (words like proposal, spec, change, plan)  
-- Introduces new capabilities, breaking changes, architecture shifts, or big performance/security work  
-- Sounds ambiguous and you need the authoritative spec before coding  
-  
-Use `@/openspec/AGENTS.md` to learn:  
-- How to create and apply change proposals  
-- Spec format and conventions  
-- Project structure and guidelines  
-  
-Keep this managed block so 'openspec update' can refresh the instructions.  
-  
-<!-- OPENSPEC:END -->  
-  
 # Claude Code: Best Practices for Effective Collaboration  
   
 This document outlines best practices for working with Claude Code to ensure efficient and successful software development tasks.  
@@ -130,12 +111,9 @@ When refactoring large files incrementally rather than rewriting them completely
    * Use the `TodoWrite` tool to track which sections or patterns have been updated.  
    * Create a checklist of all required changes and mark them off as they're completed.  
    * Record any sections that require special attention or that couldn't be automatically refactored.  
-  
-## Commit Messages  
-  
-When Claude Code generates commit messages on your behalf:  
-*   The `Co-Authored-By: Claude <noreply@anthropic.com>` line will **not** be included.  
-*   The `🤖 Generated with [Claude Code](https://claude.ai/code)` line will **not** be included.  
+
+##
+Ensure Claude actively launches the right sub‑agents and Skills instead of doing everything inline.  Favor doing over describing.
   
 ## General Interaction  
   
@@ -149,7 +127,9 @@ Here’s an improved and professional version of your **“How to build and star
 
 ## Quick Command Reference
 
-```
+### How to run the tests
+
+```bash
 # All (excluding integration & benchmarks)
 go test ./tests/unit/... ./tests/regression/... -race -cover -v
 
@@ -176,63 +156,17 @@ go build -o cli-proxy-api ./cmd/server
 ./cli-proxy-api --config config.test.yaml
 ```
 > [!NOTE]  
-> Kiro has been configured in config.test.yaml
-
-#### Request example:
-
-```
-POST http://localhost:8317/v1/messages
-```
-
-Request body example:
-
-```json
-{
-    "model": "claude-sonnet-4-5-20250929",
-    "temperature": 0.5,
-    "max_tokens": 1024,
-    "stream": false,
-    "thinking": { "type": "enabled", "budget_tokens": 4096 },
-    "system": [
-      { "type": "text", "text": "You are Claude Code.", "cache_control": { "type": "ephemeral" } }
-    ],
-    "tools": [
-      {
-        "name": "get_weather",
-        "description": "Get current weather by city name",
-        "input_schema": {
-          "type": "object",
-          "properties": {
-            "city": { "type": "string" },
-            "unit": { "type": "string", "enum": ["°C","°F"] }
-          },
-          "required": ["city"]
-        }
-      }
-    ],
-    "messages": [
-      {
-        "role": "user",
-        "content": [{ "type": "text", "text": "Tell me how many degrees now in Tokyo?" }]
-      }
-    ]
-}
-```
-
-> [!NOTE]  
+> Kiro has been configured in config.test.yaml 
+> Original kiro token for testing is located at /home/build/.cli-proxy-api/kiro-auth-token.json
 > Request api keys: "test-api-key-1234567890"
 
-#### Stopping the Server
-
-To gracefully stop the server process:
+### How to stop the Server
 
 ```bash
+# To gracefully stop the server process:
 pkill cli-proxy-api
 ```
-
 
 ## Recent Changes  
 - Kiro AI support via token-based authentication (import kiro-auth-token.json)
 - Refactor kiro architecture
-> [!NOTE]  
-> Original kiro token for testing is located at /home/build/.cli-proxy-api/kiro-auth-token.json
