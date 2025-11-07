@@ -237,21 +237,47 @@ func buildToolSpecifications(tools gjson.Result) []map[string]any {
 	}
 	specs := make([]map[string]any, 0, len(tools.Array()))
 	tools.ForEach(func(_, tool gjson.Result) bool {
-		if strings.ToLower(tool.Get("type").String()) != "function" {
+		var name, description string
+		var schema map[string]any
+
+		// Handle OpenAI format: {"type": "function", "function": {...}}
+		if strings.ToLower(tool.Get("type").String()) == "function" {
+			function := tool.Get("function")
+			if !function.Exists() {
+				return true
+			}
+			name = function.Get("name").String()
+			description = function.Get("description").String()
+			schemaRaw := parseJSONSafely(function.Get("parameters"), gjson.Result{})
+			if schemaRaw != nil {
+				if schemaMap, ok := schemaRaw.(map[string]any); ok {
+					schema = schemaMap
+				}
+			}
+		} else {
+			// Handle Anthropic/Claude format: {"name": "...", "description": "...", "input_schema": {...}}
+			name = tool.Get("name").String()
+			description = tool.Get("description").String()
+			schemaRaw := parseJSONSafely(tool.Get("input_schema"), gjson.Result{})
+			if schemaRaw != nil {
+				if schemaMap, ok := schemaRaw.(map[string]any); ok {
+					schema = schemaMap
+				}
+			}
+		}
+
+		if name == "" {
 			return true
 		}
-		function := tool.Get("function")
-		if !function.Exists() {
-			return true
-		}
-		schema := parseJSONSafely(function.Get("parameters"), gjson.Result{})
+
 		if schema == nil {
 			schema = map[string]any{}
 		}
+
 		entry := map[string]any{
 			"toolSpecification": map[string]any{
-				"name":        function.Get("name").String(),
-				"description": function.Get("description").String(),
+				"name":        name,
+				"description": description,
 				"inputSchema": map[string]any{"json": schema},
 			},
 		}
