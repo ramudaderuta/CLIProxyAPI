@@ -91,7 +91,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 		var chunks [][]byte
 		if format == "anthropic" {
-			chunks = kirotranslator.BuildAnthropicStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)
+			chunks = kirotranslator.BuildAnthropicStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
 		} else {
 			// Default to OpenAI format
 			chunks = kirotranslator.BuildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)

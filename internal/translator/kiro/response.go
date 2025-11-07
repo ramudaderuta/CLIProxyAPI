@@ -1256,12 +1256,12 @@ type Usage struct {
 }
 
 // BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks formatted as SSE events.
-func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall) [][]byte {
+func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall, promptTokens, completionTokens int64) [][]byte {
 	chunks := make([][]byte, 0, 3)
 
-	// Calculate approximate tokens
-	outputTokens := calculateOutputTokens(content, toolCalls)
-	inputTokens := int64(20) // TODO: Calculate actual input tokens from request
+	// Use provided token counts
+	outputTokens := completionTokens
+	inputTokens := promptTokens
 
 	// Initial message_start chunk
 	messageStart := buildMessageStartEvent(model, inputTokens)

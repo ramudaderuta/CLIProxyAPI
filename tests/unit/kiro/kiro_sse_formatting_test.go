@@ -17,7 +17,7 @@ func TestKiroExecutor_SSEFormatting_SimpleText(t *testing.T) {
 	// because Kiro now returns SSE-formatted events instead of raw JSON
 
 	// Build the chunks that Kiro now produces (SSE-FORMATTED - CORRECT)
-	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "Hello, world!", []kirotranslator.OpenAIToolCall{})
+	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "Hello, world!", []kirotranslator.OpenAIToolCall{}, 25, 5)
 
 	// Verify new behavior is CORRECT (SSE-formatted events)
 	require.Greater(t, len(chunks), 0, "Should produce chunks")
@@ -82,7 +82,7 @@ func TestKiroExecutor_SSEFormatting_WithToolCalls(t *testing.T) {
 		},
 	}
 
-	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "", toolCalls)
+	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "", toolCalls, 30, 11)
 
 	require.Greater(t, len(chunks), 0, "Should produce chunks for tool calls")
 
@@ -117,7 +117,7 @@ func TestKiroExecutor_SSEFormatting_WithToolCalls(t *testing.T) {
 
 // TestKiroExecutor_SSEFormatting_EmptyContent tests SSE formatting for empty responses
 func TestKiroExecutor_SSEFormatting_EmptyContent(t *testing.T) {
-	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "", []kirotranslator.OpenAIToolCall{})
+	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "", []kirotranslator.OpenAIToolCall{}, 20, 0)
 
 	require.Greater(t, len(chunks), 0, "Should produce chunks even for empty content")
 
@@ -204,7 +204,7 @@ data: {"type":"message_stop"}`
 // TestKiroExecutor_IncrementalStreaming tests that content is split into multiple delta events
 func TestKiroExecutor_IncrementalStreaming(t *testing.T) {
 	content := "Hello! How are you today?"
-	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, content, []kirotranslator.OpenAIToolCall{})
+	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, content, []kirotranslator.OpenAIToolCall{}, 18, 7)
 
 	require.Greater(t, len(chunks), 0, "Should produce chunks")
 
