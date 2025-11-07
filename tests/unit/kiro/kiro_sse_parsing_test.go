@@ -31,8 +31,7 @@ func TestParseResponseFromEventStream_SSEParsing(t *testing.T) {
 
 	// Test with tool calls in SSE format - this will fail due to implementation issues
 	t.Run("SSE_With_Tool_Calls", func(t *testing.T) {
-		t.Skip("TODO: Tool call argument merging not implemented for SSE format - tool call arguments are empty")
-
+		// Tool call argument merging is now implemented for SSE format
 		stream := strings.Join([]string{
 			`data: {"content":"Processing request"}`,
 			`data: {"name":"lookup","toolUseId":"call-1","input":{"foo":"bar"}}`,
@@ -41,18 +40,20 @@ func TestParseResponseFromEventStream_SSEParsing(t *testing.T) {
 
 		content, calls := kiro.ParseResponse([]byte(stream))
 
-		// This assertion will fail because the current implementation doesn't properly parse SSE streams with tool calls
+		// Content should be parsed from SSE stream
 		assert.Contains(t, content, "Processing request", "Content should be parsed from SSE stream")
 
-		// This assertion will fail because tool calls are not properly parsed
+		// Tool calls should be properly parsed and merged
 		assert.Len(t, calls, 1, "Should parse one tool call from SSE stream")
 
 		if len(calls) > 0 {
-			// These assertions will fail due to improper tool call parsing
-			assert.Equal(t, "lookup", calls[0].Name, "Tool call name should be parsed correctly")
-			assert.Equal(t, "call-1", calls[0].ID, "Tool call ID should be parsed correctly")
-			assert.Contains(t, calls[0].Arguments, "foo", "Tool call arguments should be parsed correctly")
-			assert.Contains(t, calls[0].Arguments, "baz", "Tool call arguments should be parsed correctly")
+			toolCall := calls[0]
+			assert.Equal(t, "lookup", toolCall.Name, "Tool call name should be correct")
+			assert.Equal(t, "call-1", toolCall.ID, "Tool call ID should be correct")
+
+			// Check that arguments are merged (both foo and baz should be present)
+			assert.Contains(t, toolCall.Arguments, `"foo":"bar"`, "Tool arguments should contain 'foo' field")
+			assert.Contains(t, toolCall.Arguments, `"baz":1`, "Tool arguments should contain 'baz' field")
 		}
 	})
 

@@ -244,10 +244,18 @@ func FilterThinkingContent(text string) string {
 		return text
 	}
 
+	// Handle standalone "Thinking" text (common in JSON content)
+	if text == "Thinking" {
+		return ""
+	}
+
 	// If no Thinking content, return as-is
 	if !strings.Contains(text, "Thinking") {
 		return text
 	}
+
+	// Handle JSON-style thinking content by removing exact "Thinking" matches
+	text = strings.ReplaceAll(text, "Thinking", "")
 
 	// Split by lines to handle Thinking sections properly
 	lines := strings.Split(text, "\n")
@@ -281,10 +289,13 @@ func FilterThinkingContent(text string) string {
 	// Join the filtered lines and clean up extra whitespace
 	result := strings.Join(filteredLines, "\n")
 
-	// Clean up multiple consecutive newlines
+	// Clean up multiple consecutive newlines and extra spaces
 	for strings.Contains(result, "\n\n\n") {
 		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
 	}
+
+	// Remove extra spaces between words
+	result = strings.Join(strings.Fields(result), " ")
 
 	return strings.TrimSpace(result)
 }

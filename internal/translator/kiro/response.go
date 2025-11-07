@@ -765,7 +765,14 @@ func (p *KiroSSEEventProcessor) handleLegacyToolCall(node gjson.Result, context 
 		if input := node.Get("input"); input.Exists() {
 			rawInput := strings.TrimSpace(input.Raw)
 			if rawInput != "" && rawInput != "null" {
-				acc.fragments.WriteString(rawInput)
+				// For tool call merging, we need to merge JSON objects
+				if acc.call.Arguments != "" {
+					// Merge with existing arguments
+					acc.call.Arguments = mergeJSONArguments(acc.call.Arguments, rawInput)
+				} else {
+					// First argument set
+					acc.call.Arguments = rawInput
+				}
 				acc.hasStream = true
 			}
 		}
@@ -813,6 +820,10 @@ func (p *KiroSSEEventProcessor) appendTextFromNode(value gjson.Result, context *
 		if text == "" {
 			return
 		}
+		// Filter out "Thinking" content at the SSE parsing level
+		if text == "Thinking" {
+			return // Skip thinking content
+		}
 		decoded := strings.ReplaceAll(text, `\n`, "\n")
 		context.TextBuilder.WriteString(decoded)
 	}
@@ -847,14 +858,15 @@ func (c *SSEProcessingContext) finalizeToolCall(id string) {
 		return
 	}
 
-	rawArgs := strings.TrimSpace(acc.call.Arguments)
-	if acc.hasStream {
-		rawArgs = strings.TrimSpace(acc.fragments.String())
+	// Use accumulated fragments if available, otherwise use existing arguments
+	if acc.hasStream && acc.fragments.Len() > 0 {
+		// Use the accumulated fragments as the arguments
+		acc.call.Arguments = acc.fragments.String()
 	}
-	if rawArgs != "" {
-		acc.call.Arguments = c.JSONProcessor.NormalizeArguments(rawArgs)
-	} else {
-		acc.call.Arguments = ""
+
+	// Normalize the arguments if they exist
+	if acc.call.Arguments != "" {
+		acc.call.Arguments = c.JSONProcessor.NormalizeArguments(acc.call.Arguments)
 	}
 	acc.finalized = true
 }
@@ -1112,6 +1124,45 @@ func normalizeArguments(args string) string {
 		return fixed
 	}
 	return ""
+}
+
+// mergeJSONArguments merges two JSON objects, with the second one taking precedence for overlapping keys
+func mergeJSONArguments(existing, new string) string {
+	existing = strings.TrimSpace(existing)
+	new = strings.TrimSpace(new)
+
+	if existing == "" {
+		return new
+	}
+	if new == "" {
+		return existing
+	}
+
+	// Try to parse both as JSON objects
+	var existingObj, newObj map[string]interface{}
+
+	if err := json.Unmarshal([]byte(existing), &existingObj); err != nil {
+		// If existing is not valid JSON, return the new one
+		return new
+	}
+
+	if err := json.Unmarshal([]byte(new), &newObj); err != nil {
+		// If new is not valid JSON, return the existing one
+		return existing
+	}
+
+	// Merge the objects - new values override existing ones
+	for key, value := range newObj {
+		existingObj[key] = value
+	}
+
+	// Marshal back to JSON
+	result, err := json.Marshal(existingObj)
+	if err != nil {
+		return existing // Fallback to existing if marshaling fails
+	}
+
+	return string(result)
 }
 
 // BuildAnthropicMessagePayload generates an Anthropic-compatible messages API response.
