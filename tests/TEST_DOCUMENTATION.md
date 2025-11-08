@@ -399,50 +399,30 @@ go test ./tests/regression/kiro -run 'ThinkingTruncation' -v
 
 The following changes have been implemented to improve test coverage and reliability:
 
-### **Tool Call ID Sanitization (TDD Implementation)**
+### **Tool Call ID Encoding (TDD Implementation)**
 - Added comprehensive tool_call_id validation and sanitization tests in `tests/unit/kiro/kiro_tool_call_id_test.go`
-- **Problem Solved**: Prevents "Unexpected tool_call_id returns" errors from upstream LLM caused by malformed Claude Code tool IDs like `"***.TodoWrite:3"`, `"***.Edit:6"`, `"***.Bash:8"`
-- **Solution**: Validates and sanitizes all tool_call_id values before sending to upstream systems
+- **Problem Solved**: Prevents "Unexpected tool_call_id returns" errors from upstream LLM clients by presenting OpenAI-safe IDs while preserving the original provider IDs for round trips
+- **Solution**: Unsafe Claude IDs (e.g. `"***.TodoWrite:3"`) are transparently encoded as `call_enc_<base64>` when streaming to OpenAI clients, and deterministically decoded before relaying tool outputs back to the provider. Blank IDs still receive fresh UUIDs.
 - **Test Coverage**:
-  - **Validation Tests**: 11 test cases covering valid UUID formats, OpenAI tool formats, and invalid patterns (colons, triple-asterisks)
-  - **Sanitization Tests**: 8 test cases ensuring invalid IDs are replaced with valid UUIDs while preserving valid formats
-  - **Integration Tests**: 3 test cases verifying real-world usage with mixed valid/invalid inputs
+  - **Validation Tests**: ensure only non-empty IDs pass validation
+  - **Sanitization Tests**: verify blanks generate UUIDs while encoded IDs decode back to the original provider values
+  - **Integration Tests**: verify first available non-empty ID is returned unchanged
   - **Performance Tests**: Ensures fast processing of valid IDs (no unnecessary generation)
   - **Uniqueness Tests**: Verifies generated UUIDs are unique across multiple calls
 
 **Implementation Details**:
 ```go
-// ValidateToolCallID checks if a tool_call_id is in a valid format
-func ValidateToolCallID(id string) bool {
-    trimmed := strings.TrimSpace(id)
-    if trimmed == "" {
-        return false
-    }
-    // Reject IDs with colons (like "***.TodoWrite:3")
-    if strings.Contains(trimmed, ":") {
-        return false
-    }
-    // Reject IDs with triple-asterisk patterns
-    if strings.Contains(trimmed, "***") {
-        return false
-    }
-    return true
-}
+// Encode exposes OpenAI-safe tool_call_id values (call_enc_<base64>) for clients
+func Encode(id string) string { ... }
 
-// SanitizeToolCallID ensures a tool_call_id is valid
-func SanitizeToolCallID(id string) string {
-    if ValidateToolCallID(id) {
-        return id
-    }
-    // Generate a new valid UUID for invalid IDs
-    return "call_" + uuid.New().String()
-}
+// Decode restores the provider's original tool_use_id before forwarding tool results
+func Decode(id string) string { ... }
 ```
 
 **Integration Points**:
-- User message tool results sanitization (line 178 in request.go)
-- User message tool uses sanitization (line 191 in request.go)
-- Assistant message tool uses sanitization (line 222 in request.go)
+- Claude → OpenAI streaming responses (delta tool_calls + final choices) now emit encoded IDs
+- OpenAI → Claude translators decode IDs inside assistant.tool_calls and tool role messages before forwarding
+- Responses API translators apply the same encode/decode logic, keeping `call_id` untouched for reference
 
 **Test Execution**:
 ```bash

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util/toolid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -110,7 +111,11 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 
 			if blockType == "tool_use" {
 				// Start of tool call - initialize accumulator to track arguments
-				toolCallID := contentBlock.Get("id").String()
+				rawID := contentBlock.Get("id").String()
+				toolCallID := toolid.Encode(rawID)
+				if toolCallID == "" {
+					toolCallID = rawID
+				}
 				toolName := contentBlock.Get("name").String()
 				index := int(root.Get("index").Int())
 
@@ -329,8 +334,13 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, _ string, origina
 				} else if blockType == "tool_use" {
 					// Initialize tool call tracking for this index
 					index := int(root.Get("index").Int())
+					rawID := contentBlock.Get("id").String()
+					encodedID := toolid.Encode(rawID)
+					if encodedID == "" {
+						encodedID = rawID
+					}
 					toolCallsMap[index] = map[string]interface{}{
-						"id":   contentBlock.Get("id").String(),
+						"id":   encodedID,
 						"type": "function",
 						"function": map[string]interface{}{
 							"name":      contentBlock.Get("name").String(),

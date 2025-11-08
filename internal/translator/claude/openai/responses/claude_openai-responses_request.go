@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util/toolid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -239,7 +240,10 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 			case "function_call":
 				// Map to assistant tool_use
-				callID := item.Get("call_id").String()
+				callID := toolid.Decode(item.Get("call_id").String())
+				if callID == "" {
+					callID = toolid.Decode(item.Get("id").String())
+				}
 				if callID == "" {
 					callID = genToolCallID()
 				}
@@ -259,7 +263,10 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 			case "function_call_output":
 				// Map to user tool_result
-				callID := item.Get("call_id").String()
+				callID := toolid.Decode(item.Get("call_id").String())
+				if callID == "" {
+					callID = toolid.Decode(item.Get("id").String())
+				}
 				outputStr := item.Get("output").String()
 				toolResult := `{"type":"tool_result","tool_use_id":"","content":""}`
 				toolResult, _ = sjson.Set(toolResult, "tool_use_id", callID)

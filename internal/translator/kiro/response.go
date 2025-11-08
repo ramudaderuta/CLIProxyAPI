@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,7 +85,7 @@ type ResponseParser interface {
 
 // KiroResponseParser implements ResponseParser with dependency injection
 type KiroResponseParser struct {
-	jsonProcessor  JSONProcessor
+	jsonProcessor    JSONProcessor
 	contentExtractor ContentExtractor
 }
 
@@ -97,7 +98,7 @@ func NewResponseParser(processor JSONProcessor, extractor ContentExtractor) Resp
 		extractor = NewContentExtractor()
 	}
 	return &KiroResponseParser{
-		jsonProcessor:  processor,
+		jsonProcessor:    processor,
 		contentExtractor: extractor,
 	}
 }
@@ -1126,6 +1127,44 @@ func normalizeArguments(args string) string {
 	return ""
 }
 
+// decodeToolArguments attempts to parse tool call arguments into a JSON object.
+// Some upstream providers double-encode the payload, so we progressively try to
+// parse, normalize, and unquote the raw value until it becomes a valid object.
+func decodeToolArguments(raw string) (map[string]any, bool) {
+	candidate := strings.TrimSpace(raw)
+	if candidate == "" || candidate == "null" {
+		return map[string]any{}, true
+	}
+
+	for i := 0; i < 3; i++ {
+		if input, ok := tryUnmarshalToolInput(candidate); ok {
+			return input, true
+		}
+
+		if normalized := normalizeArguments(candidate); normalized != "" && normalized != candidate {
+			if input, ok := tryUnmarshalToolInput(normalized); ok {
+				return input, true
+			}
+		}
+
+		unquoted, err := strconv.Unquote(candidate)
+		if err != nil {
+			break
+		}
+		candidate = strings.TrimSpace(unquoted)
+	}
+
+	return nil, false
+}
+
+func tryUnmarshalToolInput(data string) (map[string]any, bool) {
+	var input map[string]any
+	if err := json.Unmarshal([]byte(data), &input); err != nil {
+		return nil, false
+	}
+	return input, true
+}
+
 // mergeJSONArguments merges two JSON objects, with the second one taking precedence for overlapping keys
 func mergeJSONArguments(existing, new string) string {
 	existing = strings.TrimSpace(existing)
@@ -1191,14 +1230,9 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 
 	// Add tool_use blocks
 	for _, call := range toolCalls {
-		var input map[string]any
-		if call.Arguments != "" && call.Arguments != "null" {
-			if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
-				// If JSON parsing fails, treat as string value
-				input = map[string]any{"value": call.Arguments}
-			}
-		} else {
-			input = map[string]any{}
+		input, ok := decodeToolArguments(call.Arguments)
+		if !ok {
+			input = map[string]any{"value": call.Arguments}
 		}
 
 		contentBlocks = append(contentBlocks, map[string]any{
@@ -1388,13 +1422,9 @@ func buildToolUseStartEvent(call OpenAIToolCall, blockIndex int) map[string]any 
 
 // buildToolUseDeltaEvent creates the content_block_delta event structure for tool input
 func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
-	var input map[string]any
-	if call.Arguments != "" && call.Arguments != "null" {
-		if err := json.Unmarshal([]byte(call.Arguments), &input); err != nil {
-			input = map[string]any{"value": call.Arguments}
-		}
-	} else {
-		input = map[string]any{}
+	input, ok := decodeToolArguments(call.Arguments)
+	if !ok {
+		input = map[string]any{"value": call.Arguments}
 	}
 
 	return map[string]any{

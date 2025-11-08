@@ -2,6 +2,7 @@ package kiro_test
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -202,6 +203,55 @@ func TestBuildStreamingChunks(t *testing.T) {
 	}
 }
 
+func TestBuildAnthropicStreamingChunks_DecodesQuotedToolArguments(t *testing.T) {
+	raw := `{"city":"Tokyo","unit":"°C"}`
+	quoted := strconv.Quote(raw)
+
+	chunks := kiro.BuildAnthropicStreamingChunks(
+		"msg_test",
+		"claude-sonnet-4-5",
+		time.Now().Unix(),
+		"",
+		[]kiro.OpenAIToolCall{{
+			ID:        "toolu_test",
+			Name:      "get_weather",
+			Arguments: quoted,
+		}},
+		10,
+		5,
+	)
+
+	found := false
+	for _, chunk := range chunks {
+		data := string(chunk)
+		if !strings.Contains(data, `"partial_json"`) {
+			continue
+		}
+		idx := strings.Index(data, "data: ")
+		if idx == -1 {
+			continue
+		}
+		payload := strings.TrimSpace(data[idx+6:])
+		var event map[string]any
+		require.NoError(t, json.Unmarshal([]byte(payload), &event))
+
+		delta, _ := event["delta"].(map[string]any)
+		if delta == nil || delta["type"] != "input_json_delta" {
+			continue
+		}
+
+		partial := delta["partial_json"].(string)
+		var input map[string]any
+		require.NoError(t, json.Unmarshal([]byte(partial), &input))
+		assert.Equal(t, "Tokyo", input["city"])
+		assert.Equal(t, "°C", input["unit"])
+		found = true
+		break
+	}
+
+	require.True(t, found, "expected to find tool partial_json chunk")
+}
+
 // FAILING TESTS FOR kiro.BuildAnthropicMessagePayload FUNCTION
 // These tests will fail because the kiro.BuildAnthropicMessagePayload function does not exist yet
 
@@ -304,6 +354,35 @@ func TestBuildAnthropicMessagePayload_ToolUseResponse(t *testing.T) {
 
 	// Check stop reason
 	assert.Equal(t, "tool_use", result["stop_reason"], "Stop reason should be 'tool_use'")
+}
+
+func TestBuildAnthropicMessagePayload_DecodesQuotedToolArguments(t *testing.T) {
+	raw := `{"city":"Tokyo","unit":"°C"}`
+	quoted := strconv.Quote(raw)
+
+	payload, err := kiro.BuildAnthropicMessagePayload(
+		"claude-sonnet-4-5",
+		"I'll look that up.",
+		[]kiro.OpenAIToolCall{{
+			ID:        "toolu_test",
+			Name:      "get_weather",
+			Arguments: quoted,
+		}},
+		10,
+		5,
+	)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(payload, &result))
+
+	contentBlock := result["content"].([]any)
+	require.Len(t, contentBlock, 2)
+
+	toolBlock := contentBlock[1].(map[string]any)
+	toolInput := toolBlock["input"].(map[string]any)
+	assert.Equal(t, "Tokyo", toolInput["city"])
+	assert.Equal(t, "°C", toolInput["unit"])
 }
 
 func TestBuildAnthropicMessagePayload_MultipleToolUseResponses(t *testing.T) {

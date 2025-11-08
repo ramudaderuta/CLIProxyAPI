@@ -412,30 +412,17 @@ func SanitizeToolCallIDsInResponse(response string) string {
 	return response
 }
 
-// ValidateToolCallID checks if a tool_call_id is in a valid format
-// Valid formats should not contain colons or triple-asterisk patterns
+// ValidateToolCallID checks if a tool_call_id is non-empty after trimming whitespace.
 func ValidateToolCallID(id string) bool {
-	trimmed := strings.TrimSpace(id)
-	if trimmed == "" {
-		return false
-	}
-	// Reject IDs with colons (like "***.TodoWrite:3")
-	if strings.Contains(trimmed, ":") {
-		return false
-	}
-	// Reject IDs with triple-asterisk patterns
-	if strings.Contains(trimmed, "***") {
-		return false
-	}
-	return true
+	return strings.TrimSpace(id) != ""
 }
 
-// SanitizeToolCallID ensures a tool_call_id is valid
-// If invalid, generates a new valid UUID; otherwise returns the original
+// SanitizeToolCallID trims whitespace and ensures tool_call_id is never empty.
+// If the ID is empty after trimming, a new UUID is generated.
 func SanitizeToolCallID(id string) string {
-	if ValidateToolCallID(id) {
-		return id
+	trimmed := strings.TrimSpace(id)
+	if trimmed != "" {
+		return trimmed
 	}
-	// Generate a new valid UUID for invalid IDs
 	return "call_" + uuid.New().String()
 }

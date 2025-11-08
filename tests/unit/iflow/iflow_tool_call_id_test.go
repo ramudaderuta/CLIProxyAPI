@@ -24,9 +24,9 @@ func TestValidateToolCallID(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		input    string
-		expected bool
+		name        string
+		input       string
+		expected    bool
 	}{
 		{
 			name:     "valid UUID format",
@@ -44,29 +44,14 @@ func TestValidateToolCallID(t *testing.T) {
 			expected: true,
 		},
 		{
-			name:     "Claude Code TodoWrite pattern",
+			name:     "Claude style id allowed",
 			input:    "***.TodoWrite:3",
-			expected: false,
+			expected: true,
 		},
 		{
-			name:     "Claude Code Edit pattern",
-			input:    "***.Edit:6",
-			expected: false,
-		},
-		{
-			name:     "Claude Code Bash pattern",
-			input:    "***.Bash:8",
-			expected: false,
-		},
-		{
-			name:     "any colon-containing ID",
+			name:     "id with colons allowed",
 			input:    "invalid:with:colons",
-			expected: false,
-		},
-		{
-			name:     "any triple-asterisk pattern",
-			input:    "***.anything",
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "empty string",
@@ -79,9 +64,9 @@ func TestValidateToolCallID(t *testing.T) {
 			expected: false,
 		},
 		{
-			name:     "mixed invalid characters",
-			input:    "tool_***:invalid",
-			expected: false,
+			name:     "leading whitespace trimmed",
+			input:    "  call_trimmed ",
+			expected: true,
 		},
 	}
 
@@ -103,47 +88,48 @@ func TestSanitizeToolCallID(t *testing.T) {
 	cases := []struct {
 		name           string
 		input          string
+		expected       string
 		shouldGenerate bool
 	}{
 		{
 			name:           "valid UUID remains unchanged",
 			input:          "call_123e4567-e89b-12d3-a456-426614174000",
+			expected:       "call_123e4567-e89b-12d3-a456-426614174000",
 			shouldGenerate: false,
 		},
 		{
 			name:           "valid OpenAI format remains unchanged",
 			input:          "toolu_abcd1234efgh5678",
+			expected:       "toolu_abcd1234efgh5678",
 			shouldGenerate: false,
 		},
 		{
-			name:           "Claude Code TodoWrite pattern gets sanitized",
+			name:           "Claude Code TodoWrite pattern preserved",
 			input:          "***.TodoWrite:3",
-			shouldGenerate: true,
+			expected:       "***.TodoWrite:3",
+			shouldGenerate: false,
 		},
 		{
-			name:           "Claude Code Edit pattern gets sanitized",
-			input:          "***.Edit:6",
-			shouldGenerate: true,
-		},
-		{
-			name:           "colon-containing ID gets sanitized",
+			name:           "colon-containing ID preserved",
 			input:          "invalid:with:colons",
-			shouldGenerate: true,
+			expected:       "invalid:with:colons",
+			shouldGenerate: false,
 		},
 		{
-			name:           "triple-asterisk pattern gets sanitized",
-			input:          "***.anything",
-			shouldGenerate: true,
-		},
-		{
-			name:           "empty string gets sanitized",
+			name:           "empty string gets generated id",
 			input:          "",
 			shouldGenerate: true,
 		},
 		{
-			name:           "whitespace gets sanitized",
+			name:           "whitespace gets generated id",
 			input:          "   ",
 			shouldGenerate: true,
+		},
+		{
+			name:           "leading and trailing whitespace trimmed",
+			input:          "  call_trimmed ",
+			expected:       "call_trimmed",
+			shouldGenerate: false,
 		},
 	}
 
@@ -155,14 +141,13 @@ func TestSanitizeToolCallID(t *testing.T) {
 			result := executor.SanitizeToolCallID(tc.input)
 
 			if tc.shouldGenerate {
-				// Should generate a new valid UUID
-				assert.NotEqual(t, tc.input, result, "case=%s: sanitizeToolCallID should generate new ID for invalid input", tc.name)
+				assert.NotEqual(t, strings.TrimSpace(tc.input), result, "case=%s: sanitizeToolCallID should generate new ID for empty input", tc.name)
 				assert.True(t, executor.ValidateToolCallID(result), "case=%s: generated ID should be valid", tc.name)
-				assert.True(t, isValidUUIDFormat(result) || isValidToolIDFormat(result), "case=%s: generated ID should have valid format", tc.name)
-			} else {
-				// Should preserve the original valid ID
-				assert.Equal(t, tc.input, result, "case=%s: sanitizeToolCallID should preserve valid input", tc.name)
+				assert.True(t, isValidUUIDFormat(result), "case=%s: generated ID should follow UUID-like format", tc.name)
+				return
 			}
+
+			assert.Equal(t, tc.expected, result, "case=%s: sanitizeToolCallID should preserve trimmed input", tc.name)
 		})
 	}
 }
@@ -172,7 +157,7 @@ func TestSanitizeToolCallIDUniqueness(t *testing.T) {
 	t.Parallel()
 
 	// Test that multiple calls with same invalid input generate different IDs
-	invalidInput := "***.TodoWrite:3"
+	invalidInput := ""
 	results := make(map[string]bool)
 
 	for i := 0; i < 10; i++ {
@@ -204,24 +189,25 @@ func TestToolCallIDIntegration(t *testing.T) {
 	t.Parallel()
 
 	cases := []struct {
-		name     string
-		inputs   []string
-		expected string
+		name            string
+		inputs          []string
+		expected        string
+		expectGenerated bool
 	}{
 		{
-			name:     "all invalid inputs get sanitized",
-			inputs:   []string{"***.TodoWrite:3", "***.Edit:6", ""},
-			expected: "should_be_valid_uuid", // We expect a valid UUID to be generated
+			name:            "all empty inputs get generated id",
+			inputs:          []string{"", "   ", ""},
+			expectGenerated: true,
 		},
 		{
-			name:     "mixed valid and invalid",
+			name:     "mixed valid and empty preserves first valid",
 			inputs:   []string{"", "call_123e4567-e89b-12d3-a456-426614174000", "***.Bash:8"},
-			expected: "call_123e4567-e89b-12d3-a456-426614174000", // The valid UUID should be preserved
+			expected: "call_123e4567-e89b-12d3-a456-426614174000",
 		},
 		{
-			name:     "first valid ID preserved",
+			name:     "claude style id preserved",
 			inputs:   []string{"***.Task:2", "toolu_abcd1234efgh5678", "***.Read:5"},
-			expected: "call_", // Should be a generated UUID starting with "call_" (first non-empty after sanitization)
+			expected: "***.Task:2",
 		},
 	}
 
@@ -230,31 +216,16 @@ func TestToolCallIDIntegration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Apply sanitization only to invalid inputs (simulate real usage)
-			sanitized := make([]string, len(tc.inputs))
-			for i, input := range tc.inputs {
-				if input == "" {
-					sanitized[i] = input // Keep empty strings unchanged (firstString will skip them)
-				} else if executor.ValidateToolCallID(input) {
-					sanitized[i] = input // Keep valid inputs unchanged
-				} else {
-					sanitized[i] = executor.SanitizeToolCallID(input) // Sanitize invalid inputs
-				}
-			}
+			first := firstString(tc.inputs...)
+			result := executor.SanitizeToolCallID(first)
 
-			// Use firstString with sanitized inputs
-			result := firstString(sanitized...)
-
-			if tc.expected == "should_be_valid_uuid" {
+			if tc.expectGenerated {
 				assert.True(t, executor.ValidateToolCallID(result), "result should be a valid tool_call_id")
-			} else if tc.expected == "call_" {
-				// Should be a generated UUID starting with "call_"
-				assert.True(t, executor.ValidateToolCallID(result), "result should be valid")
-				assert.True(t, len(result) > 5 && result[:5] == "call_", "result should start with 'call_'")
-			} else {
-				// For valid IDs, they should be preserved exactly
-				assert.Equal(t, tc.expected, result, "firstString should return first valid ID")
+				assert.True(t, strings.HasPrefix(result, "call_"), "generated IDs should start with call_")
+				return
 			}
+
+			assert.Equal(t, tc.expected, result, "first non-empty ID should be preserved")
 		})
 	}
 }
@@ -265,9 +236,4 @@ func isValidUUIDFormat(id string) bool {
 	// Check if it matches UUID format (with underscores instead of hyphens allowed)
 	parts := strings.Split(id, "_")
 	return len(parts) >= 2 && len(parts[0]) > 0 && len(parts[len(parts)-1]) >= 8
-}
-
-func isValidToolIDFormat(id string) bool {
-	// Check if it matches OpenAI tool ID format
-	return strings.HasPrefix(id, "toolu_") && len(id) > 10
 }

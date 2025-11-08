@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/util/toolid"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 )
@@ -217,7 +218,8 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 					toolCalls.ForEach(func(_, toolCall gjson.Result) bool {
 						if toolCall.Get("type").String() == "function" {
-							toolCallID := toolCall.Get("id").String()
+							rawID := toolCall.Get("id").String()
+							toolCallID := toolid.Decode(rawID)
 							if toolCallID == "" {
 								toolCallID = genToolCallID()
 							}
@@ -258,7 +260,8 @@ func ConvertOpenAIRequestToClaude(modelName string, inputRawJSON []byte, stream 
 
 			case "tool":
 				// Handle tool result messages conversion
-				toolCallID := message.Get("tool_call_id").String()
+				rawToolID := message.Get("tool_call_id").String()
+				toolCallID := toolid.Decode(rawToolID)
 				content := message.Get("content").String()
 
 				// Create tool result message in Claude Code format
