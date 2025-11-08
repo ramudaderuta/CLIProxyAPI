@@ -232,6 +232,10 @@ tests/
   ```bash
   go test ./tests/unit/kiro -run TestBuildRequestNormalizesSystemBlocks -count=1
   ```
+- **iFlow custom header propagation** – `TestIFlowExecutorForwardsCustomHeaders` in `tests/unit/iflow/iflow_custom_headers_test.go` spins up an `httptest.Server`, repros the Nov ’25 `TodoWrite` loop bug, and asserts the upstream sees `X-IFlow-Task-Directive: allow-tool-advance`. This fails immediately if watcher → auth attributes → OpenAI-compatible executor ever stop copying operator headers. Run via:
+  ```bash
+  go test ./tests/unit/iflow -run TestIFlowExecutorForwardsCustomHeaders -count=1
+  ```
 - **Legacy tool call reconstruction** – `TestParseResponseFromLegacyToolUseStream` in `tests/unit/kiro/kiro_response_test.go` protects the SSE chunk merger against split `toolUseEvent` payloads (already covered in the SSE section above).
 - **Usage accounting** – `TestCountOpenAITokensIncludesSystemPrompt` (`internal/runtime/executor/token_helpers_test.go`) guarantees Anthropic system instructions contribute to `input_tokens`. Run via:
   ```bash
