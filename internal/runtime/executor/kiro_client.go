@@ -15,6 +15,7 @@ import (
 
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	log "github.com/sirupsen/logrus"
 )
@@ -102,6 +103,7 @@ func (c *kiroClient) doRequest(ctx context.Context, auth *cliproxyauth.Auth, tok
 		recordAPIResponseError(ctx, c.cfg, err)
 		return nil, resp.StatusCode, resp.Header.Clone(), err
 	}
+	data = kirotranslator.NormalizeKiroStreamPayload(data)
 	c.debugDumpPayload("kiro response", data)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		appendAPIResponseChunk(ctx, c.cfg, data)
@@ -182,9 +184,60 @@ func (c *kiroClient) debugDumpPayload(label string, payload []byte) {
 	} else {
 		dump = append([]byte{}, dump...)
 	}
+	render := sanitizePayloadForLog(dump)
+	if render == "" {
+		render = "[binary payload omitted]"
+	}
 	log.WithFields(log.Fields{
 		"provider":  "kiro",
 		"bytes":     len(payload),
 		"truncated": truncated,
-	}).Debugf("%s payload: %s", label, string(dump))
+	}).Debugf("%s payload: %s", label, render)
+}
+
+func sanitizePayloadForLog(payload []byte) string {
+	if len(payload) == 0 {
+		return ""
+	}
+
+	out := make([]byte, 0, len(payload))
+	lastWasCR := false
+
+	for _, b := range payload {
+		switch {
+		case b == '\r':
+			if !lastWasCR {
+				out = append(out, '\n')
+			}
+			lastWasCR = true
+			continue
+		case b == '\n':
+			if lastWasCR {
+				lastWasCR = false
+				continue
+			}
+			out = append(out, '\n')
+			continue
+		}
+
+		lastWasCR = false
+		switch {
+		case b == '\t':
+			out = append(out, b)
+		case b < 0x20:
+			continue
+		case b == 0x7f:
+			continue
+		case b >= 0x80 && b < 0xa0:
+			continue
+		default:
+			out = append(out, b)
+		}
+	}
+
+	out = bytes.TrimSpace(out)
+	if len(out) == 0 {
+		return ""
+	}
+	return string(out)
 }

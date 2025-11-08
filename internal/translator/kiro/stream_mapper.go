@@ -9,7 +9,8 @@ import (
 // ConvertKiroStreamToAnthropic maps legacy Kiro SSE payloads into Anthropic-compatible SSE chunks.
 // Returns nil when the payload does not look like an SSE stream so the caller can fall back.
 func ConvertKiroStreamToAnthropic(raw []byte, model string, promptTokens, completionTokens int64) [][]byte {
-	frames := splitKiroFrames(string(raw))
+	normalized := NormalizeKiroStreamPayload(raw)
+	frames := splitKiroFrames(string(normalized))
 	if len(frames) == 0 {
 		return nil
 	}
@@ -126,6 +127,10 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 	}
 
 	node := gjson.Parse(payload)
+
+	if isMeteringPayload(node) {
+		return
+	}
 
 	if sr := node.Get("delta.stop_reason"); sr.Exists() && sr.String() != "" {
 		b.stopReason = sr.String()

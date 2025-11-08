@@ -1,6 +1,7 @@
 package kiro_test
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -212,6 +213,105 @@ func TestConvertKiroStreamToAnthropic_ToolChunks(t *testing.T) {
 	assert.True(t, found, "expected tool delta event")
 }
 
+func TestNormalizeKiroStreamPayload_NoOpJSON(t *testing.T) {
+	raw := []byte(`{"hello":"world"}`)
+	out := kirotranslator.NormalizeKiroStreamPayload(raw)
+	assert.Equal(t, string(raw), string(out))
+}
+
+func TestNormalizeKiroStreamPayload_DecodesEventStream(t *testing.T) {
+	payload := strings.Join([]string{
+		":event-type toolUseEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"name":"ping","toolUseId":"call_ping","input":"{\"ok\":true}"}`,
+	}, "\n")
+	raw := buildEventStreamChunk(payload + "\n")
+
+	decoded := kirotranslator.NormalizeKiroStreamPayload(raw)
+	assert.Equal(t, `{"name":"ping","toolUseId":"call_ping","input":"{\"ok\":true}"}`, string(decoded))
+}
+
+func TestNormalizeKiroStreamPayload_StripsMeteringEvents(t *testing.T) {
+	payload := strings.Join([]string{
+		":event-type meteringEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"unit":"credit","unitPlural":"credits","usage":0.12}`,
+	}, "\n")
+	raw := buildEventStreamChunk(payload + "\n")
+
+	decoded := kirotranslator.NormalizeKiroStreamPayload(raw)
+	assert.Equal(t, "", string(decoded))
+}
+
+func TestConvertKiroStreamToAnthropic_EventStreamPayload(t *testing.T) {
+	toolStart := strings.Join([]string{
+		":event-type toolUseEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"name":"get_weather","toolUseId":"call_42","input":"{\"city\""}`,
+	}, "\n")
+	toolMid := strings.Join([]string{
+		":event-type toolUseEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"name":"get_weather","toolUseId":"call_42","input":": \"Seattle\"}"}`,
+	}, "\n")
+	toolStop := strings.Join([]string{
+		":event-type toolUseEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"name":"get_weather","toolUseId":"call_42","stop":true}`,
+	}, "\n")
+	raw := append(buildEventStreamChunk(toolStart+"\n"), buildEventStreamChunk(toolMid+"\n")...)
+	raw = append(raw, buildEventStreamChunk(toolStop+"\n")...)
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic(raw, "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "AWS event stream payload should be converted")
+
+	events := parseSSEChunks(t, chunks)
+	foundTool := false
+	for _, ev := range events {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if delta["type"] == "input_json_delta" {
+			assert.Equal(t, `{"city":"Seattle"}`, canonicalJSON(delta["partial_json"].(string)))
+			foundTool = true
+		}
+	}
+	assert.True(t, foundTool, "expected tool delta after decoding event stream")
+}
+
+func TestConvertKiroStreamToAnthropic_IgnoresMeteringEvents(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"content":"Working..."}`,
+		"",
+		`data: {"unit":"credit","unitPlural":"credits","usage":0.02}`,
+		"",
+		`data: {"name":"get_weather","toolUseId":"call_meter","input":"{\"city\":\"Paris\"}"}`,
+		"",
+		`data: {"name":"get_weather","toolUseId":"call_meter","stop":true}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	events := parseSSEChunks(t, chunks)
+	for _, ev := range events {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		if delta, ok := ev.Payload["delta"].(map[string]any); ok && delta["type"] == "text_delta" {
+			assert.NotContains(t, delta["text"], "credits")
+			assert.NotContains(t, delta["text"], "usage")
+		}
+	}
+}
+
 // TestKiroExecutor_StreamingChunkOrder ensures text is emitted as a single block following reference ordering.
 func TestKiroExecutor_StreamingChunkOrder(t *testing.T) {
 	content := "Hello! How are you today?"
@@ -384,6 +484,16 @@ func TestConvertKiroStreamToAnthropic_StopReasonOverrides(t *testing.T) {
 type parsedEvent struct {
 	Event   string
 	Payload map[string]any
+}
+
+func buildEventStreamChunk(payload string) []byte {
+	data := []byte(payload)
+	totalLen := 12 + len(data) // prelude (8) + payload + CRC (4)
+	buf := make([]byte, totalLen)
+	binary.BigEndian.PutUint32(buf[0:4], uint32(totalLen))
+	// header length stays zero, trailing 4 CRC bytes already zeroed
+	copy(buf[8:], data)
+	return buf
 }
 
 func parseSSEChunks(t *testing.T, chunks [][]byte) []parsedEvent {
