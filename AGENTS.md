@@ -6,6 +6,8 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 
 ## Current Work Context (Nov 2025)
 
+- **Session summary prompt (drop into Claude Code when resuming work)**:  
+  *“Continue the Nov’25 Kiro <> Claude Code parity effort. Kiro now clamps tool descriptions to ≤256 chars, injects a ‘Tool reference (full descriptions preserved…)’ block, and mirrors Anthropic `tool_choice` into `claudeToolChoice`. Verify future edits keep these guarantees by re-running `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`.”*
 - **Kiro ↔ Claude Code parity push**: Sanitized Anthropic payload translation to strip ANSI escapes, stray `<system-reminder>` blocks, and other control bytes before they touch Kiro (`internal/translator/kiro/request.go`). Anthropic responses are likewise scrubbed to remove protocol metadata (e.g. `content-type` fragments) before returning to Claude Code.
 - **Tool hygiene + parity**: All Claude Code built-ins (Task, Bash, Grep, Skill, SlashCommand, etc.) pass through to Kiro with descriptions clamped to ≤256 chars (hard limit enforced by Kiro). When a description is truncated we inject a `Tool reference (full descriptions preserved…)` block into the system prompt so Claude still sees the complete instructions. User-defined tools share the same sanitizer.
 - **Tool-choice handling**: Anthropic `tool_choice` is translated into `claudeToolChoice` metadata (and a short “Tool directive” sentence in the system prompt) so mandatory tool calls survive the Kiro hop even though the native API doesn’t understand Anthropic’s schema.
@@ -20,10 +22,30 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 
 ### Outstanding TODOs for Claude Code feature parity
 
-1. **Plan-mode / multi-agent orchestration** – We still treat plan-mode helpers (Task ⇄ ExitPlanMode) as plain tools; no orchestration metadata reaches Kiro. Need to surface plan transitions so Claude Code can spin background agents safely.
-2. **Streaming parity** – Kiro still emits raw protocol fragments (`content-type`, chunk headers) during streaming. Map those to Anthropic `content_block_*` events instead of dropping them so Claude Code can render intermediate progress accurately.
-3. **Tool-context transport upgrades** – The “Tool reference” block keeps full descriptions accessible, but it bloats the system prompt. Explore richer transports (hash + fetch-on-demand) so we stay under Kiro limits without repeating large texts each turn.
+> **Reference status:** AIClient-2-API does not implement plan-mode orchestration, real streaming, or hash/fetch manifests today. We intentionally scope our TODO list to work that is feasible (plan-mode semantics) and document how the other concerns are handled so operators know the trade-offs.
 
+1. **Plan-mode orchestration semantics** – Translator emits `planMode` metadata, but neither CLIProxy nor AIClient-2-API consumes it. We still need real state machines (active plan session, enforced ExitPlanMode, telemetry) inside the Go executor/runtime and upstream UI handling. _Still pending._
+
+The following two items are **not planned** because the engineering cost / stability risk outweighs the upside at the moment. Instead, we document the current behavior so users know what to expect:
+
+#### Streaming parity (live SSE)
+
+* **Upstream reality:** Kiro’s public API only returns full responses. AIClient-2-API buffers everything too.
+* **Our approach:** We synthesize Anthropic-style SSE (`message_start → content_block start/delta/stop → message_delta → message_stop`) once the full response arrives. `internal/translator/kiro/response.go` handles synthetic builders; `internal/translator/kiro/stream_mapper.go` handles legacy SSE output. Despite being “pseudo streaming,” this preserves `followupPrompt`, `stop_reason`, tool deltas, and usage so Claude Code renders the same event sequence AIClient-2-API emits.
+* **Why we stay here:** Implementing a custom AWS event-stream reader against `SendMessageStreaming` would add long-lived HTTP handling, retry semantics, and new failure modes without upstream support. Until Amazon exposes a stable streaming API, deterministic SSE synthesis remains the safest option.
+
+#### Tool-context hash/fetch transport
+
+* **Kiro limit:** We still clamp each tool description to 256 chars inside `userInputMessageContext.tools[*].toolSpecification`.
+* **Full text preserved:** Whenever a description is truncated we mirror the entire text in two places:
+  1. `toolContextManifest` (inside `userInputMessageContext`) with entries `{ name, hash (first 64 bits of SHA-256), length, description }`.
+  2. A system-prompt appendix: “Tool reference manifest (hash → tool)” listing each tool as `- Name [hash, length chars]: full description`.
+* **No external registry:** The hash is only a label within the same request so Claude can match entries; nothing is fetched by hash. Keeping the manifest inline avoids adding a stateful service while still letting Claude read the full instructions.
+
+### Action items for the AI Agent (close the remaining Kiro-provider gap)
+
+1. **Plan-mode parity**: Extend the current `planMode` metadata (already emitted by `internal/translator/kiro/request.go`) with executor/runtime wiring so plan sessions are tracked, enforced, and surfaced to Claude Code. No reference implementation exists—this is new design work.
+2. **Regression hardening**: After each change above, add targeted fixtures/tests under `tests/unit/kiro/` and update `tests/TEST_DOCUMENTATION.md` so the AIClient-2-API parity guarantees remain enforced long-term.
 ### Solution approach for the Nov 2025 “Improperly formed request” issue
 
 1. **Clamp + mirror tool descriptions**: Kiro refuses payloads with >256-char tool descriptions, so we hard-cap descriptions inside `userInputMessageContext` but append a `Tool reference (full descriptions preserved…)` block to the system prompt containing the original text. This keeps Kiro happy without hiding instructions from Claude Code.
