@@ -69,6 +69,19 @@ func TestParseResponseFromEventStreamWithControlDelimiters(t *testing.T) {
 	require.Empty(t, calls)
 }
 
+func TestParseResponseStripsProtocolNoiseFromContent(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"type":"content_block_start","index":0,"content_block":{"type":"text"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"content-type\u0007\u0000\u0010application/json"}}`,
+		`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll get the weather in Tokyo."}}`,
+		`data: {"type":"content_block_stop","index":0}`,
+	}, "\n")
+
+	text, calls := kiro.ParseResponse([]byte(stream))
+	require.Equal(t, "I'll get the weather in Tokyo.", text)
+	require.Empty(t, calls)
+}
+
 func TestParseResponseFromAnthropicStyleStream(t *testing.T) {
 	stream := strings.Join([]string{
 		"event: message_start",
@@ -132,6 +145,26 @@ func TestParseResponseFromAnthropicToolStream(t *testing.T) {
 	require.Equal(t, "toolu_1", calls[0].ID)
 	require.Equal(t, "get_weather", calls[0].Name)
 	require.JSONEq(t, `{"location":"Tokyo","unit":"°C"}`, calls[0].Arguments)
+}
+
+func TestParseResponseFromLegacyToolUseStream(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"content":"I'll request the weather."}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":"{\"city\""}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":": "}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":"\"Tokyo\""}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":", \"u"}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":"nit\": "}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","input":"\"°C\"}"}`,
+		`data: {"name":"get_weather","toolUseId":"tool-legacy","stop":true}`,
+	}, "\n")
+
+	text, calls := kiro.ParseResponse([]byte(stream))
+	require.Contains(t, text, "I'll request the weather.")
+	require.Len(t, calls, 1)
+	require.Equal(t, "tool-legacy", calls[0].ID)
+	require.Equal(t, "get_weather", calls[0].Name)
+	require.JSONEq(t, `{"city":"Tokyo","unit":"°C"}`, calls[0].Arguments)
 }
 
 func TestParseResponseFromAnthropicJSONMessage(t *testing.T) {
@@ -356,6 +389,38 @@ func TestBuildAnthropicMessagePayload_ToolUseResponse(t *testing.T) {
 	assert.Equal(t, "tool_use", result["stop_reason"], "Stop reason should be 'tool_use'")
 }
 
+func TestBuildAnthropicMessagePayloadAddsLeadInWhenContentMissing(t *testing.T) {
+	payload, err := kiro.BuildAnthropicMessagePayload(
+		"claude-sonnet-4-5",
+		"",
+		[]kiro.OpenAIToolCall{
+			{ID: "call_123", Name: "get_weather", Arguments: `{"city":"Tokyo","unit":"°C"}`},
+		},
+		12,
+		5,
+	)
+	require.NoError(t, err)
+
+	var result map[string]any
+	require.NoError(t, json.Unmarshal(payload, &result))
+
+	contentBlocks, ok := result["content"].([]any)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, len(contentBlocks), 2)
+
+	textBlock := contentBlocks[0].(map[string]any)
+	require.Equal(t, "text", textBlock["type"])
+	textValue := textBlock["text"].(string)
+	require.NotEmpty(t, textValue)
+	assert.Contains(t, textValue, "get_weather")
+
+	usage, ok := result["usage"].(map[string]any)
+	require.True(t, ok)
+	assert.Contains(t, usage, "input_tokens")
+	assert.Contains(t, usage, "output_tokens")
+	assert.NotContains(t, usage, "total_tokens")
+}
+
 func TestBuildAnthropicMessagePayload_DecodesQuotedToolArguments(t *testing.T) {
 	raw := `{"city":"Tokyo","unit":"°C"}`
 	quoted := strconv.Quote(raw)
@@ -562,9 +627,8 @@ func TestBuildAnthropicMessagePayload_UsageTokenMapping(t *testing.T) {
 	assert.Equal(t, float64(promptTokens), usage["input_tokens"], "Input tokens should match")
 	assert.Equal(t, float64(completionTokens), usage["output_tokens"], "Output tokens should match")
 
-	// Check total tokens calculation
-	expectedTotal := promptTokens + completionTokens
-	assert.Equal(t, float64(expectedTotal), usage["total_tokens"], "Total tokens should be sum of input and output")
+	// Anthropic schema should not expose total_tokens
+	assert.NotContains(t, usage, "total_tokens")
 }
 
 func TestBuildAnthropicMessagePayload_ErrorHandlingMalformedResponses(t *testing.T) {

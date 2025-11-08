@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
@@ -141,7 +142,8 @@ func (p *KiroResponseParser) parseJSONResponse(data []byte) (string, []OpenAIToo
 	// Extract tool calls
 	toolCalls := p.extractAllToolCalls(root)
 
-	return strings.TrimSpace(content), deduplicateToolCalls(toolCalls)
+	cleanContent := sanitizeAssistantText(strings.TrimSpace(content))
+	return cleanContent, deduplicateToolCalls(toolCalls)
 }
 
 // extractContentFromConversationState extracts content from conversation state
@@ -526,7 +528,7 @@ func extractPlainTextFromMalformedInput(input string) string {
 		part = strings.TrimSpace(part)
 		// Remove quotes if present
 		if strings.HasPrefix(part, `"`) && strings.HasSuffix(part, `"`) {
-			part = strings.TrimSpace(part[1 : len(part)-1])
+			part = strings.TrimSpace(strings.Trim(part, `"`))
 		}
 		if len(part) > len(bestPart) && len(part) > 1 {
 			bestPart = part
@@ -764,22 +766,39 @@ func (p *KiroSSEEventProcessor) handleLegacyToolCall(node gjson.Result, context 
 
 	if acc := context.ensureAccumulator(id, name); acc != nil {
 		if input := node.Get("input"); input.Exists() {
-			rawInput := strings.TrimSpace(input.Raw)
-			if rawInput != "" && rawInput != "null" {
-				// For tool call merging, we need to merge JSON objects
-				if acc.call.Arguments != "" {
-					// Merge with existing arguments
-					acc.call.Arguments = mergeJSONArguments(acc.call.Arguments, rawInput)
-				} else {
-					// First argument set
-					acc.call.Arguments = rawInput
-				}
-				acc.hasStream = true
-			}
+			appendLegacyToolInput(acc, input)
 		}
 		if node.Get("stop").Bool() {
 			context.finalizeToolCall(id)
 		}
+	}
+}
+
+func appendLegacyToolInput(acc *toolAccumulator, input gjson.Result) {
+	rawInput := strings.TrimSpace(input.Raw)
+	if rawInput == "" || rawInput == "null" {
+		return
+	}
+
+	switch {
+	case input.IsObject() || input.IsArray():
+		if acc.call.Arguments != "" {
+			acc.call.Arguments = mergeJSONArguments(acc.call.Arguments, rawInput)
+		} else {
+			acc.call.Arguments = rawInput
+		}
+	case input.Type == gjson.String:
+		fallthrough
+	default:
+		chunk := input.String()
+		if chunk == "" {
+			chunk = strings.Trim(rawInput, `"`)
+		}
+		if chunk == "" {
+			return
+		}
+		acc.fragments.WriteString(chunk)
+		acc.hasStream = true
 	}
 }
 
@@ -914,7 +933,7 @@ func (p *KiroSSEStreamParser) ParseStream(raw string) (string, []OpenAIToolCall)
 	p.finalizeAllToolCalls(context)
 
 	// Extract results
-	content := strings.TrimSpace(context.TextBuilder.String())
+	content := sanitizeAssistantText(strings.TrimSpace(context.TextBuilder.String()))
 	toolCalls := p.extractToolCalls(context)
 
 	// Parse bracket-style tool calls as fallback
@@ -1165,6 +1184,108 @@ func tryUnmarshalToolInput(data string) (map[string]any, bool) {
 	return input, true
 }
 
+var (
+	protocolNoisePrefixes = []string{
+		"event-type",
+		"message-type",
+		"content-length",
+		"amz-sdk-request",
+		"x-amzn",
+		"amzn-",
+		"transfer-encoding",
+	}
+	protocolNoisePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?i)content-type\s*[: ]*\s*application/json`),
+		regexp.MustCompile(`(?i)content-type`),
+	}
+	collapseWhitespaceRegex = regexp.MustCompile(`[ \f\r]+`)
+)
+
+func sanitizeAssistantText(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == '\r':
+			continue
+		case r < 32:
+			if r == '\n' {
+				builder.WriteByte('\n')
+			} else if r == '\t' {
+				builder.WriteByte('\t')
+			} else if r == '\v' {
+				builder.WriteByte(' ')
+			}
+			continue
+		case unicode.IsControl(r):
+			continue
+		}
+		builder.WriteRune(r)
+	}
+
+	cleaned := builder.String()
+	for _, pattern := range protocolNoisePatterns {
+		cleaned = pattern.ReplaceAllString(cleaned, "")
+	}
+
+	lines := strings.Split(cleaned, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		lower := strings.ToLower(trimmed)
+		if shouldDropProtocolLine(lower) {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+
+	result := strings.Join(filtered, "\n")
+	result = collapseWhitespaceRegex.ReplaceAllString(result, " ")
+	return strings.TrimSpace(result)
+}
+
+func shouldDropProtocolLine(line string) bool {
+	if line == "" {
+		return false
+	}
+	for _, prefix := range protocolNoisePrefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildToolLeadIn(toolCalls []OpenAIToolCall) string {
+	if len(toolCalls) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(toolCalls))
+	seen := make(map[string]struct{}, len(toolCalls))
+	for _, call := range toolCalls {
+		name := strings.TrimSpace(call.Name)
+		if name == "" {
+			name = "the requested tool"
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	if len(names) == 1 {
+		return fmt.Sprintf("Calling %s to handle this request.", names[0])
+	}
+	return fmt.Sprintf("Calling tools %s to handle this request.", strings.Join(names, ", "))
+}
+
 // mergeJSONArguments merges two JSON objects, with the second one taking precedence for overlapping keys
 func mergeJSONArguments(existing, new string) string {
 	existing = strings.TrimSpace(existing)
@@ -1218,6 +1339,11 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 	// Allow empty tool call IDs for edge case compatibility
 
 	// Build content blocks
+	content = sanitizeAssistantText(strings.TrimSpace(content))
+	if content == "" && len(toolCalls) > 0 {
+		content = buildToolLeadIn(toolCalls)
+	}
+
 	contentBlocks := make([]map[string]any, 0, 1+len(toolCalls))
 
 	// Add text content block if content is not empty
@@ -1263,7 +1389,6 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 		Usage: Usage{
 			InputTokens:  promptTokens,
 			OutputTokens: completionTokens,
-			TotalTokens:  promptTokens + completionTokens,
 		},
 	}
 
@@ -1286,7 +1411,6 @@ type AnthropicMessage struct {
 type Usage struct {
 	InputTokens  int64 `json:"input_tokens"`
 	OutputTokens int64 `json:"output_tokens"`
-	TotalTokens  int64 `json:"total_tokens"`
 }
 
 // BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks formatted as SSE events.

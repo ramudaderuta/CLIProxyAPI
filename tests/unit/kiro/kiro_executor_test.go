@@ -1,12 +1,15 @@
 package kiro_test
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // FAILING TESTS FOR KiroExecutor FORMAT DETECTION
@@ -63,7 +66,7 @@ func TestKiroExecutor_FormatDetection_InvalidFormat(t *testing.T) {
 
 	// Create a test request with invalid format
 	req := cliproxyexecutor.Request{
-		Model: "claude-sonnet-4-5",
+		Model:   "claude-sonnet-4-5",
 		Payload: []byte(`{ "invalid": "format" }`),
 	}
 
@@ -122,4 +125,46 @@ func TestKiroExecutor_FormatDetection_EdgeCases(t *testing.T) {
 			assert.Equal(t, tc.expected, format, "Should detect expected format")
 		})
 	}
+}
+
+func TestKiroExecutor_CountTokensIncludesSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	cfg := &config.Config{}
+	exec := executor.NewKiroExecutor(cfg)
+	ctx := context.Background()
+
+	withSystem := cliproxyexecutor.Request{
+		Model: "claude-sonnet-4-5",
+		Payload: []byte(`{
+			"system": [{"type":"text","text":"You are Claude Code. Always call tools."}],
+			"messages": [{"role":"user","content":[{"type":"text","text":"Ping"}]}]
+		}`),
+	}
+	withoutSystem := cliproxyexecutor.Request{
+		Model: "claude-sonnet-4-5",
+		Payload: []byte(`{
+			"messages": [{"role":"user","content":[{"type":"text","text":"Ping"}]}]
+		}`),
+	}
+
+	respWithSystem, err := exec.CountTokens(ctx, nil, withSystem, cliproxyexecutor.Options{})
+	require.NoError(t, err)
+	respWithoutSystem, err := exec.CountTokens(ctx, nil, withoutSystem, cliproxyexecutor.Options{})
+	require.NoError(t, err)
+
+	withUsage := extractPromptTokens(t, respWithSystem.Payload)
+	withoutUsage := extractPromptTokens(t, respWithoutSystem.Payload)
+	require.Greater(t, withUsage, withoutUsage, "system prompts should increase prompt token count")
+}
+
+func extractPromptTokens(t *testing.T, payload []byte) int64 {
+	t.Helper()
+	var body struct {
+		Usage struct {
+			PromptTokens int64 `json:"prompt_tokens"`
+		} `json:"usage"`
+	}
+	require.NoError(t, json.Unmarshal(payload, &body))
+	return body.Usage.PromptTokens
 }

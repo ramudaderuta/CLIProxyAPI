@@ -60,6 +60,8 @@ func (c *kiroClient) doRequest(ctx context.Context, auth *cliproxyauth.Auth, tok
 		return nil, 0, nil, err
 	}
 
+	c.debugDumpPayload("kiro request", body)
+
 	endpoint := c.buildEndpoint(model, token.ProfileArn, regionOverride)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -100,6 +102,7 @@ func (c *kiroClient) doRequest(ctx context.Context, auth *cliproxyauth.Auth, tok
 		recordAPIResponseError(ctx, c.cfg, err)
 		return nil, resp.StatusCode, resp.Header.Clone(), err
 	}
+	c.debugDumpPayload("kiro response", data)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		appendAPIResponseChunk(ctx, c.cfg, data)
 		return nil, resp.StatusCode, resp.Header.Clone(), kiroStatusError{code: resp.StatusCode, msg: string(data)}
@@ -164,4 +167,24 @@ func (c *kiroClient) macHashValue() string {
 		c.macHash = "0000000000000000"
 	})
 	return c.macHash
+}
+
+func (c *kiroClient) debugDumpPayload(label string, payload []byte) {
+	if c.cfg == nil || !c.cfg.Debug || len(payload) == 0 {
+		return
+	}
+	const limit = 4096
+	dump := bytes.TrimSpace(payload)
+	truncated := false
+	if len(dump) > limit {
+		dump = append([]byte{}, dump[:limit]...)
+		truncated = true
+	} else {
+		dump = append([]byte{}, dump...)
+	}
+	log.WithFields(log.Fields{
+		"provider":  "kiro",
+		"bytes":     len(payload),
+		"truncated": truncated,
+	}).Debugf("%s payload: %s", label, string(dump))
 }

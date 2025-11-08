@@ -2,11 +2,14 @@ package kiro_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
-	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroTranslation_CompleteFlow tests the complete translation flow
@@ -349,6 +352,316 @@ func TestBuildRequestWithSystemAndHistory(t *testing.T) {
 	first := history[0].(map[string]any)["userInputMessage"].(map[string]any)
 	if first["content"].(string) == "" {
 		t.Fatalf("system prompt should seed history content")
+	}
+}
+
+func TestBuildRequestNormalizesSystemBlocks(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+		"system": [
+			{"type":"text","text":"You are Claude Code."},
+			{"type":"text","text":"Always call tools for weather."}
+		],
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"Ping"}]}
+		]
+	}`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	history := conv["history"].([]any)
+	if len(history) == 0 {
+		t.Fatalf("expected history seeded by system prompt")
+	}
+	first := history[0].(map[string]any)["userInputMessage"].(map[string]any)
+	content := first["content"].(string)
+	if strings.Contains(content, "[{") {
+		t.Fatalf("system prompt was not normalized: %q", content)
+	}
+	if !strings.Contains(content, "Claude Code") || !strings.Contains(content, "Always call tools") {
+		t.Fatalf("system prompt text missing from content: %q", content)
+	}
+}
+
+func TestBuildRequestWithSystemAndSingleUserDoesNotDuplicate(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+		"system": "Stay calm.",
+		"messages": [
+			{"role":"user","content":"Ping"}
+		]
+	}`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	history := conv["history"].([]any)
+	if len(history) != 1 {
+		t.Fatalf("expected single history entry for system prompt, got %d", len(history))
+	}
+	historyContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
+	if strings.Contains(historyContent, "Ping") {
+		t.Fatalf("system history entry should not include user content: %q", historyContent)
+	}
+
+	current := conv["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	if current["content"] != "Ping" {
+		t.Fatalf("current message should include user content, got %v", current["content"])
+	}
+}
+
+func TestBuildRequestStripsControlCharactersFromUserContent(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+		"system": [{"type":"text","text":"You are Claude Code."}],
+		"messages": [
+			{
+				"role": "user",
+				"content": [
+					{"type":"text","text":"<system-reminder>Stay focused</system-reminder>"},
+					{"type":"text","text":"hello from terminal \u001b[1mopus (claude-sonnet-4-5)\u001b[22m"}
+				]
+			}
+		],
+		"tools": [
+			{
+				"name": "get_weather",
+				"description": "Get weather",
+				"input_schema": {
+					"type": "object",
+					"properties": {
+						"city": {"type": "string"}
+					},
+					"required": ["city"]
+				}
+			}
+		]
+	}`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	current := conv["currentMessage"].(map[string]any)
+	userInput := current["userInputMessage"].(map[string]any)
+	content := userInput["content"].(string)
+
+	if strings.Contains(content, "\u001b") {
+		t.Fatalf("expected escape characters to be stripped, got %q", content)
+	}
+	if !strings.Contains(content, "<system-reminder>") {
+		t.Fatalf("expected system reminder tag to be preserved, got %q", content)
+	}
+
+	context := userInput["userInputMessageContext"].(map[string]any)
+	tools, ok := context["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("expected translated tool specification, got %v", context)
+	}
+}
+
+func TestBuildRequestPreservesLongToolDescriptions(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	longDesc := strings.Repeat("Detailed description ", 200)
+	payload := []byte(fmt.Sprintf(`{
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"Ping"}]}
+		],
+		"tools": [
+			{
+				"name": "get_weather",
+				"description": "%s",
+				"input_schema": {"type":"object"}
+			}
+		]
+	}`, longDesc))
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	current := req["conversationState"].(map[string]any)["currentMessage"].(map[string]any)
+	context := current["userInputMessage"].(map[string]any)["userInputMessageContext"].(map[string]any)
+	tools := context["tools"].([]any)
+	toolSpec := tools[0].(map[string]any)["toolSpecification"].(map[string]any)
+
+	desc := toolSpec["description"].(string)
+	if len([]rune(desc)) > 256 {
+		t.Fatalf("expected sanitized description to stay within 256 chars, got %d", len([]rune(desc)))
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	history := conv["history"].([]any)
+	if len(history) == 0 {
+		t.Fatalf("expected system prompt history entry")
+	}
+	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
+	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved for Claude Code)") {
+		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	}
+	if !strings.Contains(sysContent, "Detailed description Detailed description Detailed description Detailed description") {
+		t.Fatalf("expected full tool description preserved in tool reference block")
+	}
+}
+
+func TestBuildRequestStripsMarkupFromToolDescriptions(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+		"messages": [
+			{"role":"user","content":[{"type":"text","text":"Ping"}]}
+		],
+		"tools": [
+			{
+				"name": "skills",
+				"description": "<skills_instructions>Use this tool.</skills_instructions>",
+				"input_schema": {"type":"object"}
+			}
+		]
+	}`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	tools := req["conversationState"].(map[string]any)["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)["userInputMessageContext"].(map[string]any)["tools"].([]any)
+	desc := tools[0].(map[string]any)["toolSpecification"].(map[string]any)["description"].(string)
+	if strings.Contains(desc, "<") || strings.Contains(desc, ">") {
+		t.Fatalf("expected markup to be stripped, got %q", desc)
+	}
+}
+
+func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := testutil.LoadTestData(t, "nonstream/claude_code_tooling_request.json")
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	current := conv["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	ctx, ok := current["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected userInputMessageContext to be populated")
+	}
+
+	toolsAny := ctx["tools"].([]any)
+	if len(toolsAny) < 6 {
+		t.Fatalf("expected builtin tools to pass through, only saw %d entries", len(toolsAny))
+	}
+
+	found := make(map[string]bool)
+	for _, tool := range toolsAny {
+		spec := tool.(map[string]any)["toolSpecification"].(map[string]any)
+		name := spec["name"].(string)
+		found[strings.ToLower(name)] = true
+	}
+
+	for _, builtin := range []string{"task", "bash", "glob", "grep", "todowrite", "skill", "slashcommand"} {
+		if !found[builtin] {
+			t.Fatalf("expected builtin tool %s to be forwarded", builtin)
+		}
+	}
+
+	meta, ok := ctx["claudeToolChoice"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected claudeToolChoice metadata to be attached")
+	}
+	if meta["mode"] != "tool" || meta["name"] != "get_weather" {
+		t.Fatalf("unexpected tool choice metadata: %#v", meta)
+	}
+
+	history := conv["history"].([]any)
+	if len(history) == 0 {
+		t.Fatalf("expected system prompt to be injected into history")
+	}
+	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
+	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved") {
+		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	}
+	if !strings.Contains(sysContent, "Tool directive: you must call the tool") {
+		t.Fatalf("expected tool directive in system prompt:\n%s", sysContent)
+	}
+}
+
+func TestBuildRequestAddsToolReferenceForTruncatedDescriptions(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := testutil.LoadTestData(t, "nonstream/claude_code_tooling_request.json")
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	current := req["conversationState"].(map[string]any)["currentMessage"].(map[string]any)
+	userInput := current["userInputMessage"].(map[string]any)
+	ctx := userInput["userInputMessageContext"].(map[string]any)
+	tools := ctx["tools"].([]any)
+
+	for idx, tool := range tools {
+		desc := tool.(map[string]any)["toolSpecification"].(map[string]any)["description"].(string)
+		if l := len([]rune(desc)); l > 256 {
+			t.Fatalf("tool %d description exceeded 256 chars (%d)", idx, l)
+		}
+	}
+
+	history := req["conversationState"].(map[string]any)["history"].([]any)
+	if len(history) == 0 {
+		t.Fatalf("expected system prompt entry in history")
+	}
+	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
+	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved for Claude Code)") {
+		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	}
+	if !strings.Contains(sysContent, "Task: Create, update, and list todos") {
+		t.Fatalf("expected full Task description inside tool reference block to prevent regression:\n%s", sysContent)
 	}
 }
 
@@ -757,8 +1070,8 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 			"claude-sonnet-4-5",
 			content,
 			toolCalls,
-			50,  // promptTokens
-			30,  // completionTokens
+			50, // promptTokens
+			30, // completionTokens
 		)
 		if err != nil {
 			t.Fatalf("OpenAI format conversion failed: %v", err)
@@ -791,8 +1104,8 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 			"claude-sonnet-4-5",
 			content,
 			toolCalls,
-			50,  // promptTokens
-			30,  // completionTokens
+			50, // promptTokens
+			30, // completionTokens
 		)
 		if err != nil {
 			t.Fatalf("Anthropic format conversion failed: %v", err)

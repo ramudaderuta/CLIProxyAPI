@@ -53,6 +53,29 @@ Test scenarios include:
 - Mixed content with large thinking sections
 - SSE event boundary handling with large payloads
 
+### Legacy Tool Streams
+`TestParseResponseFromLegacyToolUseStream` (`tests/unit/kiro/kiro_response_test.go`) covers Anthropic-style `toolUseEvent` fragments that arrive as raw substrings (e.g. `"input":"{\"city\""`). Keep future SSE regressions focused here so legacy chunk mergers stay well-tested without polluting integration suites.
+
+### Claude Code ↔ Kiro Payload Hygiene
+
+The unit suite now has dedicated cases that mirror the real Claude Code requests captured in `logs/v1-messages-2025-11-08T175404-*.log`. Run them with:
+
+```bash
+go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1
+```
+
+Key coverage:
+
+| Test | File | What it guards |
+|------|------|----------------|
+| `TestParseResponseStripsProtocolNoiseFromContent` | `tests/unit/kiro/kiro_response_test.go` | Ensures `content-type…application/json` leaks and other control strings are scrubbed before Anthropic responses are returned. |
+| `TestBuildRequestStripsControlCharactersFromUserContent` | `tests/unit/kiro/kiro_translation_test.go` | Rejects ANSI escapes / `<system-reminder>` scaffolding present in Claude Code prompts. |
+| `TestBuildRequestPreservesLongToolDescriptions` + `TestBuildRequestStripsMarkupFromToolDescriptions` | same | Enforces the 256-char Kiro limit while mirroring the full text back into the system prompt (`Tool reference…`) so Claude still sees the entire instructions. |
+| `TestBuildRequestPreservesClaudeCodeBuiltinTools` | same | Loads the real-world fixture `nonstream/claude_code_tooling_request.json` to ensure Bash/Task/Grep/etc. survive translation, clamp to 256 chars, and emit the extra context/tool-choice directives Claude Code expects. |
+| `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` | same | Guards against the Nov'25 regression by verifying every tool description is ≤256 chars while the `Tool reference…` block still contains the full Task/Bash/etc guidance that Claude Code requires. |
+
+When diagnosing future “Improperly formed request” errors, reproduce with `/tmp/claude_request.json` (saved during the Nov 2025 incident) and rerun the suite above before shipping changes.
+
 ---
 
 ## Target Directory Layout
@@ -109,6 +132,7 @@ tests/
 - **Dynamic token creation** replaces hardcoded absolute paths with `t.TempDir()`
 - Put test-only data under a `testdata/` folder. Go tooling ignores it for builds, and paths are stable.
 - Prefer **domain folders** (e.g., `kiro/`) so file names can be concise (no long prefixes).
+- **No stray `_test.go` in production dirs**: keep package unit tests inside `tests/unit/<domain>/` (or the relevant `tests/...` bucket). Only colocate next to production code when a test truly must live there—for example, when the functionality is `internal`-only and cannot be exercised via exported APIs. Even then, favor higher-level coverage in `tests/unit` so `go test ./tests/...` remains the source of truth.
 
 ---
 
@@ -194,6 +218,20 @@ tests/
 ### **Multiple translation e2e flows in integration**
 - **Don't**: Exhaustive translation testing in integration
 - **Do**: Keep one "happy path" and one streaming path in integration; thorough cases in unit
+
+---
+
+## Spotlighted Tests & Commands
+
+- **System prompt normalization** – `TestBuildRequestNormalizesSystemBlocks` in `tests/unit/kiro/kiro_translation_test.go` ensures Anthropic `system` arrays are flattened before seeding Kiro history. Run with:
+  ```bash
+  go test ./tests/unit/kiro -run TestBuildRequestNormalizesSystemBlocks -count=1
+  ```
+- **Legacy tool call reconstruction** – `TestParseResponseFromLegacyToolUseStream` in `tests/unit/kiro/kiro_response_test.go` protects the SSE chunk merger against split `toolUseEvent` payloads (already covered in the SSE section above).
+- **Usage accounting** – `TestCountOpenAITokensIncludesSystemPrompt` (`internal/runtime/executor/token_helpers_test.go`) guarantees Anthropic system instructions contribute to `input_tokens`. Run via:
+  ```bash
+  go test ./internal/runtime/executor -run TestCountOpenAITokensIncludesSystemPrompt -count=1
+  ```
 
 ---
 

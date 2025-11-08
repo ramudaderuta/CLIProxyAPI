@@ -48,6 +48,7 @@ func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	segments := make([]string, 0, 32)
 
 	collectOpenAIMessages(root.Get("messages"), &segments)
+	collectAnthropicSystemPrompt(root.Get("system"), &segments)
 	collectOpenAITools(root.Get("tools"), &segments)
 	collectOpenAIFunctions(root.Get("functions"), &segments)
 	collectOpenAIToolChoice(root.Get("tool_choice"), &segments)
@@ -65,6 +66,29 @@ func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 		return 0, err
 	}
 	return int64(count), nil
+}
+
+func collectAnthropicSystemPrompt(system gjson.Result, segments *[]string) {
+	if !system.Exists() {
+		return
+	}
+	if system.Type == gjson.String {
+		addIfNotEmpty(segments, system.String())
+		return
+	}
+	if system.IsArray() {
+		system.ForEach(func(_, part gjson.Result) bool {
+			collectAnthropicSystemPrompt(part, segments)
+			return true
+		})
+		return
+	}
+	if system.IsObject() {
+		addIfNotEmpty(segments, system.Get("text").String())
+		collectOpenAIContent(system.Get("content"), segments)
+		return
+	}
+	addIfNotEmpty(segments, system.String())
 }
 
 // buildOpenAIUsageJSON returns a minimal usage structure understood by downstream translators.

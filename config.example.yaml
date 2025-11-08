@@ -28,6 +28,9 @@ api-keys:
 # Enable debug logging
 debug: false
 
+# Mirror upstream requests/responses into timestamped log files (logs/*.log)
+request-log: false
+
 # When true, write application logs to rotating files instead of stdout
 logging-to-file: false
 

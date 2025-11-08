@@ -3,7 +3,9 @@ package kiro
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/google/uuid"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
@@ -11,9 +13,15 @@ import (
 )
 
 const (
-	chatTrigger = "MANUAL"
-	origin      = "AI_EDITOR"
+	chatTrigger              = "MANUAL"
+	origin                   = "AI_EDITOR"
+	maxToolDescriptionLength = 256
 )
+
+type toolContextEntry struct {
+	Name        string
+	Description string
+}
 
 // BuildRequest converts an OpenAI-compatible chat payload into Kiro's conversation request format.
 func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage, metadata map[string]any) ([]byte, error) {
@@ -22,31 +30,46 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	}
 	root := gjson.ParseBytes(payload)
 	messages := root.Get("messages")
-	if !messages.Exists() || !messages.IsArray() || len(messages.Array()) == 0 {
+	if !messages.Exists() || !messages.IsArray() {
+		return nil, fmt.Errorf("kiro translator: messages array is required")
+	}
+	messageArray := messages.Array()
+	if len(messageArray) == 0 {
 		return nil, fmt.Errorf("kiro translator: messages array is required")
 	}
 
-	systemPrompt := strings.TrimSpace(root.Get("system").String())
+	systemPrompt := extractSystemPrompt(root.Get("system"))
 	tools := root.Get("tools")
+	toolDefinitions, toolContextEntries := buildToolSpecifications(tools)
+	toolChoiceMeta, toolChoiceDirective := buildToolChoiceMetadata(root.Get("tool_choice"))
+
+	if block := buildToolContextBlock(toolContextEntries); block != "" {
+		systemPrompt = combineContent(systemPrompt, block)
+	}
+	if toolChoiceDirective != "" {
+		systemPrompt = combineContent(systemPrompt, toolChoiceDirective)
+	}
+
 	kiroModel := MapModel(model)
 
-	history := make([]map[string]any, 0, len(messages.Array()))
+	history := make([]map[string]any, 0, len(messageArray))
 	startIndex := 0
 
 	if systemPrompt != "" {
-		first := messages.Array()[0]
-		if strings.EqualFold(first.Get("role").String(), "user") {
-			text, _, _, _ := extractUserMessage(first)
+		first := messageArray[0]
+		firstIsUser := strings.EqualFold(first.Get("role").String(), "user")
+		if firstIsUser && len(messageArray) > 1 {
+			text, toolResults, toolUses, images := extractUserMessage(first)
 			content := combineContent(systemPrompt, text)
-			history = append(history, wrapUserMessage(content, kiroModel, nil, nil, nil, nil))
+			history = append(history, wrapUserMessage(content, kiroModel, toolResults, toolUses, images, nil))
 			startIndex = 1
 		} else {
 			history = append(history, wrapUserMessage(systemPrompt, kiroModel, nil, nil, nil, nil))
 		}
 	}
 
-	for i := startIndex; i < len(messages.Array())-1; i++ {
-		msg := messages.Array()[i]
+	for i := startIndex; i < len(messageArray)-1; i++ {
+		msg := messageArray[i]
 		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
 		switch role {
 		case "assistant":
@@ -58,7 +81,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		}
 	}
 
-	current := messages.Array()[len(messages.Array())-1]
+	current := messageArray[len(messageArray)-1]
 	currentRole := strings.ToLower(strings.TrimSpace(current.Get("role").String()))
 	var currentPayload map[string]any
 	if currentRole == "assistant" {
@@ -75,8 +98,11 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		if len(toolResults) > 0 {
 			context["toolResults"] = toolResults
 		}
-		if toolDefinitions := buildToolSpecifications(tools); len(toolDefinitions) > 0 {
+		if len(toolDefinitions) > 0 {
 			context["tools"] = toolDefinitions
+		}
+		if toolChoiceMeta != nil {
+			context["claudeToolChoice"] = toolChoiceMeta
 		}
 		if len(context) == 0 {
 			context = nil
@@ -181,8 +207,8 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 				))
 				// Always create tool result entry, even with empty content
 				toolResults = append(toolResults, map[string]any{
-					"content": []map[string]string{{"text": resultContent}},
-					"status":  firstString(part.Get("status").String(), "success"),
+					"content":   []map[string]string{{"text": resultContent}},
+					"status":    firstString(part.Get("status").String(), "success"),
 					"toolUseId": toolUseId,
 				})
 			case "tool_use":
@@ -201,7 +227,7 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 	} else if content.Exists() {
 		textParts = append(textParts, content.String())
 	}
-	return strings.TrimSpace(strings.Join(textParts, "\n")), toolResults, toolUses, images
+	return sanitizeTextContent(strings.Join(textParts, "\n")), toolResults, toolUses, images
 }
 
 func extractAssistantMessage(msg gjson.Result) (string, []map[string]any) {
@@ -228,14 +254,15 @@ func extractAssistantMessage(msg gjson.Result) (string, []map[string]any) {
 	} else if content.Exists() {
 		textParts = append(textParts, content.String())
 	}
-	return strings.TrimSpace(strings.Join(textParts, "\n")), toolUses
+	return sanitizeTextContent(strings.Join(textParts, "\n")), toolUses
 }
 
-func buildToolSpecifications(tools gjson.Result) []map[string]any {
+func buildToolSpecifications(tools gjson.Result) ([]map[string]any, []toolContextEntry) {
 	if !tools.Exists() || !tools.IsArray() {
-		return nil
+		return nil, nil
 	}
 	specs := make([]map[string]any, 0, len(tools.Array()))
+	contexts := make([]toolContextEntry, 0, len(tools.Array()))
 	tools.ForEach(func(_, tool gjson.Result) bool {
 		var name, description string
 		var schema map[string]any
@@ -266,6 +293,12 @@ func buildToolSpecifications(tools gjson.Result) []map[string]any {
 			}
 		}
 
+		name = sanitizeTextContent(name)
+		shortDescription, fullDescription, truncated := sanitizeToolDescription(name, description)
+		if truncated {
+			contexts = append(contexts, toolContextEntry{Name: name, Description: fullDescription})
+		}
+
 		if name == "" {
 			return true
 		}
@@ -277,14 +310,50 @@ func buildToolSpecifications(tools gjson.Result) []map[string]any {
 		entry := map[string]any{
 			"toolSpecification": map[string]any{
 				"name":        name,
-				"description": description,
+				"description": shortDescription,
 				"inputSchema": map[string]any{"json": schema},
 			},
 		}
 		specs = append(specs, entry)
 		return true
 	})
-	return specs
+	return specs, contexts
+}
+
+func sanitizeToolDescription(name, desc string) (string, string, bool) {
+	desc = sanitizeTextContent(desc)
+	desc = stripAngleBracketBlocks(desc)
+	desc = collapseSpaces(desc)
+	if desc == "" {
+		desc = fmt.Sprintf("Tool %s", name)
+	}
+	full := desc
+	truncated := false
+	runes := []rune(desc)
+	if len(runes) > maxToolDescriptionLength {
+		desc = string(runes[:maxToolDescriptionLength])
+		truncated = true
+	}
+	return desc, full, truncated
+}
+
+var angleBracketPattern = regexp.MustCompile(`(?s)<[^>]+>`)
+
+func stripAngleBracketBlocks(text string) string {
+	return angleBracketPattern.ReplaceAllString(text, "")
+}
+
+func collapseSpaces(text string) string {
+	fields := strings.Fields(text)
+	return strings.Join(fields, " ")
+}
+
+func normalizeToolKey(name string) string {
+	key := strings.ToLower(name)
+	key = strings.ReplaceAll(key, " ", "")
+	key = strings.ReplaceAll(key, "-", "")
+	key = strings.ReplaceAll(key, "_", "")
+	return key
 }
 
 func buildImagePart(part gjson.Result) map[string]any {
@@ -328,10 +397,42 @@ func extractNestedContent(value gjson.Result) string {
 	return value.String()
 }
 
+func extractSystemPrompt(system gjson.Result) string {
+	if !system.Exists() {
+		return ""
+	}
+
+	switch {
+	case system.Type == gjson.String:
+		return strings.TrimSpace(system.String())
+	case system.IsArray():
+		parts := make([]string, 0, len(system.Array()))
+		system.ForEach(func(_, part gjson.Result) bool {
+			if text := extractSystemPrompt(part); text != "" {
+				parts = append(parts, text)
+			}
+			return true
+		})
+		return strings.TrimSpace(strings.Join(parts, "\n\n"))
+	case system.IsObject():
+		if text := strings.TrimSpace(system.Get("text").String()); text != "" {
+			return text
+		}
+		if content := system.Get("content"); content.Exists() {
+			if nested := strings.TrimSpace(extractNestedContent(content)); nested != "" {
+				return nested
+			}
+		}
+		return strings.TrimSpace(system.String())
+	default:
+		return strings.TrimSpace(system.String())
+	}
+}
+
 func combineContent(parts ...string) string {
 	acc := make([]string, 0, len(parts))
 	for _, part := range parts {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
+		if trimmed := sanitizeTextContent(part); trimmed != "" {
 			acc = append(acc, trimmed)
 		}
 	}
@@ -376,4 +477,113 @@ func SanitizeToolCallID(id string) string {
 		return trimmed
 	}
 	return "call_" + uuid.New().String()
+}
+
+func sanitizeTextContent(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	var builder strings.Builder
+	builder.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r == '\r':
+			continue
+		case r == '\n', r == '\t':
+			builder.WriteRune(r)
+		case unicode.IsControl(r):
+			continue
+		default:
+			builder.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func buildToolContextBlock(entries []toolContextEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+
+	var builder strings.Builder
+	builder.WriteString("Tool reference (full descriptions preserved for Claude Code):")
+	for _, entry := range entries {
+		builder.WriteString("\n- ")
+		builder.WriteString(entry.Name)
+		builder.WriteString(": ")
+		builder.WriteString(entry.Description)
+	}
+	return sanitizeTextContent(builder.String())
+}
+
+func buildToolChoiceMetadata(choice gjson.Result) (map[string]any, string) {
+	if !choice.Exists() {
+		return nil, ""
+	}
+
+	mode := ""
+	name := ""
+
+	switch {
+	case choice.Type == gjson.String:
+		mode = normalizeToolChoiceMode(choice.String())
+	case choice.IsObject():
+		mode = normalizeToolChoiceMode(choice.Get("type").String())
+		if strings.EqualFold(mode, "tool") {
+			name = choice.Get("name").String()
+			if name == "" {
+				name = choice.Get("function.name").String()
+			}
+		}
+		if mode == "" {
+			if fn := choice.Get("function.name").String(); fn != "" {
+				mode = "tool"
+				name = fn
+			}
+		}
+	default:
+		return nil, ""
+	}
+
+	if mode == "" || strings.EqualFold(mode, "auto") {
+		return nil, ""
+	}
+
+	meta := map[string]any{"mode": mode}
+	if trimmed := strings.TrimSpace(name); trimmed != "" {
+		meta["name"] = trimmed
+	}
+	return meta, buildToolChoiceDirective(mode, name)
+}
+
+func normalizeToolChoiceMode(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "auto":
+		return ""
+	case "any", "required":
+		return "required"
+	case "none":
+		return "none"
+	case "tool", "function":
+		return "tool"
+	default:
+		return value
+	}
+}
+
+func buildToolChoiceDirective(mode, name string) string {
+	switch mode {
+	case "none":
+		return "Tool directive: respond directly without invoking any tools for this turn."
+	case "required":
+		return "Tool directive: you must use at least one available tool before concluding your response."
+	case "tool":
+		if strings.TrimSpace(name) == "" {
+			return ""
+		}
+		return fmt.Sprintf("Tool directive: you must call the tool %q before responding to the user.", name)
+	default:
+		return ""
+	}
 }
