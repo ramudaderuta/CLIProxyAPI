@@ -89,12 +89,14 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 		created := time.Now().Unix()
 		id := fmt.Sprintf("chatcmpl_%s", uuid.NewString())
 
-		var chunks [][]byte
-		if format == "anthropic" {
-			chunks = kirotranslator.BuildAnthropicStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
-		} else {
-			// Default to OpenAI format
-			chunks = kirotranslator.BuildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)
+		chunks := result.StreamChunks
+		if len(chunks) == 0 {
+			if format == "anthropic" {
+				chunks = kirotranslator.BuildAnthropicStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls, result.PromptTokens, result.CompletionTokens)
+			} else {
+				// Default to OpenAI format
+				chunks = kirotranslator.BuildStreamingChunks(id, req.Model, created, result.Text, result.ToolCalls)
+			}
 		}
 
 		for _, payload := range chunks {
@@ -226,6 +228,7 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 	}
 	promptTokens, _ := estimatePromptTokens(req.Model, req.Payload)
 	completionTokens := estimateCompletionTokens(text, toolCalls)
+	streamChunks := kirotranslator.ConvertKiroStreamToAnthropic(data, req.Model, promptTokens, completionTokens)
 
 	return &kiroResult{
 		Text:             text,
@@ -233,6 +236,7 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 		KiroModel:        kirotranslator.MapModel(req.Model),
 		PromptTokens:     promptTokens,
 		CompletionTokens: completionTokens,
+		StreamChunks:     streamChunks,
 	}, nil
 }
 
@@ -254,48 +258,57 @@ func FilterThinkingContent(text string) string {
 		return text
 	}
 
-	// Handle JSON-style thinking content by removing exact "Thinking" matches
-	text = strings.ReplaceAll(text, "Thinking", "")
-
 	// Split by lines to handle Thinking sections properly
 	lines := strings.Split(text, "\n")
 	var filteredLines []string
 	var inThinkingBlock bool
+	var pendingSeparator bool
+
+	appendBlank := func() {
+		if len(filteredLines) == 0 || filteredLines[len(filteredLines)-1] != "" {
+			filteredLines = append(filteredLines, "")
+		}
+	}
 
 	for _, line := range lines {
 		trimmedLine := strings.TrimSpace(line)
 
-		// Check if this line starts a Thinking section
 		if strings.HasPrefix(trimmedLine, "Thinking") || strings.HasPrefix(trimmedLine, "Thinking:") {
 			inThinkingBlock = true
+			pendingSeparator = false
 			continue
 		}
 
-		// Check if this line ends a Thinking block (next section starts)
-		if inThinkingBlock && trimmedLine != "" && !strings.HasPrefix(trimmedLine, " ") && !strings.HasPrefix(trimmedLine, "\t") {
-			// This appears to be a new section, end Thinking block
-			inThinkingBlock = false
-		}
-
-		// Skip lines that are part of Thinking blocks
 		if inThinkingBlock {
+			if trimmedLine == "" {
+				pendingSeparator = true
+				continue
+			}
+			inThinkingBlock = false
+			pendingSeparator = true
+		}
+
+		if trimmedLine == "" {
+			if !inThinkingBlock {
+				appendBlank()
+			}
 			continue
 		}
 
-		// Include non-Thinking lines
+		if pendingSeparator {
+			appendBlank()
+			pendingSeparator = false
+		}
+
 		filteredLines = append(filteredLines, line)
 	}
 
 	// Join the filtered lines and clean up extra whitespace
 	result := strings.Join(filteredLines, "\n")
 
-	// Clean up multiple consecutive newlines and extra spaces
 	for strings.Contains(result, "\n\n\n") {
 		result = strings.ReplaceAll(result, "\n\n\n", "\n\n")
 	}
-
-	// Remove extra spaces between words
-	result = strings.Join(strings.Fields(result), " ")
 
 	return strings.TrimSpace(result)
 }

@@ -13,63 +13,31 @@ import (
 // TestKiroExecutor_SSEFormatting_SimpleText tests that streaming responses are properly formatted as SSE events
 func TestKiroExecutor_SSEFormatting_SimpleText(t *testing.T) {
 	t.Parallel()
-	// This test should PASS with corrected implementation
-	// because Kiro now returns SSE-formatted events instead of raw JSON
-
-	// Build the chunks that Kiro now produces (SSE-FORMATTED - CORRECT)
 	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, "Hello, world!", []kirotranslator.OpenAIToolCall{}, 25, 5)
 
-	// Verify new behavior is CORRECT (SSE-formatted events)
 	require.Greater(t, len(chunks), 0, "Should produce chunks")
 
-	// Concatenate all chunks to simulate output
-	var currentOutput strings.Builder
-	for _, chunk := range chunks {
-		currentOutput.Write(chunk)
-	}
-	currentOutputStr := currentOutput.String()
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}, eventNames(events))
 
-	// Output should now have proper SSE formatting
-	assert.Contains(t, currentOutputStr, "event: message_start", "Should have SSE event prefix for message_start")
-	assert.Contains(t, currentOutputStr, "event: content_block_start", "Should have SSE event prefix for content_block_start")
-	assert.Contains(t, currentOutputStr, "event: content_block_delta", "Should have SSE event prefix for content_block_delta")
-	assert.Contains(t, currentOutputStr, "event: content_block_stop", "Should have SSE event prefix for content_block_stop")
-	assert.Contains(t, currentOutputStr, "event: message_delta", "Should have SSE event prefix for message_delta")
-	assert.Contains(t, currentOutputStr, "event: message_stop", "Should have SSE event prefix for message_stop")
+	textDelta := events[2].Payload["delta"].(map[string]any)
+	assert.Equal(t, "text_delta", textDelta["type"])
+	assert.Equal(t, "Hello, world!", textDelta["text"])
 
-	// CRITICAL: Output should have SSE data prefixes
-	assert.Contains(t, currentOutputStr, "data: ", "Should have SSE data prefix")
+	delta := events[4].Payload["delta"].(map[string]any)
+	assert.Equal(t, "end_turn", delta["stop_reason"])
+	assert.Nil(t, delta["stop_sequence"])
 
-	// Should still contain the JSON data
-	assert.Contains(t, currentOutputStr, `"type":"message_start"`, "Should contain message_start JSON")
-	assert.Contains(t, currentOutputStr, `"type":"content_block_start"`, "Should contain content_block_start JSON")
-	assert.Contains(t, currentOutputStr, `"type":"content_block_delta"`, "Should contain content_block_delta JSON")
-	assert.Contains(t, currentOutputStr, `"type":"content_block_stop"`, "Should contain content_block_stop JSON")
-	assert.Contains(t, currentOutputStr, `"type":"message_delta"`, "Should contain message_delta JSON")
-	assert.Contains(t, currentOutputStr, `"type":"message_stop"`, "Should contain message_stop JSON")
-
-	// CRITICAL BUG FIX: Verify stop_sequence is null (not "end_turn")
-	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null in message_start")
-	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null in message_delta")
-
-	// CRITICAL BUG FIX: Verify output_tokens is properly counted (not hardcoded 0 in message_delta)
-	// message_start should have output_tokens: 0, but message_delta should have actual count
-	assert.Contains(t, currentOutputStr, `"output_tokens":0`, "message_start should have output_tokens: 0")
-	// Verify message_delta has non-zero output_tokens for actual content
-	assert.Contains(t, currentOutputStr, `"output_tokens":`, "Should have output_tokens in message_delta")
-	// Ensure final output_tokens is not 0 (unless truly empty response)
-	if strings.Contains(currentOutputStr, `"text":"Hello, world!"`) {
-		assert.NotContains(t, currentOutputStr, `"output_tokens":0\n}`, "output_tokens should not be 0 in final message_delta for actual content")
-	}
-
-	// Verify proper SSE structure with incremental streaming
-	// Content is now split into multiple delta events, so check for both parts
-	assert.Contains(t, currentOutputStr, `"text":"Hello,"`, "Should have first text_delta with 'Hello,'")
-	assert.Contains(t, currentOutputStr, `"text":"world!"`, "Should have second text_delta with 'world!'")
-
-	// This test should now PASS because we've fixed the SSE formatting
-	t.Log("Kiro output (CORRECT - SSE formatted):", currentOutputStr)
-	t.Log("SSE format with 'event:' and 'data:' prefixes is working correctly")
+	usage := events[4].Payload["usage"].(map[string]any)
+	assert.Equal(t, float64(25), usage["input_tokens"])
+	assert.Equal(t, float64(5), usage["output_tokens"])
 }
 
 // TestKiroExecutor_SSEFormatting_WithToolCalls tests SSE formatting for responses with tool calls
@@ -86,33 +54,28 @@ func TestKiroExecutor_SSEFormatting_WithToolCalls(t *testing.T) {
 
 	require.Greater(t, len(chunks), 0, "Should produce chunks for tool calls")
 
-	var currentOutput strings.Builder
-	for _, chunk := range chunks {
-		currentOutput.Write(chunk)
-	}
-	currentOutputStr := currentOutput.String()
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}, eventNames(events))
 
-	// Should contain tool_use content blocks
-	assert.Contains(t, currentOutputStr, `"type":"tool_use"`, "Should contain tool_use block")
-	assert.Contains(t, currentOutputStr, `"name":"test_function"`, "Should contain function name")
-	assert.Contains(t, currentOutputStr, `"partial_json":"{\"param\":\"value\"}"`, "Should contain function arguments in partial_json")
+	toolStart := events[1].Payload["content_block"].(map[string]any)
+	assert.Equal(t, "tool_use", toolStart["type"])
+	assert.Equal(t, "test_function", toolStart["name"])
+	assert.Equal(t, "call_123", toolStart["id"])
 
-	// Should NOW have proper SSE formatting (corrected behavior)
-	assert.Contains(t, currentOutputStr, "event: content_block_start", "Should have SSE event prefix for tool_use block")
-	assert.Contains(t, currentOutputStr, "event: content_block_delta", "Should have SSE event prefix for tool delta")
-	assert.Contains(t, currentOutputStr, "data: ", "Should have SSE data prefix")
+	toolDelta := events[2].Payload["delta"].(map[string]any)
+	assert.Equal(t, "input_json_delta", toolDelta["type"])
+	assert.Equal(t, `{"param":"value"}`, toolDelta["partial_json"])
 
-	// CRITICAL BUG FIX: Verify stop_sequence is null for tool_use (not "tool_use")
-	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null even for tool_use")
-
-	// CRITICAL BUG FIX: Verify output_tokens is properly counted for tool calls
-	// message_start should have output_tokens: 0, but message_delta should have actual count
-	assert.Contains(t, currentOutputStr, `"output_tokens":0`, "message_start should have output_tokens: 0")
-	// Verify message_delta has non-zero output_tokens for tool calls (updated for new calculation)
-	assert.Contains(t, currentOutputStr, `"output_tokens":11`, "message_delta should have calculated output_tokens for tool calls")
-
-	// This test should now PASS because we've fixed the SSE formatting
-	t.Log("Tool call SSE formatting working correctly:", currentOutputStr)
+	delta := events[4].Payload["delta"].(map[string]any)
+	assert.Equal(t, "tool_use", delta["stop_reason"])
+	assert.Nil(t, delta["stop_sequence"])
 }
 
 // TestKiroExecutor_SSEFormatting_EmptyContent tests SSE formatting for empty responses
@@ -121,36 +84,19 @@ func TestKiroExecutor_SSEFormatting_EmptyContent(t *testing.T) {
 
 	require.Greater(t, len(chunks), 0, "Should produce chunks even for empty content")
 
-	var currentOutput strings.Builder
-	for _, chunk := range chunks {
-		currentOutput.Write(chunk)
-	}
-	currentOutputStr := currentOutput.String()
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, []string{
+		"message_start",
+		"message_delta",
+		"message_stop",
+	}, eventNames(events))
 
-	// Should have basic SSE structure but no content blocks
-	assert.Contains(t, currentOutputStr, `"type":"message_start"`, "Should contain message_start JSON")
-	assert.Contains(t, currentOutputStr, `"type":"message_delta"`, "Should contain message_delta JSON")
-	assert.Contains(t, currentOutputStr, `"type":"message_stop"`, "Should contain message_stop JSON")
+	delta := events[1].Payload["delta"].(map[string]any)
+	assert.Equal(t, "end_turn", delta["stop_reason"])
 
-	// Should NOW have proper SSE formatting (corrected behavior)
-	assert.Contains(t, currentOutputStr, "event: message_start", "Should have SSE event prefix for message_start")
-	assert.Contains(t, currentOutputStr, "event: message_delta", "Should have SSE event prefix for message_delta")
-	assert.Contains(t, currentOutputStr, "event: message_stop", "Should have SSE event prefix for message_stop")
-	assert.Contains(t, currentOutputStr, "data: ", "Should have SSE data prefix")
-
-	// Should NOT contain content block events (since content is empty)
-	assert.NotContains(t, currentOutputStr, "event: content_block_start", "Should NOT have content_block_start for empty content")
-	assert.NotContains(t, currentOutputStr, "event: content_block_delta", "Should NOT have content_block_delta for empty content")
-	assert.NotContains(t, currentOutputStr, "event: content_block_stop", "Should NOT have content_block_stop for empty content")
-
-	// CRITICAL BUG FIX: Verify stop_sequence is null for empty responses
-	assert.Contains(t, currentOutputStr, `"stop_sequence":null`, "stop_sequence should be null for empty responses")
-
-	// CRITICAL BUG FIX: Verify output_tokens is not hardcoded (should be 0 for empty content, but calculated)
-	assert.Contains(t, currentOutputStr, `"output_tokens":0`, "output_tokens should be 0 for empty content")
-
-	// This test should now PASS because we've fixed the SSE formatting
-	t.Log("Empty content SSE formatting working correctly:", currentOutputStr)
+	usage := events[1].Payload["usage"].(map[string]any)
+	assert.Equal(t, float64(20), usage["input_tokens"])
+	assert.Equal(t, float64(0), usage["output_tokens"])
 }
 
 // TestKiroExecutor_VerifySSEFormatRequirement verifies what the SSE format should look like
@@ -159,19 +105,19 @@ func TestKiroExecutor_VerifySSEFormatRequirement(t *testing.T) {
 	// This test should PASS as it's documenting the requirement
 
 	expectedSSEFormat := `event: message_start
-data: {"message":{"content":[],"id":"msg_test123","model":"claude-sonnet-4-5","role":"assistant","stop_reason":null,"stop_sequence":null,"type":"message","usage":{"input_tokens":0,"output_tokens":0}},"type":"message_start"}
+data: {"type":"message_start","message":{"id":"msg_test123","type":"message","role":"assistant","model":"claude-sonnet-4-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":0,"output_tokens":0}}}
 
 event: content_block_start
-data: {"content_block":{"type":"text","text":""},"index":0,"type":"content_block_start"}
+data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
 
 event: content_block_delta
-data: {"delta":{"type":"text_delta","text":"Hello!"},"index":0,"type":"content_block_delta"}
+data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello!"}}
 
 event: content_block_stop
-data: {"index":0,"type":"content_block_stop"}
+data: {"type":"content_block_stop","index":0}
 
 event: message_delta
-data: {"delta":{"stop_reason":"end_turn","stop_sequence":"end_turn"},"type":"message_delta","usage":{"output_tokens":0}}
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":12,"output_tokens":3}}
 
 event: message_stop
 data: {"type":"message_stop"}`
@@ -201,36 +147,464 @@ data: {"type":"message_stop"}`
 	t.Log("Expected SSE format documented correctly")
 }
 
-// TestKiroExecutor_IncrementalStreaming tests that content is split into multiple delta events
-func TestKiroExecutor_IncrementalStreaming(t *testing.T) {
+func TestConvertKiroStreamToAnthropic_LegacyPayload(t *testing.T) {
+	raw := strings.Join([]string{
+		"event: content_block_delta",
+		`data: {"content":"content-type\u0007\u0000\u0010application/json"}`,
+		"",
+		"event: content_block_delta",
+		`data: {"content":"I'll get the latest weather update."}`,
+		"",
+		"event: message_stop",
+		`data: {"type":"message_stop"}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 10, 5)
+	require.NotEmpty(t, chunks, "legacy SSE payload should be converted into Anthropic chunks")
+
+	events := parseSSEChunks(t, chunks)
+	texts := make([]string, 0, len(events))
+	for _, ev := range events {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		if delta, ok := ev.Payload["delta"].(map[string]any); ok && delta["type"] == "text_delta" {
+			texts = append(texts, delta["text"].(string))
+		}
+	}
+	require.NotEmpty(t, texts, "expected at least one text delta")
+	assert.Equal(t, "I'll get the latest weather update.", texts[len(texts)-1])
+	for _, text := range texts {
+		assert.NotContains(t, text, "content-type", "protocol noise should be stripped")
+	}
+}
+
+func TestConvertKiroStreamToAnthropic_ToolChunks(t *testing.T) {
+	raw := strings.Join([]string{
+		"event: content_block_delta",
+		`data: {"name":"get_weather","toolUseId":"call_1","input":"{\"city\""}`,
+		"",
+		"event: content_block_delta",
+		`data: {"name":"get_weather","toolUseId":"call_1","input":": \"Tokyo\"}"}`,
+		"",
+		"event: content_block_delta",
+		`data: {"name":"get_weather","toolUseId":"call_1","stop":true}`,
+		"",
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 12, 3)
+	require.NotEmpty(t, chunks, "tool SSE payload should be converted")
+
+	events := parseSSEChunks(t, chunks)
+	found := false
+	for _, ev := range events {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "input_json_delta" {
+			continue
+		}
+		actualJSON := canonicalJSON(delta["partial_json"].(string))
+		assert.Equal(t, `{"city":"Tokyo"}`, actualJSON)
+		found = true
+	}
+	assert.True(t, found, "expected tool delta event")
+}
+
+// TestKiroExecutor_StreamingChunkOrder ensures text is emitted as a single block following reference ordering.
+func TestKiroExecutor_StreamingChunkOrder(t *testing.T) {
 	content := "Hello! How are you today?"
 	chunks := kirotranslator.BuildAnthropicStreamingChunks("test-id", "claude-sonnet-4-5", 1234567890, content, []kirotranslator.OpenAIToolCall{}, 18, 7)
 
-	require.Greater(t, len(chunks), 0, "Should produce chunks")
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, []string{
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	}, eventNames(events))
 
-	var currentOutput strings.Builder
-	for _, chunk := range chunks {
-		currentOutput.Write(chunk)
+	textDelta := events[2].Payload["delta"].(map[string]any)
+	assert.Equal(t, content, textDelta["text"])
+}
+
+func TestBuildAnthropicStreamingChunksMatchReference(t *testing.T) {
+	t.Parallel()
+	model := "claude-sonnet-4-5"
+
+	cases := []struct {
+		name             string
+		content          string
+		toolCalls        []kirotranslator.OpenAIToolCall
+		promptTokens     int64
+		completionTokens int64
+	}{
+		{
+			name:             "plain_text",
+			content:          "All set.",
+			promptTokens:     12,
+			completionTokens: 3,
+		},
+		{
+			name:    "single_tool_with_text",
+			content: "Calling weather.",
+			toolCalls: []kirotranslator.OpenAIToolCall{{
+				ID:        "toolu_weather",
+				Name:      "get_weather",
+				Arguments: `{"city":"Tokyo","unit":"°C"}`,
+			}},
+			promptTokens:     25,
+			completionTokens: 8,
+		},
+		{
+			name:    "multiple_tools_and_text",
+			content: "Plan finished.",
+			toolCalls: []kirotranslator.OpenAIToolCall{
+				{ID: "toolu_plan", Name: "Task", Arguments: `{"goal":"audit","subagent_type":"plan"}`},
+				{ID: "toolu_exit", Name: "ExitPlanMode", Arguments: `{}`},
+			},
+			promptTokens:     40,
+			completionTokens: 15,
+		},
+		{
+			name:             "no_tool_empty",
+			content:          "",
+			promptTokens:     5,
+			completionTokens: 0,
+		},
+		{
+			name: "tool_only",
+			toolCalls: []kirotranslator.OpenAIToolCall{{
+				ID:        "toolu_logs",
+				Name:      "FetchLogs",
+				Arguments: `{"since":"1h"}`,
+			}},
+			promptTokens:     10,
+			completionTokens: 4,
+		},
 	}
-	currentOutputStr := currentOutput.String()
 
-	// Count content_block_delta events
-	deltaCount := strings.Count(currentOutputStr, "event: content_block_delta")
-	assert.Greater(t, deltaCount, 1, "Should have multiple content_block_delta events for incremental streaming")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			actualChunks := kirotranslator.BuildAnthropicStreamingChunks("chatcmpl_ref", model, 0, tc.content, tc.toolCalls, tc.promptTokens, tc.completionTokens)
+			actual := normalizeEvents(parseSSEChunks(t, actualChunks))
+			expected := normalizeEvents(buildReferenceEvents(model, tc.content, tc.toolCalls, tc.promptTokens, tc.completionTokens))
+			compareEventSequences(t, expected, actual)
+		})
+	}
+}
 
-	// Should have individual words/parts streamed
-	assert.Contains(t, currentOutputStr, `"text":"Hello!"`, "Should stream 'Hello!'")
-	assert.Contains(t, currentOutputStr, `"text":"How"`, "Should stream 'How'")
-	assert.Contains(t, currentOutputStr, `"text":"are"`, "Should stream 'are'")
-	assert.Contains(t, currentOutputStr, `"text":"you"`, "Should stream 'you'")
-	assert.Contains(t, currentOutputStr, `"text":"today?"`, "Should stream 'today?'")
+func TestConvertKiroStreamToAnthropic_LongArgumentsMerged(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"name":"search","toolUseId":"call_merge","input":"{"}`,
+		"",
+		`data: {"name":"search","toolUseId":"call_merge","input":"\"query\": \"status\""}`,
+		"",
+		`data: {"name":"search","toolUseId":"call_merge","input":", \"limit\": "}`,
+		"",
+		`data: {"name":"search","toolUseId":"call_merge","input":"5"}`,
+		"",
+		`data: {"name":"search","toolUseId":"call_merge","input":"}"}`,
+		"",
+		`data: {"name":"search","toolUseId":"call_merge","stop":true}`,
+	}, "\n")
 
-	// Should still have proper SSE structure
-	assert.Contains(t, currentOutputStr, "event: message_start", "Should have SSE event prefix for message_start")
-	assert.Contains(t, currentOutputStr, "event: content_block_start", "Should have SSE event prefix for content_block_start")
-	assert.Contains(t, currentOutputStr, "event: content_block_stop", "Should have SSE event prefix for content_block_stop")
-	assert.Contains(t, currentOutputStr, "event: message_delta", "Should have SSE event prefix for message_delta")
-	assert.Contains(t, currentOutputStr, "event: message_stop", "Should have SSE event prefix for message_stop")
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, "content_block_delta", events[2].Event)
 
-	t.Log("Incremental streaming working correctly:", currentOutputStr)
+	toolDelta := events[2].Payload["delta"].(map[string]any)
+	actualJSON := canonicalJSON(toolDelta["partial_json"].(string))
+	assert.Equal(t, `{"limit":5,"query":"status"}`, actualJSON)
+}
+
+func TestConvertKiroStreamToAnthropic_FollowupPromptFlag(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"content":"Need more info","followupPrompt":true}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 2)
+	events := parseSSEChunks(t, chunks)
+	require.Equal(t, "message_delta", events[len(events)-2].Event)
+
+	delta := events[len(events)-2].Payload["delta"].(map[string]any)
+	assert.Equal(t, true, delta["followup_prompt"])
+	assert.Equal(t, "followup", delta["stop_reason"])
+}
+
+func TestConvertKiroStreamToAnthropic_StopReasonOverrides(t *testing.T) {
+	t.Run("canceled", func(t *testing.T) {
+		raw := strings.Join([]string{
+			`event: content_block_delta`,
+			`data: {"content":"Partial response"}`,
+			"",
+			`event: message_delta`,
+			`data: {"delta":{"stop_reason":"canceled"}}`,
+		}, "\n")
+
+		chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+		events := parseSSEChunks(t, chunks)
+		require.Equal(t, "message_delta", events[len(events)-2].Event)
+		delta := events[len(events)-2].Payload["delta"].(map[string]any)
+		assert.Equal(t, "canceled", delta["stop_reason"])
+	})
+
+	t.Run("max_tokens", func(t *testing.T) {
+		raw := strings.Join([]string{
+			`event: content_block_delta`,
+			`data: {"content":"Streaming..."}`,
+			"",
+			`event: message_delta`,
+			`data: {"delta":{"stop_reason":"max_tokens"}}`,
+		}, "\n")
+
+		chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+		events := parseSSEChunks(t, chunks)
+		delta := events[len(events)-2].Payload["delta"].(map[string]any)
+		assert.Equal(t, "max_tokens", delta["stop_reason"])
+	})
+
+	t.Run("fallback", func(t *testing.T) {
+		raw := strings.Join([]string{
+			`data: {"content":"Done."}`,
+		}, "\n")
+		chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 1)
+		events := parseSSEChunks(t, chunks)
+		delta := events[len(events)-2].Payload["delta"].(map[string]any)
+		assert.Equal(t, "end_turn", delta["stop_reason"])
+	})
+}
+
+// Helpers --------------------------------------------------------------------
+
+type parsedEvent struct {
+	Event   string
+	Payload map[string]any
+}
+
+func parseSSEChunks(t *testing.T, chunks [][]byte) []parsedEvent {
+	t.Helper()
+	events := make([]parsedEvent, 0, len(chunks))
+	for _, chunk := range chunks {
+		text := strings.TrimSpace(string(chunk))
+		if text == "" {
+			continue
+		}
+		lines := strings.SplitN(text, "\n", 2)
+		if len(lines) < 2 {
+			continue
+		}
+		eventType := strings.TrimSpace(strings.TrimPrefix(lines[0], "event:"))
+		dataLine := strings.TrimSpace(strings.TrimPrefix(lines[1], "data:"))
+		if dataLine == "" {
+			events = append(events, parsedEvent{Event: eventType, Payload: map[string]any{}})
+			continue
+		}
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(dataLine), &payload))
+		events = append(events, parsedEvent{Event: eventType, Payload: payload})
+	}
+	return events
+}
+
+func eventNames(events []parsedEvent) []string {
+	names := make([]string, len(events))
+	for i, ev := range events {
+		names[i] = ev.Event
+	}
+	return names
+}
+
+func buildReferenceEvents(model, content string, toolCalls []kirotranslator.OpenAIToolCall, promptTokens, completionTokens int64) []parsedEvent {
+	events := []parsedEvent{
+		{
+			Event: "message_start",
+			Payload: map[string]any{
+				"type": "message_start",
+				"message": map[string]any{
+					"id":            "ref_message",
+					"type":          "message",
+					"role":          "assistant",
+					"model":         model,
+					"content":       []any{},
+					"stop_reason":   nil,
+					"stop_sequence": nil,
+					"usage": map[string]any{
+						"input_tokens":  float64(0),
+						"output_tokens": float64(0),
+					},
+				},
+			},
+		},
+	}
+
+	for idx, call := range toolCalls {
+		index := float64(idx)
+		events = append(events, parsedEvent{
+			Event: "content_block_start",
+			Payload: map[string]any{
+				"type":  "content_block_start",
+				"index": index,
+				"content_block": map[string]any{
+					"type":  "tool_use",
+					"id":    call.ID,
+					"name":  call.Name,
+					"input": map[string]any{},
+				},
+			},
+		})
+		events = append(events, parsedEvent{
+			Event: "content_block_delta",
+			Payload: map[string]any{
+				"type":  "content_block_delta",
+				"index": index,
+				"delta": map[string]any{
+					"type":         "input_json_delta",
+					"partial_json": canonicalJSON(call.Arguments),
+				},
+			},
+		})
+		events = append(events, parsedEvent{
+			Event: "content_block_stop",
+			Payload: map[string]any{
+				"type":  "content_block_stop",
+				"index": index,
+			},
+		})
+	}
+
+	if strings.TrimSpace(content) != "" {
+		index := float64(len(toolCalls))
+		events = append(events, parsedEvent{
+			Event: "content_block_start",
+			Payload: map[string]any{
+				"type":  "content_block_start",
+				"index": index,
+				"content_block": map[string]any{
+					"type": "text",
+					"text": "",
+				},
+			},
+		})
+		events = append(events, parsedEvent{
+			Event: "content_block_delta",
+			Payload: map[string]any{
+				"type":  "content_block_delta",
+				"index": index,
+				"delta": map[string]any{
+					"type": "text_delta",
+					"text": content,
+				},
+			},
+		})
+		events = append(events, parsedEvent{
+			Event: "content_block_stop",
+			Payload: map[string]any{
+				"type":  "content_block_stop",
+				"index": index,
+			},
+		})
+	}
+
+	stopReason := "end_turn"
+	if len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	} else if strings.TrimSpace(content) == "" {
+		stopReason = "end_turn"
+	}
+
+	events = append(events, parsedEvent{
+		Event: "message_delta",
+		Payload: map[string]any{
+			"type": "message_delta",
+			"delta": map[string]any{
+				"stop_reason":   stopReason,
+				"stop_sequence": nil,
+			},
+			"usage": map[string]any{
+				"input_tokens":  float64(promptTokens),
+				"output_tokens": float64(completionTokens),
+			},
+		},
+	})
+	events = append(events, parsedEvent{
+		Event:   "message_stop",
+		Payload: map[string]any{"type": "message_stop"},
+	})
+	return events
+}
+
+func compareEventSequences(t *testing.T, expected, actual []parsedEvent) {
+	t.Helper()
+	require.Equal(t, len(expected), len(actual))
+	for i := range expected {
+		require.Equal(t, expected[i].Event, actual[i].Event, "event mismatch at position %d", i)
+		require.Equal(t, expected[i].Payload, actual[i].Payload, "payload mismatch at position %d", i)
+	}
+}
+
+func normalizeEvents(events []parsedEvent) []parsedEvent {
+	normalized := make([]parsedEvent, len(events))
+	for i, ev := range events {
+		normalized[i] = normalizeEvent(ev)
+	}
+	return normalized
+}
+
+func normalizeEvent(ev parsedEvent) parsedEvent {
+	payload := deepCopy(ev.Payload).(map[string]any)
+	switch ev.Event {
+	case "message_start":
+		if msg, ok := payload["message"].(map[string]any); ok {
+			delete(msg, "id")
+		}
+	case "content_block_delta":
+		if delta, ok := payload["delta"].(map[string]any); ok {
+			if delta["type"] == "input_json_delta" {
+				if partial, ok := delta["partial_json"].(string); ok {
+					delta["partial_json"] = canonicalJSON(partial)
+				}
+			}
+		}
+	}
+	return parsedEvent{Event: ev.Event, Payload: payload}
+}
+
+func canonicalJSON(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var obj any
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		return raw
+	}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return string(data)
+}
+
+func deepCopy(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(v))
+		for key, val := range v {
+			result[key] = deepCopy(val)
+		}
+		return result
+	case []any:
+		result := make([]any, len(v))
+		for i, val := range v {
+			result[i] = deepCopy(val)
+		}
+		return result
+	default:
+		return v
+	}
 }

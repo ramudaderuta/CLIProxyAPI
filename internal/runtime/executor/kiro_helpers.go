@@ -206,6 +206,7 @@ type kiroResult struct {
 	KiroModel        string
 	PromptTokens     int64
 	CompletionTokens int64
+	StreamChunks     [][]byte
 }
 
 type kiroStatusError struct {

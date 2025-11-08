@@ -526,11 +526,24 @@ func TestBuildRequestPreservesLongToolDescriptions(t *testing.T) {
 		t.Fatalf("expected system prompt history entry")
 	}
 	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
-	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved for Claude Code)") {
-		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	if !strings.Contains(sysContent, "Tool reference manifest") {
+		t.Fatalf("expected tool reference manifest in system prompt:\n%s", sysContent)
 	}
-	if !strings.Contains(sysContent, "Detailed description Detailed description Detailed description Detailed description") {
-		t.Fatalf("expected full tool description preserved in tool reference block")
+	ctx := req["conversationState"].(map[string]any)["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)["userInputMessageContext"].(map[string]any)
+	manifest, ok := ctx["toolContextManifest"].([]any)
+	if !ok || len(manifest) == 0 {
+		t.Fatalf("expected toolContextManifest with preserved descriptions: %#v", ctx)
+	}
+	found := false
+	for _, item := range manifest {
+		entry := item.(map[string]any)
+		desc, _ := entry["description"].(string)
+		if strings.Contains(desc, "Detailed description Detailed description Detailed description Detailed description") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected manifest entry with the full long description preserved: %#v", manifest)
 	}
 }
 
@@ -618,8 +631,8 @@ func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 		t.Fatalf("expected system prompt to be injected into history")
 	}
 	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
-	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved") {
-		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	if !strings.Contains(sysContent, "Tool reference manifest") {
+		t.Fatalf("expected tool reference manifest in system prompt:\n%s", sysContent)
 	}
 	if !strings.Contains(sysContent, "Tool directive: you must call the tool") {
 		t.Fatalf("expected tool directive in system prompt:\n%s", sysContent)
@@ -657,11 +670,90 @@ func TestBuildRequestAddsToolReferenceForTruncatedDescriptions(t *testing.T) {
 		t.Fatalf("expected system prompt entry in history")
 	}
 	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
-	if !strings.Contains(sysContent, "Tool reference (full descriptions preserved for Claude Code)") {
-		t.Fatalf("expected tool reference block in system prompt:\n%s", sysContent)
+	if !strings.Contains(sysContent, "Tool reference manifest") {
+		t.Fatalf("expected tool reference manifest in system prompt:\n%s", sysContent)
 	}
-	if !strings.Contains(sysContent, "Task: Create, update, and list todos") {
-		t.Fatalf("expected full Task description inside tool reference block to prevent regression:\n%s", sysContent)
+
+	manifest, ok := ctx["toolContextManifest"].([]any)
+	if !ok || len(manifest) == 0 {
+		t.Fatalf("expected toolContextManifest to be populated: %#v", ctx)
+	}
+	foundTask := false
+	for _, item := range manifest {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if entry["name"] == "Task" {
+			foundTask = true
+			desc, _ := entry["description"].(string)
+			if !strings.Contains(desc, "Create, update, and list todos") {
+				t.Fatalf("expected full Task description inside manifest entry: %#v", entry)
+			}
+			if hash, _ := entry["hash"].(string); strings.TrimSpace(hash) == "" {
+				t.Fatalf("expected Task manifest entry to have a hash: %#v", entry)
+			}
+		}
+	}
+	if !foundTask {
+		t.Fatalf("expected Task entry inside toolContextManifest: %#v", manifest)
+	}
+}
+
+func TestBuildRequestIncludesPlanModeMetadata(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+        "messages": [
+            {"role": "user", "content": [{"type":"text","text":"start planning"}]},
+            {"role": "assistant", "content": [
+                {"type":"text","text":"Launching background agent"},
+                {"type":"tool_use","name":"Task","id":"plan_123","input":{"goal":"audit"}}
+            ]},
+            {"role": "user", "content": [{"type":"text","text":"waiting..."}]}
+        ],
+        "tools": [
+            {"name":"Task","description":"Launch plan agents to parallelize work."},
+            {"name":"ExitPlanMode","description":"Stop plan mode and return to normal."}
+        ]
+    }`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	current := req["conversationState"].(map[string]any)["currentMessage"].(map[string]any)
+	userInput := current["userInputMessage"].(map[string]any)
+	ctx, ok := userInput["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected userInputMessageContext to exist: %#v", userInput)
+	}
+
+	planMeta, ok := ctx["planMode"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected planMode metadata to be attached: %#v", ctx)
+	}
+	if planMeta["active"] != true {
+		t.Fatalf("expected planMode.active to be true: %#v", planMeta)
+	}
+	pending, _ := planMeta["pending"].([]any)
+	if len(pending) == 0 {
+		t.Fatalf("expected pending plan transitions: %#v", planMeta)
+	}
+	first := pending[0].(map[string]any)
+	if first["toolUseId"] != "plan_123" {
+		t.Fatalf("expected plan_123 to be marked pending: %#v", first)
+	}
+
+	systemEntry := req["conversationState"].(map[string]any)["history"].([]any)[0]
+	sysContent := systemEntry.(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
+	if !strings.Contains(sysContent, "Plan directive") {
+		t.Fatalf("expected plan directive injected into system prompt:\n%s", sysContent)
 	}
 }
 

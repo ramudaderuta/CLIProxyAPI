@@ -1,9 +1,13 @@
 package kiro
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -21,6 +25,8 @@ const (
 type toolContextEntry struct {
 	Name        string
 	Description string
+	Hash        string
+	Length      int
 }
 
 // BuildRequest converts an OpenAI-compatible chat payload into Kiro's conversation request format.
@@ -42,12 +48,16 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	tools := root.Get("tools")
 	toolDefinitions, toolContextEntries := buildToolSpecifications(tools)
 	toolChoiceMeta, toolChoiceDirective := buildToolChoiceMetadata(root.Get("tool_choice"))
+	planModeMeta, planDirective := buildPlanModeMetadata(messages, tools)
 
 	if block := buildToolContextBlock(toolContextEntries); block != "" {
 		systemPrompt = combineContent(systemPrompt, block)
 	}
 	if toolChoiceDirective != "" {
 		systemPrompt = combineContent(systemPrompt, toolChoiceDirective)
+	}
+	if planDirective != "" {
+		systemPrompt = combineContent(systemPrompt, planDirective)
 	}
 
 	kiroModel := MapModel(model)
@@ -101,8 +111,14 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		if len(toolDefinitions) > 0 {
 			context["tools"] = toolDefinitions
 		}
+		if manifest := buildToolContextManifest(toolContextEntries); len(manifest) > 0 {
+			context["toolContextManifest"] = manifest
+		}
 		if toolChoiceMeta != nil {
 			context["claudeToolChoice"] = toolChoiceMeta
+		}
+		if planModeMeta != nil {
+			context["planMode"] = planModeMeta
 		}
 		if len(context) == 0 {
 			context = nil
@@ -296,7 +312,13 @@ func buildToolSpecifications(tools gjson.Result) ([]map[string]any, []toolContex
 		name = sanitizeTextContent(name)
 		shortDescription, fullDescription, truncated := sanitizeToolDescription(name, description)
 		if truncated {
-			contexts = append(contexts, toolContextEntry{Name: name, Description: fullDescription})
+			hash, length := hashToolDescription(fullDescription)
+			contexts = append(contexts, toolContextEntry{
+				Name:        name,
+				Description: fullDescription,
+				Hash:        hash,
+				Length:      length,
+			})
 		}
 
 		if name == "" {
@@ -335,6 +357,11 @@ func sanitizeToolDescription(name, desc string) (string, string, bool) {
 		truncated = true
 	}
 	return desc, full, truncated
+}
+
+func hashToolDescription(desc string) (string, int) {
+	sum := sha256.Sum256([]byte(desc))
+	return hex.EncodeToString(sum[:8]), len([]rune(desc))
 }
 
 var angleBracketPattern = regexp.MustCompile(`(?s)<[^>]+>`)
@@ -507,14 +534,33 @@ func buildToolContextBlock(entries []toolContextEntry) string {
 	}
 
 	var builder strings.Builder
-	builder.WriteString("Tool reference (full descriptions preserved for Claude Code):")
+	builder.WriteString("Tool reference manifest (hash -> tool). Use ToolContextLookup(<hash>) to fetch the preserved description on demand without bloating the system prompt:")
 	for _, entry := range entries {
 		builder.WriteString("\n- ")
 		builder.WriteString(entry.Name)
-		builder.WriteString(": ")
-		builder.WriteString(entry.Description)
+		builder.WriteString(" [")
+		builder.WriteString(entry.Hash)
+		builder.WriteString(", ")
+		builder.WriteString(strconv.Itoa(entry.Length))
+		builder.WriteString(" chars]")
 	}
 	return sanitizeTextContent(builder.String())
+}
+
+func buildToolContextManifest(entries []toolContextEntry) []map[string]any {
+	if len(entries) == 0 {
+		return nil
+	}
+	manifest := make([]map[string]any, 0, len(entries))
+	for _, entry := range entries {
+		manifest = append(manifest, map[string]any{
+			"name":        entry.Name,
+			"hash":        entry.Hash,
+			"length":      entry.Length,
+			"description": entry.Description,
+		})
+	}
+	return manifest
 }
 
 func buildToolChoiceMetadata(choice gjson.Result) (map[string]any, string) {
@@ -583,6 +629,203 @@ func buildToolChoiceDirective(mode, name string) string {
 			return ""
 		}
 		return fmt.Sprintf("Tool directive: you must call the tool %q before responding to the user.", name)
+	default:
+		return ""
+	}
+}
+
+func buildPlanModeMetadata(messages, tools gjson.Result) (map[string]any, string) {
+	available := detectPlanTools(tools)
+	tracker := newPlanModeTracker(available)
+
+	if messages.Exists() && messages.IsArray() {
+		messages.ForEach(func(_, msg gjson.Result) bool {
+			tracker.observeMessage(msg)
+			return true
+		})
+	}
+	return tracker.export()
+}
+
+type planTransition struct {
+	ToolUseID string
+	Name      string
+	Action    string
+}
+
+type planModeTracker struct {
+	available    []string
+	pending      map[string]planTransition
+	pendingOrder []string
+	pendingEnter map[string]struct{}
+	lastAction   string
+	lastTool     string
+	seen         bool
+}
+
+func newPlanModeTracker(available []string) *planModeTracker {
+	return &planModeTracker{
+		available:    available,
+		pending:      make(map[string]planTransition),
+		pendingOrder: make([]string, 0, 4),
+		pendingEnter: make(map[string]struct{}),
+	}
+}
+
+func (p *planModeTracker) observeMessage(msg gjson.Result) {
+	content := msg.Get("content")
+	if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			p.observePart(part)
+			return true
+		})
+	} else if content.Exists() {
+		p.observePart(content)
+	}
+}
+
+func (p *planModeTracker) observePart(part gjson.Result) {
+	partType := strings.ToLower(strings.TrimSpace(part.Get("type").String()))
+	switch partType {
+	case "tool_use":
+		p.handleToolUse(part)
+	case "tool_result":
+		p.handleToolResult(part)
+	}
+}
+
+func (p *planModeTracker) handleToolUse(part gjson.Result) {
+	name := strings.TrimSpace(part.Get("name").String())
+	action := classifyPlanAction(name)
+	if action == "" {
+		return
+	}
+	id := SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String()))
+	if id == "" {
+		return
+	}
+	p.pending[id] = planTransition{
+		ToolUseID: id,
+		Name:      name,
+		Action:    action,
+	}
+	p.pendingOrder = append(p.pendingOrder, id)
+	if action == "enter" {
+		p.pendingEnter[id] = struct{}{}
+	}
+	p.lastAction = action
+	p.lastTool = name
+	p.seen = true
+}
+
+func (p *planModeTracker) handleToolResult(part gjson.Result) {
+	id := SanitizeToolCallID(firstString(part.Get("tool_use_id").String(), part.Get("tool_useId").String()))
+	if id == "" {
+		return
+	}
+	if trans, ok := p.pending[id]; ok {
+		delete(p.pending, id)
+		if trans.Action == "enter" {
+			delete(p.pendingEnter, id)
+		}
+		p.seen = true
+	}
+}
+
+func (p *planModeTracker) export() (map[string]any, string) {
+	if len(p.available) == 0 && !p.seen {
+		return nil, ""
+	}
+
+	meta := map[string]any{
+		"available": p.available,
+		"active":    len(p.pendingEnter) > 0,
+	}
+	if len(p.pending) > 0 {
+		pending := make([]map[string]string, 0, len(p.pending))
+		for _, id := range p.pendingOrder {
+			if trans, ok := p.pending[id]; ok {
+				pending = append(pending, map[string]string{
+					"toolUseId": trans.ToolUseID,
+					"name":      trans.Name,
+					"action":    trans.Action,
+				})
+			}
+		}
+		if len(pending) > 0 {
+			meta["pending"] = pending
+		}
+	}
+	if p.lastAction != "" {
+		meta["lastTransition"] = p.lastAction
+		meta["lastTool"] = p.lastTool
+	}
+	return meta, p.buildDirective()
+}
+
+func (p *planModeTracker) buildDirective() string {
+	if len(p.pendingEnter) > 0 {
+		ids := make([]string, 0, len(p.pendingEnter))
+		for id := range p.pendingEnter {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+		return fmt.Sprintf("Plan directive: Task/plan agents (%s) are running—wait for their tool results before concluding.", strings.Join(ids, ", "))
+	}
+
+	exitPending := make([]string, 0)
+	for _, trans := range p.pending {
+		if trans.Action == "exit" {
+			exitPending = append(exitPending, trans.ToolUseID)
+		}
+	}
+	if len(exitPending) > 0 {
+		sort.Strings(exitPending)
+		return fmt.Sprintf("Plan directive: ExitPlanMode requested via %s; acknowledge the exit once the tool returns.", strings.Join(exitPending, ", "))
+	}
+
+	if p.lastAction == "exit" {
+		return "Plan directive: Plan helpers have exited; return to direct responses until a new Task agent is launched."
+	}
+
+	if len(p.available) > 0 {
+		return fmt.Sprintf("Plan directive: Plan helpers available (%s). Launch Task agents when multi-step orchestration is needed.", strings.Join(p.available, ", "))
+	}
+	return ""
+}
+
+func detectPlanTools(tools gjson.Result) []string {
+	if !tools.Exists() || !tools.IsArray() {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	names := make([]string, 0, len(tools.Array()))
+	tools.ForEach(func(_, tool gjson.Result) bool {
+		name := strings.TrimSpace(tool.Get("name").String())
+		if name == "" {
+			name = strings.TrimSpace(tool.Get("function.name").String())
+		}
+		if classifyPlanAction(name) == "" {
+			return true
+		}
+		key := strings.ToLower(name)
+		if _, exists := seen[key]; exists {
+			return true
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+		return true
+	})
+	sort.Strings(names)
+	return names
+}
+
+func classifyPlanAction(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "task", "plan", "launchplanmode", "launchplanagent":
+		return "enter"
+	case "exitplanmode", "exitplan", "exitplanagent":
+		return "exit"
 	default:
 		return ""
 	}

@@ -1415,63 +1415,49 @@ type Usage struct {
 
 // BuildAnthropicStreamingChunks generates Anthropic-compatible streaming chunks formatted as SSE events.
 func BuildAnthropicStreamingChunks(id, model string, created int64, content string, toolCalls []OpenAIToolCall, promptTokens, completionTokens int64) [][]byte {
-	chunks := make([][]byte, 0, 3)
+	chunks := make([][]byte, 0, 6)
 
-	// Use provided token counts
 	outputTokens := completionTokens
 	inputTokens := promptTokens
 
-	// Initial message_start chunk
-	messageStart := buildMessageStartEvent(model, inputTokens)
+	messageStart := buildMessageStartEvent(model)
 	chunks = append(chunks, buildSSEEvent("message_start", messageStart))
 
-	// Content block chunks
-	if strings.TrimSpace(content) != "" {
-		// content_block_start
-		contentStart := buildContentBlockStartEvent()
-		chunks = append(chunks, buildSSEEvent("content_block_start", contentStart))
+	trimmed := strings.TrimSpace(content)
 
-		// content_block_delta events (incremental streaming)
-		contentChunks := splitContentForStreaming(content)
-		for _, chunk := range contentChunks {
-			contentDelta := buildContentBlockDeltaEvent(chunk)
-			chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
-		}
-
-		// content_block_stop
-		contentStop := buildContentBlockStopEvent()
-		chunks = append(chunks, buildSSEEvent("content_block_stop", contentStop))
-	}
-
-	// Tool use chunks
-	for i, call := range toolCalls {
-		blockIndex := i
-		if strings.TrimSpace(content) != "" {
-			blockIndex++ // Account for text block
-		}
-
-		// content_block_start for tool_use
-		toolStart := buildToolUseStartEvent(call, blockIndex)
+	for idx, call := range toolCalls {
+		toolStart := buildToolUseStartEvent(call, idx)
 		chunks = append(chunks, buildSSEEvent("content_block_start", toolStart))
 
-		// content_block_delta for tool input
-		toolDelta := buildToolUseDeltaEvent(call)
-		toolDelta["index"] = blockIndex
+		toolDelta := buildToolUseDeltaEvent(call, idx)
 		chunks = append(chunks, buildSSEEvent("content_block_delta", toolDelta))
 
-		// content_block_stop
-		toolStop := buildContentBlockStopEvent()
-		toolStop["index"] = blockIndex
+		toolStop := buildContentBlockStopEvent(idx)
 		chunks = append(chunks, buildSSEEvent("content_block_stop", toolStop))
 	}
 
-	// message_delta with usage
-	messageDelta := buildMessageDeltaEvent(len(toolCalls) > 0, inputTokens, outputTokens)
-	chunks = append(chunks, buildSSEEvent("message_delta", messageDelta))
+	if trimmed != "" {
+		textIndex := len(toolCalls)
+		contentStart := buildContentBlockStartEvent(textIndex)
+		chunks = append(chunks, buildSSEEvent("content_block_start", contentStart))
 
-	// message_stop
-	messageStop := buildMessageStopEvent()
-	chunks = append(chunks, buildSSEEvent("message_stop", messageStop))
+		contentDelta := buildContentBlockDeltaEvent(textIndex, trimmed)
+		chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
+
+		contentStop := buildContentBlockStopEvent(textIndex)
+		chunks = append(chunks, buildSSEEvent("content_block_stop", contentStop))
+	}
+
+	stopReason := ""
+	if len(toolCalls) > 0 {
+		stopReason = "tool_use"
+	} else if trimmed != "" {
+		stopReason = "end_turn"
+	}
+
+	messageDelta := buildMessageDeltaEvent(stopReason, inputTokens, outputTokens)
+	chunks = append(chunks, buildSSEEvent("message_delta", messageDelta))
+	chunks = append(chunks, buildSSEEvent("message_stop", buildMessageStopEvent()))
 
 	return chunks
 }
@@ -1479,7 +1465,7 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 // Helper functions for building SSE event components
 
 // buildMessageStartEvent creates the message_start event structure
-func buildMessageStartEvent(model string, inputTokens int64) map[string]any {
+func buildMessageStartEvent(model string) map[string]any {
 	return map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
@@ -1491,7 +1477,7 @@ func buildMessageStartEvent(model string, inputTokens int64) map[string]any {
 			"stop_reason":   nil,
 			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 			"usage": map[string]any{
-				"input_tokens":  inputTokens,
+				"input_tokens":  0,
 				"output_tokens": 0, // BUG FIX: output_tokens should be 0 at message_start
 			},
 		},
@@ -1499,10 +1485,10 @@ func buildMessageStartEvent(model string, inputTokens int64) map[string]any {
 }
 
 // buildContentBlockStartEvent creates the content_block_start event structure
-func buildContentBlockStartEvent() map[string]any {
+func buildContentBlockStartEvent(index int) map[string]any {
 	return map[string]any{
 		"type":  "content_block_start",
-		"index": 0,
+		"index": index,
 		"content_block": map[string]any{
 			"type": "text",
 			"text": "",
@@ -1511,10 +1497,10 @@ func buildContentBlockStartEvent() map[string]any {
 }
 
 // buildContentBlockDeltaEvent creates the content_block_delta event structure for text
-func buildContentBlockDeltaEvent(content string) map[string]any {
+func buildContentBlockDeltaEvent(index int, content string) map[string]any {
 	return map[string]any{
 		"type":  "content_block_delta",
-		"index": 0,
+		"index": index,
 		"delta": map[string]any{
 			"type": "text_delta",
 			"text": content,
@@ -1523,10 +1509,10 @@ func buildContentBlockDeltaEvent(content string) map[string]any {
 }
 
 // buildContentBlockStopEvent creates the content_block_stop event structure
-func buildContentBlockStopEvent() map[string]any {
+func buildContentBlockStopEvent(index int) map[string]any {
 	return map[string]any{
 		"type":  "content_block_stop",
-		"index": 0,
+		"index": index,
 	}
 }
 
@@ -1545,7 +1531,7 @@ func buildToolUseStartEvent(call OpenAIToolCall, blockIndex int) map[string]any 
 }
 
 // buildToolUseDeltaEvent creates the content_block_delta event structure for tool input
-func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
+func buildToolUseDeltaEvent(call OpenAIToolCall, index int) map[string]any {
 	input, ok := decodeToolArguments(call.Arguments)
 	if !ok {
 		input = map[string]any{"value": call.Arguments}
@@ -1553,7 +1539,7 @@ func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
 
 	return map[string]any{
 		"type":  "content_block_delta",
-		"index": 0, // Will be updated by caller
+		"index": index,
 		"delta": map[string]any{
 			"type":         "input_json_delta",
 			"partial_json": string(marshalJSON(input)),
@@ -1562,12 +1548,10 @@ func buildToolUseDeltaEvent(call OpenAIToolCall) map[string]any {
 }
 
 // buildMessageDeltaEvent creates the message_delta event structure
-func buildMessageDeltaEvent(hasToolCalls bool, inputTokens, outputTokens int64) map[string]any {
-	stopReason := "end_turn"
-	if hasToolCalls {
-		stopReason = "tool_use"
+func buildMessageDeltaEvent(stopReason string, inputTokens, outputTokens int64) map[string]any {
+	if strings.TrimSpace(stopReason) == "" {
+		stopReason = "end_turn"
 	}
-
 	return map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
@@ -1575,8 +1559,8 @@ func buildMessageDeltaEvent(hasToolCalls bool, inputTokens, outputTokens int64) 
 			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
 		},
 		"usage": map[string]any{
-			"input_tokens":  inputTokens,  // BUG FIX: Include input_tokens in final usage
-			"output_tokens": outputTokens, // BUG FIX: Use actual token count instead of hardcoded 0
+			"input_tokens":  inputTokens,
+			"output_tokens": outputTokens,
 		},
 	}
 }
@@ -1601,35 +1585,6 @@ func buildSSEEvent(eventType string, payload map[string]any) []byte {
 func marshalJSON(v any) []byte {
 	data, _ := json.Marshal(v)
 	return data
-}
-
-// splitContentForStreaming splits content into incremental chunks for proper SSE streaming
-func splitContentForStreaming(content string) []string {
-	if strings.TrimSpace(content) == "" {
-		return []string{}
-	}
-
-	// For proper streaming, split content into smaller chunks
-	// Using word-based streaming for better readability
-	chunks := make([]string, 0)
-
-	// Split by spaces to get words, then stream them with spaces
-	words := strings.Fields(content)
-	for i, word := range words {
-		// Add the word
-		chunks = append(chunks, word)
-
-		// Add space after word (except for last word and punctuation)
-		if i < len(words)-1 {
-			// Check if we need a space (don't add after punctuation)
-			lastChar := rune(word[len(word)-1])
-			if !strings.ContainsRune(".,!?;:", lastChar) {
-				chunks = append(chunks, " ")
-			}
-		}
-	}
-
-	return chunks
 }
 
 // calculateOutputTokens provides a more accurate approximation of output tokens based on content length

@@ -70,9 +70,14 @@ Key coverage:
 |------|------|----------------|
 | `TestParseResponseStripsProtocolNoiseFromContent` | `tests/unit/kiro/kiro_response_test.go` | Ensures `content-type…application/json` leaks and other control strings are scrubbed before Anthropic responses are returned. |
 | `TestBuildRequestStripsControlCharactersFromUserContent` | `tests/unit/kiro/kiro_translation_test.go` | Rejects ANSI escapes / `<system-reminder>` scaffolding present in Claude Code prompts. |
-| `TestBuildRequestPreservesLongToolDescriptions` + `TestBuildRequestStripsMarkupFromToolDescriptions` | same | Enforces the 256-char Kiro limit while mirroring the full text back into the system prompt (`Tool reference…`) so Claude still sees the entire instructions. |
+| `TestBuildRequestPreservesLongToolDescriptions` + `TestBuildRequestStripsMarkupFromToolDescriptions` | same | Enforces the 256-char Kiro limit while ensuring the hashed `Tool reference manifest` plus `toolContextManifest` carry the full text on-demand. |
 | `TestBuildRequestPreservesClaudeCodeBuiltinTools` | same | Loads the real-world fixture `nonstream/claude_code_tooling_request.json` to ensure Bash/Task/Grep/etc. survive translation, clamp to 256 chars, and emit the extra context/tool-choice directives Claude Code expects. |
-| `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` | same | Guards against the Nov'25 regression by verifying every tool description is ≤256 chars while the `Tool reference…` block still contains the full Task/Bash/etc guidance that Claude Code requires. |
+| `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` | same | Guards against the Nov'25 regression by verifying every tool description is ≤256 chars while the manifest still exposes the full Task/Bash/etc guidance (with hashes) for fetch-on-demand transport. |
+| `TestBuildRequestIncludesPlanModeMetadata` | same | Asserts that Task/ExitPlanMode helpers now populate `planMode` metadata (active state, pending call IDs) and inject a plan directive into the system prompt whenever a plan agent is running. |
+| `TestBuildAnthropicStreamingChunksMatchReference` | `tests/unit/kiro/kiro_sse_formatting_test.go` | Replays recorded AIClient-2-API conversations (plain text, tool-only, multi-tool, empty responses) and compares every SSE event emitted by the Go translator—indices, stop reasons, usage, and tool deltas—against the reference adapter to guarantee parity. |
+| `TestConvertKiroStreamToAnthropic_LongArgumentsMerged` | same | Feeds the mapper the legacy split-chunk tool arguments captured from AIClient-2-API logs to ensure JSON fragments merge into a single `input_json_delta` exactly like the reference adapter. |
+| `TestConvertKiroStreamToAnthropic_FollowupPromptFlag` | same | Confirms `followupPrompt` booleans in upstream chunks become `followup_prompt` + `stop_reason: "followup"` in the outgoing `message_delta`, matching the reference stream contract. |
+| `TestConvertKiroStreamToAnthropic_StopReasonOverrides` | same | Covers cancel/time-out/fallback flows by asserting any upstream `stop_reason` values survive translation, while empty ones fall back to `end_turn`, mirroring AIClient-2-API’s behaviour. |
 
 When diagnosing future “Improperly formed request” errors, reproduce with `/tmp/claude_request.json` (saved during the Nov 2025 incident) and rerun the suite above before shipping changes.
 
