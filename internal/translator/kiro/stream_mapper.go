@@ -334,7 +334,12 @@ func (b *anthropicLegacyStreamBuilder) finalize() [][]byte {
 }
 
 func sanitizeStreamingTextChunk(text string) string {
-	return sanitizeAssistantText(text)
+	return sanitizeAssistantTextWithOptions(text, assistantTextSanitizeOptions{
+		allowBlank:         true,
+		collapseWhitespace: false,
+		trimResult:         false,
+		dropEmptyLines:     false,
+	})
 }
 
 func extractToolPartial(input gjson.Result) string {

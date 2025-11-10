@@ -3,6 +3,9 @@ package kiro_test
 import (
 	"encoding/binary"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -511,6 +514,29 @@ func TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_SpaceAtStartOf
 	assert.NotContains(t, combined, "I'll useTDD")
 }
 
+func TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_Fixture(t *testing.T) {
+	raw := loadStreamingFixture(t, "cross_chunk_spaces.ndjson")
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "expected SSE chunks from converted Kiro stream")
+
+	var builder strings.Builder
+	for _, ev := range parseSSEChunks(t, chunks) {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "text_delta" {
+			continue
+		}
+		builder.WriteString(delta["text"].(string))
+	}
+
+	output := builder.String()
+	assert.Contains(t, output, "I'll use TDD workflows for CI/CD.")
+	assert.NotContains(t, output, "I'll useTDD")
+	assert.NotContains(t, output, "workflowsfor")
+}
+
 func TestConvertKiroStreamToAnthropic_FollowupPromptFlag(t *testing.T) {
 	raw := strings.Join([]string{
 		`data: {"content":"Need more info","followupPrompt":true}`,
@@ -806,4 +832,29 @@ func deepCopy(value any) any {
 	default:
 		return v
 	}
+}
+
+func loadStreamingFixture(t *testing.T, name string) string {
+	t.Helper()
+	_, file, _, ok := runtime.Caller(0)
+	require.True(t, ok, "failed to resolve caller information for fixture helper")
+	baseDir := filepath.Dir(file)
+	path := filepath.Join(baseDir, "testdata", "streaming", name)
+	data, err := os.ReadFile(path)
+	require.NoErrorf(t, err, "failed to read fixture %s", path)
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	var builder strings.Builder
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		builder.WriteString("data: ")
+		builder.WriteString(line)
+		if i < len(lines)-1 {
+			builder.WriteString("\n\n")
+		}
+	}
+	return builder.String()
 }

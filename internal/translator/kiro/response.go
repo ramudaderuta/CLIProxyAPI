@@ -1201,8 +1201,24 @@ var (
 	collapseWhitespaceRegex = regexp.MustCompile(`[ \f\r]+`)
 )
 
+type assistantTextSanitizeOptions struct {
+	allowBlank         bool
+	collapseWhitespace bool
+	trimResult         bool
+	dropEmptyLines     bool
+}
+
 func sanitizeAssistantText(text string) string {
-	if strings.TrimSpace(text) == "" {
+	return sanitizeAssistantTextWithOptions(text, assistantTextSanitizeOptions{
+		allowBlank:         false,
+		collapseWhitespace: true,
+		trimResult:         true,
+		dropEmptyLines:     true,
+	})
+}
+
+func sanitizeAssistantTextWithOptions(text string, opts assistantTextSanitizeOptions) string {
+	if strings.TrimSpace(text) == "" && !opts.allowBlank {
 		return ""
 	}
 
@@ -1228,6 +1244,10 @@ func sanitizeAssistantText(text string) string {
 	}
 
 	cleaned := builder.String()
+	if cleaned == "" {
+		return ""
+	}
+
 	for _, pattern := range protocolNoisePatterns {
 		cleaned = pattern.ReplaceAllString(cleaned, "")
 	}
@@ -1237,18 +1257,34 @@ func sanitizeAssistantText(text string) string {
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" {
+			if opts.dropEmptyLines {
+				continue
+			}
+			filtered = append(filtered, line)
 			continue
 		}
 		lower := strings.ToLower(trimmed)
 		if shouldDropProtocolLine(lower) {
 			continue
 		}
-		filtered = append(filtered, trimmed)
+		if opts.collapseWhitespace {
+			filtered = append(filtered, trimmed)
+		} else {
+			filtered = append(filtered, line)
+		}
 	}
 
 	result := strings.Join(filtered, "\n")
-	result = collapseWhitespaceRegex.ReplaceAllString(result, " ")
-	return strings.TrimSpace(result)
+	if opts.collapseWhitespace {
+		result = collapseWhitespaceRegex.ReplaceAllString(result, " ")
+	}
+	if opts.trimResult {
+		result = strings.TrimSpace(result)
+	}
+	if result == "" && !opts.allowBlank {
+		return ""
+	}
+	return result
 }
 
 func shouldDropProtocolLine(line string) bool {

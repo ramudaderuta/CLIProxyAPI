@@ -76,6 +76,7 @@ Key coverage:
 | `TestBuildRequestIncludesPlanModeMetadata` | same | Asserts that Task/ExitPlanMode helpers now populate `planMode` metadata (active state, pending call IDs) and inject a plan directive into the system prompt whenever a plan agent is running. |
 | `TestBuildAnthropicStreamingChunksMatchReference` | `tests/unit/kiro/kiro_sse_formatting_test.go` | Replays recorded AIClient-2-API conversations (plain text, tool-only, multi-tool, empty responses) and compares every SSE event emitted by the Go translator—indices, stop reasons, usage, and tool deltas—against the reference adapter to guarantee parity. |
 | `TestConvertKiroStreamToAnthropic_LongArgumentsMerged` | same | Feeds the mapper the legacy split-chunk tool arguments captured from AIClient-2-API logs to ensure JSON fragments merge into a single `input_json_delta` exactly like the reference adapter. |
+| `TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_Fixture` | same | Loads `tests/unit/kiro/testdata/streaming/cross_chunk_spaces.ndjson` (symlinked to the shared fixture) to lock in the “I'll use␠TDD workflows for CI/CD.” spacing regression observed in Nov ’25 Kiro SSE traces. |
 | `TestConvertKiroStreamToAnthropic_FollowupPromptFlag` | same | Confirms `followupPrompt` booleans in upstream chunks become `followup_prompt` + `stop_reason: "followup"` in the outgoing `message_delta`, matching the reference stream contract. |
 | `TestConvertKiroStreamToAnthropic_StopReasonOverrides` | same | Covers cancel/time-out/fallback flows by asserting any upstream `stop_reason` values survive translation, while empty ones fall back to `end_turn`, mirroring AIClient-2-API’s behaviour. |
 
@@ -133,7 +134,7 @@ tests/
 
 **Notes**
 - **Centralized test data** in `tests/shared/testdata/` eliminates duplication across unit/integration/regression tests
-- **Symlinks** from individual test directories to shared testdata maintain compatibility
+- **Symlinks** from individual test directories to shared testdata maintain compatibility (e.g., `tests/unit/kiro/testdata/streaming/cross_chunk_spaces.ndjson -> tests/shared/testdata/streaming/cross_chunk_spaces.ndjson`)
 - **Dynamic token creation** replaces hardcoded absolute paths with `t.TempDir()`
 - Put test-only data under a `testdata/` folder. Go tooling ignores it for builds, and paths are stable.
 - Prefer **domain folders** (e.g., `kiro/`) so file names can be concise (no long prefixes).
