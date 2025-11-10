@@ -422,6 +422,95 @@ func TestConvertKiroStreamToAnthropic_LongArgumentsMerged(t *testing.T) {
 	assert.Equal(t, `{"limit":5,"query":"status"}`, actualJSON)
 }
 
+func TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_SpaceAtEndOfChunk(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"content":"I'll use "}`,
+		"",
+		`data: {"content":"TDD workflows"}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "expected SSE chunks from converted Kiro stream")
+
+	var builder strings.Builder
+	for _, ev := range parseSSEChunks(t, chunks) {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "text_delta" {
+			continue
+		}
+		builder.WriteString(delta["text"].(string))
+	}
+
+	combined := builder.String()
+	assert.Contains(t, combined, "I'll use TDD workflows")
+	assert.NotContains(t, combined, "I'll useTDD")
+}
+
+func TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_SpaceOnlyChunk(t *testing.T) {
+	// Ensure that a space at a chunk boundary is preserved and not stripped by
+	// Kiro stream normalization / conversion logic.
+	// This matches patterns seen in real Kiro outputs like "I'll useTDD".
+
+	raw := strings.Join([]string{
+		`data: {"content":"I'll use"}`,
+		"",
+		// Space-only content chunk that must be preserved
+		`data: {"content":" "}`,
+		"",
+		`data: {"content":"TDD workflows"}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "expected SSE chunks from converted Kiro stream")
+
+	// Collect all text_delta fragments into a single string.
+	var builder strings.Builder
+	for _, ev := range parseSSEChunks(t, chunks) {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "text_delta" {
+			continue
+		}
+		builder.WriteString(delta["text"].(string))
+	}
+
+	combined := builder.String()
+	assert.Contains(t, combined, "I'll use TDD workflows")
+	assert.NotContains(t, combined, "I'll useTDD", "space between chunks must not be dropped")
+}
+
+func TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_SpaceAtStartOfNextChunk(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"content":"I'll use"}`,
+		"",
+		`data: {"content":" TDD workflows"}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "expected SSE chunks from converted Kiro stream")
+
+	var builder strings.Builder
+	for _, ev := range parseSSEChunks(t, chunks) {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "text_delta" {
+			continue
+		}
+		builder.WriteString(delta["text"].(string))
+	}
+
+	combined := builder.String()
+	assert.Contains(t, combined, "I'll use TDD workflows")
+	assert.NotContains(t, combined, "I'll useTDD")
+}
+
 func TestConvertKiroStreamToAnthropic_FollowupPromptFlag(t *testing.T) {
 	raw := strings.Join([]string{
 		`data: {"content":"Need more info","followupPrompt":true}`,
