@@ -258,14 +258,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Sync request authentication providers with inline API keys for backwards compatibility.
 	syncInlineAccessProvider(&cfg)
 
-	// Normalize Gemini API key configuration and migrate legacy entries.
-	cfg.SyncGeminiKeys()
-
-	// Sanitize OpenAI compatibility providers: drop entries without base-url
-	sanitizeOpenAICompatibility(&cfg)
+	// Sanitize Gemini API key configuration and migrate legacy entries.
+	cfg.SanitizeGeminiKeys()
 
 	// Sanitize Codex keys: drop entries without base-url
-	sanitizeCodexKeys(&cfg)
+	cfg.SanitizeCodexKeys()
 
 	// Normalize and validate Kiro token file configuration.
 	cfg.NormalizeKiroTokenFiles()
@@ -275,17 +272,21 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		}
 		return nil, err
 	}
-	// Normalize Claude key headers
-	normalizeClaudeKeys(&cfg)
+
+	// Sanitize Claude key headers
+	cfg.SanitizeClaudeKeys()
+
+	// Sanitize OpenAI compatibility providers: drop entries without base-url
+	cfg.SanitizeOpenAICompatibility()
 
 	// Return the populated configuration struct.
 	return &cfg, nil
 }
 
-// sanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
+// SanitizeOpenAICompatibility removes OpenAI-compatibility provider entries that are
 // not actionable, specifically those missing a BaseURL. It trims whitespace before
 // evaluation and preserves the relative order of remaining entries.
-func sanitizeOpenAICompatibility(cfg *Config) {
+func (cfg *Config) SanitizeOpenAICompatibility() {
 	if cfg == nil || len(cfg.OpenAICompatibility) == 0 {
 		return
 	}
@@ -294,7 +295,7 @@ func sanitizeOpenAICompatibility(cfg *Config) {
 		e := cfg.OpenAICompatibility[i]
 		e.Name = strings.TrimSpace(e.Name)
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
-		e.Headers = normalizeHeaders(e.Headers)
+		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
 			// Skip providers with no base-url; treated as removed
 			continue
@@ -304,9 +305,9 @@ func sanitizeOpenAICompatibility(cfg *Config) {
 	cfg.OpenAICompatibility = out
 }
 
-// sanitizeCodexKeys removes Codex API key entries missing a BaseURL.
+// SanitizeCodexKeys removes Codex API key entries missing a BaseURL.
 // It trims whitespace and preserves order for remaining entries.
-func sanitizeCodexKeys(cfg *Config) {
+func (cfg *Config) SanitizeCodexKeys() {
 	if cfg == nil || len(cfg.CodexKey) == 0 {
 		return
 	}
@@ -314,7 +315,7 @@ func sanitizeCodexKeys(cfg *Config) {
 	for i := range cfg.CodexKey {
 		e := cfg.CodexKey[i]
 		e.BaseURL = strings.TrimSpace(e.BaseURL)
-		e.Headers = normalizeHeaders(e.Headers)
+		e.Headers = NormalizeHeaders(e.Headers)
 		if e.BaseURL == "" {
 			continue
 		}
@@ -323,17 +324,19 @@ func sanitizeCodexKeys(cfg *Config) {
 	cfg.CodexKey = out
 }
 
-func normalizeClaudeKeys(cfg *Config) {
+// SanitizeClaudeKeys normalizes headers for Claude credentials.
+func (cfg *Config) SanitizeClaudeKeys() {
 	if cfg == nil || len(cfg.ClaudeKey) == 0 {
 		return
 	}
 	for i := range cfg.ClaudeKey {
 		entry := &cfg.ClaudeKey[i]
-		entry.Headers = normalizeHeaders(entry.Headers)
+		entry.Headers = NormalizeHeaders(entry.Headers)
 	}
 }
 
-func (cfg *Config) SyncGeminiKeys() {
+// SanitizeGeminiKeys deduplicates and normalizes Gemini credentials.
+func (cfg *Config) SanitizeGeminiKeys() {
 	if cfg == nil {
 		return
 	}
@@ -348,7 +351,7 @@ func (cfg *Config) SyncGeminiKeys() {
 		}
 		entry.BaseURL = strings.TrimSpace(entry.BaseURL)
 		entry.ProxyURL = strings.TrimSpace(entry.ProxyURL)
-		entry.Headers = normalizeHeaders(entry.Headers)
+		entry.Headers = NormalizeHeaders(entry.Headers)
 		if _, exists := seen[entry.APIKey]; exists {
 			continue
 		}
@@ -391,7 +394,8 @@ func looksLikeBcrypt(s string) bool {
 	return len(s) > 4 && (s[:4] == "$2a$" || s[:4] == "$2b$" || s[:4] == "$2y$")
 }
 
-func normalizeHeaders(headers map[string]string) map[string]string {
+// NormalizeHeaders trims header keys and values and removes empty pairs.
+func NormalizeHeaders(headers map[string]string) map[string]string {
 	if len(headers) == 0 {
 		return nil
 	}
