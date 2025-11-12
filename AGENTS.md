@@ -18,7 +18,7 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
   - Legacy failure logs still live in `logs/v1-messages-2025-11-08T170438-*.log` (broken) and `logs/v1-messages-2025-11-08T175404-*.log` (fixed). Repro payloads: `/tmp/claude_request.json`, `/tmp/claude_request_desc256.json`, `/tmp/claude_request_no_tools.json`.
 - **Tests covering the fixes**:
   - `TestParseResponseStripsProtocolNoiseFromContent` and `TestBuildAnthropicMessagePayloadAddsLeadInWhenContentMissing` (anthropic sanitizer).
-  - `TestBuildRequestStripsControlCharactersFromUserContent`, `TestBuildRequestPreservesLongToolDescriptions`, `TestBuildRequestStripsMarkupFromToolDescriptions`, and `TestBuildRequestPreservesClaudeCodeBuiltinTools` (request translator hardening).
+  - `TestBuildRequestStripsControlCharactersFromUserContent`, `TestBuildRequestPreservesLongToolDescriptions`, `TestBuildRequestStripsMarkupFromToolDescriptions`, `TestBuildRequestPreservesClaudeCodeBuiltinTools`, and `TestBuildRequestMovesTrailingAssistantMessagesIntoHistory` (request translator hardening).
   - `TestBuildAnthropicStreamingChunksMatchReference`, `TestConvertKiroStreamToAnthropic_*`, and `TestConvertKiroStreamToAnthropic_StopReasonOverrides` validate the Go SSE output vs. CLIProxyAPI recordings (plain text, tool chains, follow-ups, cancel/timeout).
   - All run via `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`.
   - Full regression sweep: `go test ./tests/regression/kiro` plus `go test ./...` before shipping.
