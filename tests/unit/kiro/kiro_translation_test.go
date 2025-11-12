@@ -10,6 +10,7 @@ import (
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
+	"github.com/tidwall/gjson"
 )
 
 // TestKiroTranslation_CompleteFlow tests the complete translation flow
@@ -754,6 +755,60 @@ func TestBuildRequestIncludesPlanModeMetadata(t *testing.T) {
 	sysContent := systemEntry.(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
 	if !strings.Contains(sysContent, "Plan directive") {
 		t.Fatalf("expected plan directive injected into system prompt:\n%s", sysContent)
+	}
+}
+
+func TestBuildRequestMovesTrailingAssistantMessagesIntoHistory(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+    "messages": [
+        {"role": "user", "content": "Summarize the report"},
+        {"role": "assistant", "content": "Here is the first draft."},
+        {"role": "user", "content": "Continue refining the summary."},
+        {"role": "assistant", "content": "Absolutely, adding more context now."}
+    ]
+}`)
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	conv := gjson.ParseBytes(body).Get("conversationState")
+	current := conv.Get("currentMessage.userInputMessage.content").String()
+	if current != "Continue refining the summary." {
+		t.Fatalf("expected trailing user message to be forwarded, got %q", current)
+	}
+	if conv.Get("currentMessage.assistantResponseMessage").Exists() {
+		t.Fatalf("assistantResponseMessage should not be present on current message: %s", conv.Get("currentMessage"))
+	}
+
+	history := conv.Get("history")
+	historyArray := history.Array()
+	if len(historyArray) != 3 {
+		t.Fatalf("expected three history entries, got %d", len(historyArray))
+	}
+	last := historyArray[len(historyArray)-1]
+	content := last.Get("assistantResponseMessage.content").String()
+	if content != "Absolutely, adding more context now." {
+		t.Fatalf("expected trailing assistant message in history, got %q", content)
+	}
+}
+
+func TestBuildRequestFailsWhenTranscriptHasNoUserTurn(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := []byte(`{
+    "messages": [
+        {"role": "assistant", "content": "Here you go"}
+    ]
+}`)
+
+	_, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err == nil {
+		t.Fatalf("expected BuildRequest to fail without a user turn")
+	}
+	if !strings.Contains(err.Error(), "no user turn found") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

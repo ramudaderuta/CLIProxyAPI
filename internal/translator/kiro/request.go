@@ -78,7 +78,24 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		}
 	}
 
-	for i := startIndex; i < len(messageArray)-1; i++ {
+	currentIndex := len(messageArray) - 1
+	trailingAssistants := make([]map[string]any, 0)
+	for currentIndex >= 0 {
+		msg := messageArray[currentIndex]
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if role != "assistant" {
+			break
+		}
+
+		text, toolUses := extractAssistantMessage(msg)
+		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, toolUses)}, trailingAssistants...)
+		currentIndex--
+	}
+	if currentIndex < 0 {
+		return nil, fmt.Errorf("kiro translator: no user turn found to forward to kiro")
+	}
+
+	for i := startIndex; i < currentIndex; i++ {
 		msg := messageArray[i]
 		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
 		switch role {
@@ -91,55 +108,50 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		}
 	}
 
-	current := messageArray[len(messageArray)-1]
+	current := messageArray[currentIndex]
 	currentRole := strings.ToLower(strings.TrimSpace(current.Get("role").String()))
-	var currentPayload map[string]any
-	if currentRole == "assistant" {
-		text, toolUses := extractAssistantMessage(current)
-		currentPayload = map[string]any{
-			"assistantResponseMessage": map[string]any{
-				"content":  text,
-				"toolUses": toolUses,
-			},
-		}
-	} else {
-		text, toolResults, toolUses, images := extractUserMessage(current)
-		context := map[string]any{}
-		if len(toolResults) > 0 {
-			context["toolResults"] = toolResults
-		}
-		if len(toolDefinitions) > 0 {
-			context["tools"] = toolDefinitions
-		}
-		if manifest := buildToolContextManifest(toolContextEntries); len(manifest) > 0 {
-			context["toolContextManifest"] = manifest
-		}
-		if toolChoiceMeta != nil {
-			context["claudeToolChoice"] = toolChoiceMeta
-		}
-		if planModeMeta != nil {
-			context["planMode"] = planModeMeta
-		}
-		if len(context) == 0 {
-			context = nil
-		}
+	if currentRole != "user" {
+		return nil, fmt.Errorf("kiro translator: latest non-assistant message must be a user turn, got %s", currentRole)
+	}
 
-		currentPayload = map[string]any{
-			"userInputMessage": map[string]any{
-				"content": text,
-				"modelId": kiroModel,
-				"origin":  origin,
-			},
-		}
-		if len(images) > 0 {
-			currentPayload["userInputMessage"].(map[string]any)["images"] = images
-		}
-		if context != nil {
-			currentPayload["userInputMessage"].(map[string]any)["userInputMessageContext"] = context
-		}
-		if len(toolUses) > 0 {
-			currentPayload["userInputMessage"].(map[string]any)["toolUses"] = toolUses
-		}
+	history = append(history, trailingAssistants...)
+
+	text, toolResults, toolUses, images := extractUserMessage(current)
+	context := map[string]any{}
+	if len(toolResults) > 0 {
+		context["toolResults"] = toolResults
+	}
+	if len(toolDefinitions) > 0 {
+		context["tools"] = toolDefinitions
+	}
+	if manifest := buildToolContextManifest(toolContextEntries); len(manifest) > 0 {
+		context["toolContextManifest"] = manifest
+	}
+	if toolChoiceMeta != nil {
+		context["claudeToolChoice"] = toolChoiceMeta
+	}
+	if planModeMeta != nil {
+		context["planMode"] = planModeMeta
+	}
+	if len(context) == 0 {
+		context = nil
+	}
+
+	currentPayload := map[string]any{
+		"userInputMessage": map[string]any{
+			"content": text,
+			"modelId": kiroModel,
+			"origin":  origin,
+		},
+	}
+	if len(images) > 0 {
+		currentPayload["userInputMessage"].(map[string]any)["images"] = images
+	}
+	if context != nil {
+		currentPayload["userInputMessage"].(map[string]any)["userInputMessageContext"] = context
+	}
+	if len(toolUses) > 0 {
+		currentPayload["userInputMessage"].(map[string]any)["toolUses"] = toolUses
 	}
 
 	request := map[string]any{
