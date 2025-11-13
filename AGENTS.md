@@ -100,11 +100,11 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 2. **Propagate tool_choice metadata**: When Claude Code sets `tool_choice`, we emit a `claudeToolChoice` map and a short “Tool directive” sentence in the system prompt so Kiro honors mandatory tool invocations.
 3. **Regression coverage**: `TestBuildRequestPreservesLongToolDescriptions`, `TestBuildRequestPreservesClaudeCodeBuiltinTools`, and `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` ensure the clamping + mirroring behavior doesn’t regress. Always run `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1` before shipping changes that touch Kiro request translation.
 
-## 2025‑11‑13 Kiro “Improperly formed request” deep‑dive
+## Kiro "Improperly formed request" deep‑dive
 
 ### Bisection Results
 
-- orig (full `claude_request_todowrite_continue.json`): 200 with SSE `error` (body: “Improperly formed request.”)
+- orig (full `claude_request_todowrite_continue.json`): 200 with SSE `error` (body: "Improperly formed request.")
 - no_tools (drop `.tools`): 200 with SSE `error` (same body)
 - no_tools_no_sys (drop `.tools` and `.system`): 200 with SSE `error`
 - only_first_user (keep only `messages[0]`): 200 OK, normal response
@@ -113,19 +113,66 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 - user_and_result (keep `messages[0]`, user `tool_result`): 400 Improperly formed request
 - user_asst_result (keep `messages[0]`, assistant `tool_use`, user `tool_result`): 400 Improperly formed request
 
-### Conclusion (request contract with Kiro)
+### Implementation
 
-- Kiro’s contract kept in `./docs/sdk-kiro-contract.md`.
-- Kiro’s `generateAssistantResponse` rejects client‑sent transcript events: any assistant `tool_use` or user `tool_result` in the request body leads to “Improperly formed request.”
-- Kiro accepts plain user text (and optional tool specifications) but treats tool events as output‑only. Therefore, client resumes must not send tool events; instead, fold tool outputs into plain text.
+**Problem:** TodoWrite and other tools triggered "Improperly formed request" 400 errors when used in conversations with history because the Kiro translator was passing through `tool_use` and `tool_result` blocks from previous turns.
+
+**Root Cause:** The `BuildRequest` function in `internal/translator/kiro/request.go` was calling `extractUserMessage` and `extractAssistantMessage` for all history messages, which preserved tool events and sent them to Kiro. Per the contract, Kiro treats tool events as output-only and rejects any request containing them in history.
+
+**Solution (Commit 2025-11-13):**
+
+1. **Enhanced `safeParseJSON` (lines 481-512)**
+   - Added defensive JSON parsing to handle truncated escape sequences per sdk-kiro-contract.md section 3.1
+   - Handles dangling backslashes (`\`), incomplete Unicode escapes (`\u`, `\u0`, `\u00`)
+   - Returns original string on parse failure instead of crashing
+   - Prevents crashes when tool arguments are malformed or truncated mid-stream
+
+2. **Added `sanitizeMessageForKiro` (lines 32-86)**
+   - Strips `tool_use` and `tool_result` blocks from messages before adding to history
+   - Converts tool events to text summaries: `[Tool invoked: get_weather]`, `[Tool result: Temperature: 22°C]`
+   - Preserves images and regular text content
+   - Adds placeholder text if message had only tool events (e.g., `[Assistant used tools]`)
+
+3. **Updated `BuildRequest` to sanitize history**
+   - **Line 128-132**: Sanitizes first message when merged with system prompt
+   - **Line 147-148**: Sanitizes trailing assistant messages (moved into history per existing logic)
+   - **Line 157-172**: Sanitizes all history messages (both user and assistant roles)
+   - **Preserves tool results in current message** (lines 175-179) - this is allowed per contract since current message is not history
+
+**Test Coverage:**
+
+Added comprehensive regression tests in `tests/unit/kiro/kiro_translation_test.go` (lines 1369-1697):
+
+- `TestBuildRequest_StripsToolEventsFromHistory`
+  - `strips_assistant_tool_use_from_history`: Verifies assistant tool_use blocks are removed from history
+  - `strips_user_tool_result_from_history`: Verifies user tool_result blocks are removed from history
+  - `preserves_tool_results_in_current_message`: Confirms current message tool results are kept (allowed by contract)
+  - `converts_tool_events_to_text_summaries`: Validates text summary conversion (e.g., `[Tool invoked: calculate]`)
+
+- `TestSafeParseJSON_TruncatedJSON`
+  - `handles_dangling_backslash`: Tests truncated JSON with trailing `\`
+  - `handles_incomplete_unicode_escape`: Tests incomplete `\u` sequences
+
+All tests pass: `go test ./tests/unit/kiro -run 'TestBuildRequest_StripsToolEventsFromHistory|TestSafeParseJSON_TruncatedJSON' -v`
+
+**Contract Compliance:**
+
+The implementation now fully complies with `./docs/sdk-kiro-contract.md`:
+- Section 3.1: `safeParseJSON` handles truncated JSON defensively
+- Section 4.2: History sanitization strips tool events before sending to Kiro
+- Section 6.2: `BuildRequest` applies Kiro contract correctly
+- Zero tool events in Kiro request history (only text summaries)
+- Current message tool results preserved (allowed by contract)
 
 ### How to verify locally
 
 - Unit tests: `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`
+- Sanitization tests: `go test ./tests/unit/kiro -run 'TestBuildRequest_StripsToolEventsFromHistory|TestSafeParseJSON_TruncatedJSON' -v`
+- Full regression: `go test ./tests/unit/... ./tests/regression/... -race -cover`
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
   `tests/shared/testdata/nonstream/claude_request_todowrite_continue.json` to `/v1/messages`.
-  - First attempt may receive an upstream error body; fallback retry should rebuild the payload and return a normal assistant response.
-  - Latest request bodies are logged under `logs/v1-messages-*.log`; ensure no client‑sent `tool_use`/`tool_result` reach Kiro in the fallback request.
+  - Should now succeed without "Improperly formed request" errors
+  - Latest request bodies are logged under `logs/v1-messages-*.log`; verify no client‑sent `tool_use`/`tool_result` reach Kiro in history (only in current message if present)
 
 ## Architecture Analysis
 

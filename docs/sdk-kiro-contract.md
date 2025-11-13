@@ -1,882 +1,905 @@
-# Kiro ⇄ Anthropic Translation & Execution Protocol Contract  
+# Kiro ⇄ Anthropic Translation & Execution Contract
 
-## 0. Scope & Non-Goals
-
-- **Scope**
-  - Define the contract and operational logic for:
-    - Translating **Anthropic Messages API** requests → **Kiro** `conversationState` requests.
-    - Translating **Kiro** responses → **Anthropic Messages API** responses.
-    - Executing these translations in a **non-streaming Kiro call + synthetic Anthropic SSE** model.
-  - Include **defensive behavior** (sanitization, JSON parsing, tool clamping, tool manifest, error handling).
+*(Go-style pseudocode, derived from `convert-old.js` and Nov’25 Kiro protocol notes)* 
 
 ---
 
-## 1. Core Data Models
+## 1. Scope & Goals
 
-### 1.1 Anthropic (Claude) Request/Response Types
+This document defines the **protocol contract** between:
 
-```go
-// AnthropicMessagesRequest represents /v1/messages input.
-type AnthropicMessagesRequest struct {
-	Model       string               `json:"model"`
-	Messages    []AnthropicMessage   `json:"messages"`
-	System      []AnthropicSystemMsg `json:"system,omitempty"` // optional, can be []TextBlock
-	Tools       []AnthropicTool      `json:"tools,omitempty"`
-	ToolChoice  *AnthropicToolChoice `json:"tool_choice,omitempty"`
-	Thinking    *AnthropicThinking   `json:"thinking,omitempty"`
-	Metadata    map[string]any       `json:"metadata,omitempty"`
-	MaxTokens   *int                 `json:"max_tokens,omitempty"`
-	Temperature *float64             `json:"temperature,omitempty"`
-	TopP        *float64             `json:"top_p,omitempty"`
-	Stream      bool                 `json:"stream,omitempty"`
-	// PlanMode, etc., may come via metadata or system text.
-}
+* The **OpenAI-style front-end** (Claude Code / CLIProxyAPI clients),
+* The **Anthropic Messages API–style internal representation**, and
+* The **Kiro provider** (request/response + pseudo-streaming behavior).
 
-type AnthropicMessage struct {
-	Role    string               `json:"role"` // "user" | "assistant"
-	Content []AnthropicBlock     `json:"content"`
-}
+It captures:
 
-// Content blocks used in messages.
-type AnthropicBlock struct {
-	Type       string                 `json:"type"` // "text" | "image" | "tool_use" | "tool_result" | ...
-	Text       string                 `json:"text,omitempty"`
-	Source     *AnthropicImageSource  `json:"source,omitempty"`      // for type == "image"
-	ID         string                 `json:"id,omitempty"`          // for type == "tool_use"
-	Name       string                 `json:"name,omitempty"`        // for type == "tool_use"
-	Input      map[string]any         `json:"input,omitempty"`       // for type == "tool_use"
-	ToolUseID  string                 `json:"tool_use_id,omitempty"` // for type == "tool_result"`
-	ContentAny any                    `json:"content,omitempty"`     // tool_result payload; raw
-}
+1. **Translation layer** behavior (OpenAI ⇄ Claude, Claude ⇄ Gemini) as it informs the Kiro implementation.
+2. **Execution layer** behavior for Kiro: how requests are built, what is *allowed* in the payload, and how responses are mapped back to Anthropic SSE.
+3. **Defensive helpers** (`safeParseJSON`, `_buildFunctionResponse`, `processClaudeContentToGeminiParts`, etc.) that must be preserved and/or ported into Go.
 
-type AnthropicImageSource struct {
-	Type      string `json:"type"`       // "base64"
-	MediaType string `json:"media_type"` // e.g. "image/jpeg"
-	Data      string `json:"data"`       // base64 payload
-}
-
-type AnthropicTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description,omitempty"`
-	InputSchema map[string]any         `json:"input_schema,omitempty"`
-	// Other Anthropic tool fields omitted here.
-}
-
-type AnthropicToolChoice struct {
-	Type string `json:"type"` // "auto" | "any" | "tool" | ...
-	// When type == "tool", tool name etc. may be present.
-}
-
-type AnthropicThinking struct {
-	Type          string `json:"type"`            // "enabled" | "disabled"
-	BudgetTokens  *int   `json:"budget_tokens"`   // optional
-	// Additional thinking fields omitted.
-}
-
-type AnthropicMessagesResponse struct {
-	ID         string             `json:"id"`
-	Model      string             `json:"model"`
-	Role       string             `json:"role"` // "assistant"
-	Content    []AnthropicBlock   `json:"content"`
-	StopReason string             `json:"stop_reason,omitempty"`
-	Usage      *AnthropicUsage    `json:"usage,omitempty"`
-	// Other Anthropic fields omitted for brevity.
-}
-
-type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens,omitempty"`
-	OutputTokens int `json:"output_tokens,omitempty"`
-	TotalTokens  int `json:"total_tokens,omitempty"`
-}
-````
+The goal is that **Kiro never sees an “improperly formed request”** and that TodoWrite / other tools behave identically to CLIProxyAPI’s reference behavior.
 
 ---
 
-### 1.2 Kiro Request/Response Types
+## 2. Core Types
+
+### 2.1 Protocol & Conversion Types
 
 ```go
-// KiroRequest is the internal payload for Kiro's generateAssistantResponse.
-type KiroRequest struct {
-	ConversationState KiroConversationState `json:"conversationState"`
-}
+// Protocol family of a model/provider.
+type ProtocolPrefix string
 
-type KiroConversationState struct {
-	CurrentMessage KiroCurrentMessage   `json:"currentMessage"`
-	History        []KiroHistoryMessage `json:"history,omitempty"`
-}
+const (
+    ProtocolOpenAI          ProtocolPrefix = "openai"
+    ProtocolClaude          ProtocolPrefix = "claude"
+    ProtocolGemini          ProtocolPrefix = "gemini"
+    ProtocolOpenAIResponses ProtocolPrefix = "openai_responses"
+)
 
-type KiroCurrentMessage struct {
-	UserInputMessage         KiroUserInputMessage `json:"userInputMessage"`
-	UserInputMessageContext  KiroMessageContext   `json:"userInputMessageContext"`
-}
+// Direction of conversion.
+type ConversionType string
 
-type KiroUserInputMessage struct {
-	Content string `json:"content"`          // Plain text; no tool_use/tool_result
-	ModelID string `json:"modelId"`          // Mapped from Anthropic model.
-	Origin  string `json:"origin"`           // e.g. "AI_EDITOR"
-	// Additional fields as required by Kiro.
-}
-
-type KiroHistoryMessage struct {
-	Role    string `json:"role"`    // "user" | "assistant"
-	Content string `json:"content"` // Plain text only.
-}
-
-type KiroMessageContext struct {
-	Tools               []KiroToolSpec        `json:"tools,omitempty"`
-	ToolContextManifest []KiroToolManifest    `json:"toolContextManifest,omitempty"`
-	ClaudeToolChoice    *KiroToolChoiceMeta   `json:"claudeToolChoice,omitempty"`
-	// Additional context: planMode, extra metadata, etc.
-}
-
-type KiroToolSpec struct {
-	Name             string `json:"name"`
-	Description      string `json:"description"` // truncated to <= 256 chars for Kiro
-	JSONSchema       any    `json:"jsonSchema"`  // sanitized tool schema
-	// Other Kiro tool fields as needed.
-}
-
-type KiroToolManifest struct {
-	Name        string `json:"name"`
-	Hash        string `json:"hash"`   // first 64 bits of SHA-256 of *full* description
-	LengthChars int    `json:"length"` // length of full description
-	Description string `json:"description"`
-}
-
-type KiroToolChoiceMeta struct {
-	// Mirror of Anthropic tool_choice semantics, e.g.
-	Mode       string `json:"mode"`        // "auto", "required", etc.
-	ToolName   string `json:"toolName"`    // for "tool" mode, required tool name
-	RawPayload any    `json:"rawPayload"`  // original Anthropic tool_choice
-}
-
-// KiroResponse is what Kiro actually returns.
-type KiroResponse struct {
-	// Exact shape depends on Kiro; conceptually:
-	OutputMessages []KiroAssistantMessage `json:"outputMessages"`
-	Usage          *KiroUsage             `json:"usage,omitempty"`
-	StopReason     string                 `json:"stopReason,omitempty"`
-}
-
-type KiroAssistantMessage struct {
-	Content string `json:"content"` // Kiro returns plain text; tool-like data must be encoded in text.
-	// Potentially other metadata (followupPrompt, etc.).
-}
-
-type KiroUsage struct {
-	InputTokens  int `json:"inputTokens,omitempty"`
-	OutputTokens int `json:"outputTokens,omitempty"`
-	TotalTokens  int `json:"totalTokens,omitempty"`
-}
+const (
+    ConversionRequest    ConversionType = "request"
+    ConversionResponse   ConversionType = "response"
+    ConversionStream     ConversionType = "streamChunk"
+    ConversionModelList  ConversionType = "modelList"
+)
 ```
 
----
-
-### 1.3 Configuration & Environment
+### 2.2 Generic Conversion Entry
 
 ```go
-type KiroTranslatorConfig struct {
-	DropToolEvents bool // default: true; do NOT send tool_use/tool_result to Kiro
-	ClampToolDesc  int  // default: 256 chars
-	// Other flags: PlanMode behavior, debug logging, etc.
-}
+// Function signature for a conversion.
+type ConvertFunc func(data any, model string) (any, error)
 
-type KiroExecutorConfig struct {
-	HTTPClient  *http.Client
-	EndpointURL string
-	APIKey      string
-	Timeout     time.Duration
+// Conversion registry keyed by type → targetProtocol → sourceProtocol.
+var conversionMap = map[ConversionType]map[ProtocolPrefix]map[ProtocolPrefix]ConvertFunc{
+    ConversionRequest: {
+        ProtocolOpenAI: {
+            ProtocolGemini: toOpenAIRequestFromGemini,
+            ProtocolClaude: toOpenAIRequestFromClaude,
+        },
+        ProtocolClaude: {
+            ProtocolOpenAI:          toClaudeRequestFromOpenAI,
+            ProtocolOpenAIResponses: toClaudeRequestFromOpenAIResponses,
+        },
+        ProtocolGemini: {
+            ProtocolOpenAI:          toGeminiRequestFromOpenAI,
+            ProtocolClaude:          toGeminiRequestFromClaude,
+            ProtocolOpenAIResponses: toGeminiRequestFromOpenAIResponses,
+        },
+    },
+    ConversionResponse: {
+        ProtocolOpenAI: {
+            ProtocolGemini: toOpenAIChatCompletionFromGemini,
+            ProtocolClaude: toOpenAIChatCompletionFromClaude,
+        },
+        ProtocolClaude: {
+            ProtocolGemini: toClaudeChatCompletionFromGemini,
+            ProtocolOpenAI: toClaudeChatCompletionFromOpenAI,
+        },
+        ProtocolOpenAIResponses: {
+            ProtocolGemini: toOpenAIResponsesFromGemini,
+            ProtocolClaude: toOpenAIResponsesFromClaude,
+        },
+    },
+    ConversionStream: {
+        ProtocolOpenAI: {
+            ProtocolGemini: toOpenAIStreamChunkFromGemini,
+            ProtocolClaude: toOpenAIStreamChunkFromClaude,
+        },
+        ProtocolClaude: {
+            ProtocolGemini: toClaudeStreamChunkFromGemini,
+            ProtocolOpenAI: toClaudeStreamChunkFromOpenAI,
+        },
+        ProtocolOpenAIResponses: {
+            ProtocolGemini: toOpenAIResponsesStreamChunkFromGemini,
+            ProtocolClaude: toOpenAIResponsesStreamChunkFromClaude,
+        },
+    },
+    ConversionModelList: {
+        ProtocolOpenAI: {
+            ProtocolGemini: toOpenAIModelListFromGemini,
+            ProtocolClaude: toOpenAIModelListFromClaude,
+        },
+        ProtocolClaude: {
+            ProtocolGemini: toClaudeModelListFromGemini,
+            ProtocolOpenAI: toClaudeModelListFromOpenAI,
+        },
+    },
 }
+:contentReference[oaicite:1]{index=1}
 ```
 
----
-
-## 2. Defensive Utilities
-
-### 2.1 `safeParseJSON(raw string) any`
-
-> Defensive parsing for tool arguments / tool results that may contain truncated escape sequences or malformed data.
+### 2.3 Generic Entry Point
 
 ```go
-// safeParseJSON attempts to parse a JSON string used for tool inputs/outputs.
-// - Returns a parsed value (`map[string]any` / `[]any` / primitive) on success.
-// - On failure, returns the original string for best-effort preservation.
+func ConvertData(
+    data any,
+    convType ConversionType,
+    fromProvider string,
+    toProvider string,
+    model string, // only used for response/stream/modelList
+) (any, error) {
+    fromProto := GetProtocolPrefix(fromProvider)
+    toProto := GetProtocolPrefix(toProvider)
+
+    targets, ok := conversionMap[convType]
+    if !ok {
+        return nil, fmt.Errorf("unsupported conversion type: %s", convType)
+    }
+
+    byTarget, ok := targets[toProto]
+    if !ok {
+        return nil, fmt.Errorf("no conversions defined for target protocol %s / type %s", toProto, convType)
+    }
+
+    fn, ok := byTarget[fromProto]
+    if !ok {
+        return nil, fmt.Errorf("no conversion from %s to %s / type %s", fromProto, toProvider, convType)
+    }
+
+    if convType == ConversionResponse || convType == ConversionStream || convType == ConversionModelList {
+        return fn(data, model)
+    }
+    return fn(data, "")
+}
+:contentReference[oaicite:2]{index=2}
+```
+
+This registry is the **reference contract** that the Go-side Kiro translator must mirror.
+
+---
+
+## 3. Defensive Helpers (Shared Contract)
+
+### 3.1 `safeParseJSON`
+
+**Purpose:** robustly parse JSON-ish strings that may contain truncated escape sequences (`\`, `\u`, etc.).
+
+Reference behavior: 
+
+```go
 func safeParseJSON(raw string) any {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return raw
-	}
+    if raw == "" {
+        return ""
+    }
+    cleaned := raw
 
-	cleaned := trimmed
+    // Handle dangling backslash (e.g. truncated JSON)
+    if strings.HasSuffix(cleaned, `\`) && !strings.HasSuffix(cleaned, `\\`) {
+        cleaned = cleaned[:len(cleaned)-1]
+    } else if strings.HasSuffix(cleaned, `\u`) ||
+              strings.HasSuffix(cleaned, `\u0`) ||
+              strings.HasSuffix(cleaned, `\u00`) {
+        // Remove incomplete Unicode escape at the end:
+        idx := strings.LastIndex(cleaned, `\u`)
+        if idx >= 0 {
+            cleaned = cleaned[:idx]
+        }
+    }
 
-	// Handle dangling backslash at the end of the string (e.g. `"foo\"`).
-	if strings.HasSuffix(cleaned, `\`) && !strings.HasSuffix(cleaned, `\\`) {
-		cleaned = cleaned[:len(cleaned)-1]
-	} else if strings.HasSuffix(cleaned, `\u`) ||
-		strings.HasSuffix(cleaned, `\u0`) ||
-		strings.HasSuffix(cleaned, `\u00`) {
-		// Handle incomplete unicode escape sequences at end of string.
-		idx := strings.LastIndex(cleaned, `\u`)
-		if idx >= 0 {
-			cleaned = cleaned[:idx]
-		}
-	}
+    var out any
+    if err := json.Unmarshal([]byte(cleaned), &out); err != nil {
+        // On failure, *return original string* rather than failing hard.
+        return raw
+    }
+    if out == nil {
+        return map[string]any{}
+    }
+    return out
+}
+```
 
-	var v any
-	if err := json.Unmarshal([]byte(cleaned), &v); err != nil {
-		// Degrade gracefully: return the original string if parsing fails.
-		return raw
-	}
-	return v
+Contract:
+
+* Never panic or return an error.
+* Sanitize obviously malformed tails.
+* Prefer **parsed JSON**; fall back to **original string**.
+
+This function must be used when:
+
+* Parsing OpenAI `tool_calls[*].function.arguments`,
+* Parsing tool outputs returning as stringified JSON,
+* Translating tool result content into downstream formats (Claude/Gemini/Kiro).
+
+---
+
+### 3.2 `ToolStateManager` + `_buildFunctionResponse`
+
+Reference behavior: 
+
+```go
+type ToolStateManager struct {
+    mu          sync.RWMutex
+    toolMapping map[string]string // funcName -> toolUseID
+}
+
+var toolStateManager = NewToolStateManager()
+
+func NewToolStateManager() *ToolStateManager {
+    return &ToolStateManager{
+        toolMapping: make(map[string]string),
+    }
+}
+
+func (m *ToolStateManager) StoreToolMapping(funcName, toolID string) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    m.toolMapping[funcName] = toolID
+}
+
+func (m *ToolStateManager) GetToolID(funcName string) (string, bool) {
+    m.mu.RLock()
+    defer m.mu.RUnlock()
+    id, ok := m.toolMapping[funcName]
+    return id, ok
+}
+```
+
+```go
+// Build Gemini functionResponse from a tool_result / similar content block.
+func buildFunctionResponse(item map[string]any) *FunctionResponsePart {
+    if item == nil {
+        return nil
+    }
+
+    // Detect that this is some form of tool result.
+    isResult := item["type"] == "tool_result" ||
+        item["tool_use_id"] != nil ||
+        item["tool_output"] != nil ||
+        item["result"] != nil ||
+        item["content"] != nil
+    if !isResult {
+        return nil
+    }
+
+    // 1. Infer function name.
+    var funcName string
+
+    // 1a. From tool_use_id and global mapping.
+    toolUseID, _ := item["tool_use_id"].(string)
+    if toolUseID == "" {
+        toolUseID, _ = item["id"].(string)
+    }
+
+    if toolUseID != "" {
+        // Try to extract potential function name from call_<name>_<hash>.
+        if strings.HasPrefix(toolUseID, "call_") {
+            nameAndHash := strings.TrimPrefix(toolUseID, "call_")
+            if pos := strings.LastIndex(nameAndHash, "_"); pos > 0 {
+                potential := nameAndHash[:pos]
+                if storedID, ok := toolStateManager.GetToolID(potential); ok && storedID == toolUseID {
+                    funcName = potential
+                }
+            }
+        }
+    }
+
+    // 1b. From fields like tool_name / name / function_name.
+    if funcName == "" {
+        for _, key := range []string{"tool_name", "name", "function_name"} {
+            if v, ok := item[key].(string); ok && v != "" {
+                funcName = v
+                break
+            }
+        }
+    }
+    if funcName == "" {
+        return nil
+    }
+
+    // 2. Extract response payload.
+    var value any
+
+    // Probe several possible result fields.
+    for _, key := range []string{"content", "tool_output", "output", "response", "result"} {
+        if v, ok := item[key]; ok {
+            value = v
+            break
+        }
+    }
+
+    // If this is an array of parts, flatten text parts.
+    if arr, ok := value.([]any); ok && len(arr) > 0 {
+        var buf strings.Builder
+        for _, p := range arr {
+            block, _ := p.(map[string]any)
+            if block == nil {
+                continue
+            }
+            if t, _ := block["type"].(string); t == "text" {
+                if text, _ := block["text"].(string); text != "" {
+                    buf.WriteString(text)
+                }
+            }
+        }
+        if buf.Len() > 0 {
+            value = buf.String()
+        }
+    }
+
+    if value == nil {
+        value = ""
+    }
+
+    // Gemini requires JSON object; wrap scalars.
+    var resp map[string]any
+    switch v := value.(type) {
+    case map[string]any:
+        resp = v
+    default:
+        resp = map[string]any{"content": fmt.Sprint(v)}
+    }
+
+    return &FunctionResponsePart{
+        FunctionResponse: FunctionResponse{
+            Name:     funcName,
+            Response: resp,
+        },
+    }
+}
+```
+
+Contract:
+
+* Robustly recovers function name using mapping and ID conventions.
+* Accepts multiple possible result field names.
+* Normalizes arbitrary content into a JSON object.
+
+---
+
+### 3.3 `processClaudeContentToGeminiParts`
+
+Reference behavior: 
+
+```go
+// Convert Anthropic content blocks → Gemini parts.
+func processClaudeContentToGeminiParts(content any) []GeminiPart {
+    if content == nil {
+        return nil
+    }
+
+    // String → single text part.
+    if s, ok := content.(string); ok {
+        return []GeminiPart{{Text: s}}
+    }
+
+    // Array of blocks.
+    blocks, ok := content.([]any)
+    if !ok {
+        return nil
+    }
+
+    parts := make([]GeminiPart, 0, len(blocks))
+
+    for _, raw := range blocks {
+        block, _ := raw.(map[string]any)
+        if block == nil {
+            logWarn("Skipping invalid content block")
+            continue
+        }
+
+        typ, _ := block["type"].(string)
+        switch typ {
+
+        case "text":
+            if txt, _ := block["text"].(string); txt != "" {
+                parts = append(parts, GeminiPart{Text: txt})
+            } else {
+                logWarn("Invalid text in Claude text block")
+            }
+
+        case "image":
+            src, _ := block["source"].(map[string]any)
+            if src == nil {
+                logWarn("Invalid image source in Claude image block")
+                continue
+            }
+            if src["type"] == "base64" {
+                mime, _ := src["media_type"].(string)
+                data, _ := src["data"].(string)
+                if mime != "" && data != "" {
+                    parts = append(parts, GeminiPart{
+                        InlineData: &InlineData{
+                            MimeType: mime,
+                            Data:     data,
+                        },
+                    })
+                } else {
+                    logWarn("Incomplete base64 image block")
+                }
+            }
+
+        case "tool_use":
+            name, _ := block["name"].(string)
+            input, _ := block["input"].(map[string]any)
+            if name == "" || input == nil {
+                logWarn("Invalid tool_use block")
+                continue
+            }
+            parts = append(parts, GeminiPart{
+                FunctionCall: &FunctionCall{
+                    Name: name,
+                    Args: input,
+                },
+            })
+
+        case "tool_result":
+            // Anthropic tool_result only has tool_use_id; Gemini functionResponse needs a name.
+            toolUseID, _ := block["tool_use_id"].(string)
+            if toolUseID == "" {
+                logWarn("tool_result missing tool_use_id")
+                continue
+            }
+            // For now, treat tool_use_id as function name, and wrap content.
+            resp := buildFunctionResponse(block)
+            if resp != nil {
+                parts = append(parts, GeminiPart{
+                    FunctionResponse: &resp.FunctionResponse,
+                })
+            }
+
+        default:
+            if txt, _ := block["text"].(string); txt != "" {
+                parts = append(parts, GeminiPart{Text: txt})
+            } else {
+                logWarn("Unsupported Claude block type %q", typ)
+            }
+        }
+    }
+
+    return parts
+}
+```
+
+Contract:
+
+* Ignore invalid blocks instead of crashing.
+* Handle `text`, `image`, `tool_use`, `tool_result` explicitly.
+* Provide a viable Gemini `functionCall` / `functionResponse` representation even though Anthropic tool IDs do not carry names.
+
+---
+
+## 4. OpenAI → Claude Request Translation (`toClaudeRequestFromOpenAI`)
+
+This path is **directly implicated in the TodoWrite “Improperly formed request” 400s**. It must:
+
+* Produce a **valid Anthropic Messages request** and
+* Respect the **Kiro contract** when this Anthropic request is subsequently mapped into Kiro.
+
+Reference behavior:  
+
+### 4.1 High-Level Behavior
+
+```go
+func toClaudeRequestFromOpenAI(openaiReq OpenAIChatRequest) ClaudeMessagesRequest {
+    // 1. Peel off system messages.
+    messages := openaiReq.Messages
+    sysInstr, nonSystem := extractAndProcessSystemMessages(messages)
+
+    var claudeMsgs []ClaudeMessage
+
+    for _, m := range nonSystem {
+        role := "user"
+        if m.Role == "assistant" {
+            role = "assistant"
+        }
+        var content []ClaudeContentBlock
+
+        switch m.Role {
+
+        case "tool":
+            // OpenAI tool role → Anthropic tool_result wrapped in user message.
+            content = append(content, ClaudeContentBlock{
+                Type:      "tool_result",
+                ToolUseID: m.ToolCallID, // from OpenAI tool message
+                Content:   safeParseJSON(m.Content),
+            })
+            claudeMsgs = append(claudeMsgs, ClaudeMessage{Role: "user", Content: content})
+
+        case "assistant":
+            if len(m.ToolCalls) > 0 {
+                // Assistant tool calls → tool_use blocks in assistant message.
+                var blocks []ClaudeContentBlock
+                for _, tc := range m.ToolCalls {
+                    blocks = append(blocks, ClaudeContentBlock{
+                        Type:  "tool_use",
+                        ID:    tc.ID,
+                        Name:  tc.Function.Name,
+                        Input: safeParseJSON(tc.Function.Arguments),
+                    })
+                }
+                claudeMsgs = append(claudeMsgs, ClaudeMessage{Role: "assistant", Content: blocks})
+                continue
+            }
+            // fallthrough to generic content handling
+
+        default:
+            // user / everything else fall through
+        }
+
+        if len(content) == 0 {
+            // Generic multimodal mapping: text, images, audio.
+            content = convertOpenAIContentToClaudeBlocks(m.Content)
+        }
+
+        if len(content) > 0 {
+            claudeMsgs = append(claudeMsgs, ClaudeMessage{
+                Role:    role,
+                Content: content,
+            })
+        }
+    }
+
+    // Base Claude request.
+    claudeReq := ClaudeMessagesRequest{
+        Model:     openaiReq.Model,
+        Messages:  claudeMsgs,
+        MaxTokens: defaultIfZero(openaiReq.MaxTokens, DefaultMaxTokens),
+        Temperature: defaultIfZero(
+            openaiReq.Temperature, DefaultTemperature,
+        ),
+        TopP: defaultIfZero(openaiReq.TopP, DefaultTopP),
+    }
+
+    if sysInstr != nil {
+        claudeReq.System = extractTextFromMessageContent(sysInstr.Parts[0].Text)
+    }
+
+    if len(openaiReq.Tools) > 0 {
+        claudeReq.Tools = mapOpenAIToolsToClaude(openaiReq.Tools)
+        claudeReq.ToolChoice = buildClaudeToolChoice(openaiReq.ToolChoice)
+    }
+
+    return claudeReq
+}
+```
+
+**Key points:**
+
+* Tool **responses** from OpenAI (role `tool`) become `tool_result` blocks in a **user** message.
+* Assistant tool **calls** (`tool_calls`) become `tool_use` blocks in **assistant** messages.
+* Text and media payloads are converted to Anthropic blocks (`text`, `image`, placeholder for audio).
+* System instructions are merged into a single `system` string.
+
+### 4.2 Where Kiro Comes In
+
+Kiro’s Go-side translator (`BuildKiroRequest`) consumes `ClaudeMessagesRequest` and must **strip out client-side tool events** (assistant `tool_use` and user `tool_result`) before hitting Kiro.
+
+Kiro translator contract is:
+
+```go
+func BuildKiroRequest(claudeReq ClaudeMessagesRequest) (KiroRequest, error) {
+    // 1. Partition current vs history.
+    hist, current := splitMessages(claudeReq.Messages)
+
+    // 2. Sanitize history for Kiro:
+    //    - DROP all tool_use / tool_result blocks.
+    //    - Fold them into plain text if necessary.
+    sanitizedHistory := sanitizeHistoryForKiro(hist)
+
+    // 3. Build Kiro conversationState.currentMessage with:
+    //    - userInputMessage.content (latest user text only)
+    //    - userInputMessageContext.tools (clamped tool specs)
+    //    - toolContextManifest + system prompt appendix for full tool descriptions
+    //    - claudeToolChoice metadata and textual “Tool directive …” block
+    currentMsg := buildKiroUserInputMessage(claudeReq, current)
+
+    // 4. Return Kiro request in provider’s native schema.
+    return KiroRequest{
+        ConversationState: ConversationState{
+            CurrentMessage: currentMsg,
+            History:        sanitizedHistory,
+        },
+    }, nil
+}
+```
+
+Where:
+
+```go
+func sanitizeHistoryForKiro(claudeMsgs []ClaudeMessage) []KiroHistoryItem {
+    var out []KiroHistoryItem
+
+    for _, msg := range claudeMsgs {
+        // Drop tool_use/tool_result events completely to satisfy Kiro contract.
+        filteredBlocks := filterOutToolEvents(msg.Content)
+
+        // Optionally fold tool outputs into text summaries if you want Kiro to “see” them
+        // as natural language:
+        if len(filteredBlocks) == 0 && containsToolEvents(msg.Content) {
+            summary := summarizeToolEvents(msg.Content)
+            if summary != "" {
+                filteredBlocks = []ClaudeContentBlock{{
+                    Type: "text",
+                    Text: summary,
+                }}
+            }
+        }
+
+        if len(filteredBlocks) == 0 {
+            continue
+        }
+
+        // Convert Anthropic blocks -> Kiro’s internal message schema (plain text only).
+        kiroMsg := mapClaudeBlocksToKiroHistoryItem(msg.Role, filteredBlocks)
+        out = append(out, kiroMsg)
+    }
+    return out
+}
+```
+
+This is where TodoWrite was intermittently failing: **resume flows that carried `tool_use` / `tool_result` events into the rebuilt Kiro request** violate this contract and yield a 400.
+
+---
+
+## 5. Claude → Gemini Translation (for completeness)
+
+Kiro may not directly speak Gemini today, but the **defensive patterns** here are reused in Kiro-side tooling, so they form part of the contract.
+
+### 5.1 `toGeminiRequestFromClaude`
+
+Reference behavior: 
+
+```go
+func toGeminiRequestFromClaude(claudeReq ClaudeMessagesRequest) GeminiRequest {
+    if claudeReq == (ClaudeMessagesRequest{}) {
+        logWarn("invalid claudeRequest")
+        return GeminiRequest{Contents: nil}
+    }
+
+    var geminiReq GeminiRequest
+    geminiReq.Contents = []GeminiContent{}
+
+    // System instruction.
+    if claudeReq.System != "" {
+        geminiReq.SystemInstruction = GeminiSystemInstruction{
+            Parts: []GeminiPart{{Text: stringifySystem(claudeReq.System)}},
+        }
+    }
+
+    // Messages → contents.
+    for _, msg := range claudeReq.Messages {
+        if msg.Role == "" || msg.Content == nil {
+            logWarn("Skipping invalid Claude message")
+            continue
+        }
+
+        role := "user"
+        if msg.Role == "assistant" {
+            role = "model"
+        }
+        parts := processClaudeContentToGeminiParts(msg.Content)
+
+        // If we see a functionResponse, that content becomes role 'function'.
+        if containsFunctionResponse(parts) {
+            geminiReq.Contents = append(geminiReq.Contents, GeminiContent{
+                Role:  "function",
+                Parts: filterFunctionResponses(parts),
+            })
+        } else if len(parts) > 0 {
+            geminiReq.Contents = append(geminiReq.Contents, GeminiContent{
+                Role:  role,
+                Parts: parts,
+            })
+        }
+    }
+
+    // Generation config.
+    geminiReq.GenerationConfig = GenerationConfig{
+        MaxOutputTokens: defaultIfZero(claudeReq.MaxTokens, DefaultGeminiMaxTokens),
+        Temperature:     defaultIfZero(claudeReq.Temperature, DefaultTemperature),
+        TopP:            defaultIfZero(claudeReq.TopP, DefaultTopP),
+    }
+
+    // Tools.
+    if len(claudeReq.Tools) > 0 {
+        decls := make([]FunctionDeclaration, 0, len(claudeReq.Tools))
+        for _, tool := range claudeReq.Tools {
+            if tool.Name == "" {
+                logWarn("Skipping invalid tool declaration")
+                continue
+            }
+            // Optional: commented-out TodoWrite filter is here in JS reference.
+            // delete tool.input_schema.$schema
+            decls = append(decls, FunctionDeclaration{
+                Name:        tool.Name,
+                Description: tool.Description,
+                Parameters:  sanitizeJSONSchema(tool.InputSchema),
+            })
+        }
+        if len(decls) > 0 {
+            geminiReq.Tools = []GeminiTools{{FunctionDeclarations: decls}}
+        }
+    }
+
+    if claudeReq.ToolChoice != nil {
+        geminiReq.ToolConfig = buildGeminiToolConfigFromClaude(claudeReq.ToolChoice)
+    }
+
+    return geminiReq
 }
 ```
 
 ---
 
-### 2.2 `cleanJSONSchemaProperties` (tool schema sanitization)
+## 6. Execution Layer: KiroExecutor
+
+### 6.1 Responsibilities
+
+The **Kiro executor** is responsible for:
+
+1. Accepting a canonical *provider-agnostic* request (Anthropic Messages format).
+2. Applying Kiro’s **request contract**:
+
+   * Only user text + model/context fields,
+   * Tool specs in `userInputMessageContext.tools`, **truncated** descriptions,
+   * No `tool_use` / `tool_result` events in history.
+3. Issuing HTTP calls to Kiro (non-streaming).
+4. Mapping **Kiro responses → Anthropic Messages** and then, optionally, **Anthropic SSE** for CLI/Claude Code.
+
+### 6.2 Request Path
 
 ```go
-// cleanJSONSchemaProperties removes unsupported keys and recursively cleans nested schemas.
-// Kiro and Anthropic both expect a subset of JSON Schema.
-func cleanJSONSchemaProperties(schema any) any {
-	obj, ok := schema.(map[string]any)
-	if !ok {
-		return schema
-	}
-
-	out := make(map[string]any)
-	for key, value := range obj {
-		switch key {
-		case "type", "description", "properties", "required", "enum", "items":
-			out[key] = value
-		// Drop any other keys silently.
-		}
-	}
-
-	if props, ok := out["properties"].(map[string]any); ok {
-		for propName, propSchema := range props {
-			props[propName] = cleanJSONSchemaProperties(propSchema)
-		}
-	}
-
-	if items, ok := out["items"]; ok {
-		out["items"] = cleanJSONSchemaProperties(items)
-	}
-
-	return out
-}
-```
-
----
-
-### 2.3 Text Sanitizer (control bytes / ANSI / protocol noise)
-
-```go
-// sanitizeText strips ANSI escape sequences, non-printable control bytes,
-// and known protocol noise (e.g., "<system-reminder>" blocks).
-func sanitizeText(s string) string {
-	// 1) Strip ANSI codes (pseudo-regex).
-	s = stripANSISequences(s)
-
-	// 2) Remove non-printable/control chars except \n, \r, \t.
-	s = removeControlCharacters(s)
-
-	// 3) Drop legacy protocol noise like "<system-reminder>" blocks.
-	s = stripSystemReminderBlocks(s)
-
-	return s
-}
-```
-
-(Implementations of `stripANSISequences`, `removeControlCharacters`, and `stripSystemReminderBlocks` are left as straightforward regex/string passes.)
-
----
-
-### 2.4 Reasoning Effort from Budget Tokens
-
-```go
-func determineReasoningEffortFromBudget(budgetTokens *int) string {
-	if budgetTokens == nil {
-		return "high"
-	}
-	const lowThreshold = 50
-	const highThreshold = 200
-
-	switch {
-	case *budgetTokens <= lowThreshold:
-		return "low"
-	case *budgetTokens <= highThreshold:
-		return "medium"
-	default:
-		return "high"
-	}
-}
-```
-
----
-
-## 3. Kiro Translation Layer – Requests
-
-### 3.1 High-Level Entry Point
-
-```go
-// TranslateKiroRequest converts an Anthropic Messages request into a KiroRequest,
-// enforcing Kiro's contract (no tool_use/tool_result in conversation state).
-func TranslateKiroRequest(
-	ctx context.Context,
-	cfg KiroTranslatorConfig,
-	in AnthropicMessagesRequest,
-) (KiroRequest, error) {
-	// 1) Normalize & validate model, temperature, etc.
-	modelID := mapAnthropicModelToKiro(in.Model)
-	if modelID == "" {
-		return KiroRequest{}, fmt.Errorf("unsupported model: %s", in.Model)
-	}
-
-	// 2) Extract system instructions and augment them with tool reference manifests.
-	systemPrompt := buildSystemPromptWithToolReferences(cfg, in.System, in.Tools)
-
-	// 3) Build KiroMessageContext: tools, tool manifest, claudeToolChoice metadata.
-	msgCtx := buildKiroMessageContext(cfg, in.Tools, in.ToolChoice)
-
-	// 4) Convert Anthropic messages → Kiro history + current message content.
-	history, currentContent := buildKiroConversationFromAnthropicMessages(cfg, in.Messages, systemPrompt)
-
-	// 5) Construct Kiro request.
-	req := KiroRequest{
-		ConversationState: KiroConversationState{
-			CurrentMessage: KiroCurrentMessage{
-				UserInputMessage: KiroUserInputMessage{
-					Content: currentContent,
-					ModelID: modelID,
-					Origin:  "AI_EDITOR",
-				},
-				UserInputMessageContext: msgCtx,
-			},
-			History: history,
-		},
-	}
-
-	return req, nil
-}
-```
-
----
-
-### 3.2 System Prompt & Tool Reference Manifest
-
-```go
-// buildSystemPromptWithToolReferences:
-// - Concatenates system text blocks into a single prompt string.
-// - Appends "Tool reference manifest" section whenever any tool description is truncated.
-func buildSystemPromptWithToolReferences(
-	cfg KiroTranslatorConfig,
-	systemMsgs []AnthropicSystemMsg,
-	tools []AnthropicTool,
-) string {
-	base := joinSystemText(systemMsgs) // join system text blocks with "\n\n".
-
-	var manifestLines []string
-
-	for _, t := range tools {
-		fullDesc := strings.TrimSpace(t.Description)
-		if fullDesc == "" {
-			continue
-		}
-
-		if len([]rune(fullDesc)) > cfg.ClampToolDesc {
-			// Build manifest entry (full description preserved).
-			hash := first64BitsOfSHA256(fullDesc)
-			entry := fmt.Sprintf(
-				"- %s [%s, %d chars]: %s",
-				t.Name,
-				hash,
-				len([]rune(fullDesc)),
-				fullDesc,
-			)
-			manifestLines = append(manifestLines, entry)
-		}
-	}
-
-	if len(manifestLines) == 0 {
-		return base
-	}
-
-	preamble := "Tool reference manifest (hash → tool)\n"
-	return strings.TrimSpace(base + "\n\n" + preamble + strings.Join(manifestLines, "\n"))
-}
-```
-
----
-
-### 3.3 Building `KiroMessageContext` (tools & tool_choice)
-
-```go
-// buildKiroMessageContext:
-// - Clamps tool descriptions for Kiro.
-// - Builds toolContextManifest with full descriptions & hashes.
-// - Mirrors Anthropic tool_choice into claudeToolChoice metadata.
-func buildKiroMessageContext(
-	cfg KiroTranslatorConfig,
-	tools []AnthropicTool,
-	toolChoice *AnthropicToolChoice,
-) KiroMessageContext {
-	var specs []KiroToolSpec
-	var manifest []KiroToolManifest
-
-	for _, t := range tools {
-		fullDesc := strings.TrimSpace(t.Description)
-		clampedDesc := clampRunes(fullDesc, cfg.ClampToolDesc)
-
-		specs = append(specs, KiroToolSpec{
-			Name:        t.Name,
-			Description: clampedDesc,
-			JSONSchema:  cleanJSONSchemaProperties(t.InputSchema),
-		})
-
-		if fullDesc != "" {
-			manifest = append(manifest, KiroToolManifest{
-				Name:        t.Name,
-				Hash:        first64BitsOfSHA256(fullDesc),
-				LengthChars: len([]rune(fullDesc)),
-				Description: fullDesc,
-			})
-		}
-	}
-
-	var toolChoiceMeta *KiroToolChoiceMeta
-	if toolChoice != nil {
-		toolChoiceMeta = &KiroToolChoiceMeta{
-			Mode:       toolChoice.Type,
-			ToolName:   inferToolNameFromChoice(toolChoice),
-			RawPayload: toolChoice,
-		}
-	}
-
-	return KiroMessageContext{
-		Tools:               specs,
-		ToolContextManifest: manifest,
-		ClaudeToolChoice:    toolChoiceMeta,
-	}
-}
-```
-
----
-
-### 3.4 Conversation Translation – Drop Tool Events for Kiro
-
-> **Key Kiro Contract:**
-> Kiro **rejects** any client-supplied assistant `tool_use` or user `tool_result` events.
-> The translator must:
->
-> * **Not include** tool events in `conversationState.history` or current message content.
-> * Optionally **fold tool results into plain text** (“Tool result context”) to preserve information.
-
-```go
-// buildKiroConversationFromAnthropicMessages:
-// - Collects plain-text history for Kiro.
-// - Builds current user message content, including system prompt and optional textualized tool context.
-// - When cfg.DropToolEvents == true, tool_use/tool_result are only represented as text summaries.
-func buildKiroConversationFromAnthropicMessages(
-	cfg KiroTranslatorConfig,
-	messages []AnthropicMessage,
-	systemPrompt string,
-) (history []KiroHistoryMessage, currentContent string) {
-	// We'll build a plain-text transcript while respecting Kiro's "no tool events" constraint.
-	var toolContextLines []string
-	var textHistory []KiroHistoryMessage
-
-	for _, m := range messages {
-		switch m.Role {
-		case "user":
-			// User messages may contain text and/or tool_result blocks.
-			userText := extractTextBlocks(m.Content)
-
-			if cfg.DropToolEvents {
-				toolResultSummary := summarizeToolResultsAsText(m.Content)
-				if toolResultSummary != "" {
-					toolContextLines = append(toolContextLines, toolResultSummary)
-				}
-			}
-
-			if userText != "" {
-				textHistory = append(textHistory, KiroHistoryMessage{
-					Role:    "user",
-					Content: sanitizeText(userText),
-				})
-			}
-
-		case "assistant":
-			// Assistant messages may contain text and/or tool_use blocks.
-			if cfg.DropToolEvents {
-				toolUseSummary := summarizeToolUsesAsText(m.Content)
-				if toolUseSummary != "" {
-					toolContextLines = append(toolContextLines, toolUseSummary)
-				}
-			}
-
-			assistantText := extractTextBlocks(m.Content)
-			if assistantText != "" {
-				textHistory = append(textHistory, KiroHistoryMessage{
-					Role:    "assistant",
-					Content: sanitizeText(assistantText),
-				})
-			}
-
-		default:
-			// Ignore unknown roles.
-		}
-	}
-
-	// The last user message becomes the "current" message; previous ones are history.
-	// For simplicity, treat all but final user text as history. A more precise version
-	// can split textHistory by role.
-	history, lastUser := splitHistoryAndCurrent(textHistory)
-
-	var builder strings.Builder
-	if systemPrompt != "" {
-		builder.WriteString(sanitizeText(systemPrompt))
-		builder.WriteString("\n\n")
-	}
-
-	if len(toolContextLines) > 0 {
-		builder.WriteString("Tool result context:\n")
-		builder.WriteString(strings.Join(toolContextLines, "\n"))
-		builder.WriteString("\n\n")
-	}
-
-	builder.WriteString(lastUser.Content)
-
-	return history, builder.String()
-}
-```
-
-Helper functions (pseudocode):
-
-```go
-func extractTextBlocks(blocks []AnthropicBlock) string {
-	var parts []string
-	for _, b := range blocks {
-		if b.Type == "text" && b.Text != "" {
-			parts = append(parts, b.Text)
-		}
-	}
-	return strings.Join(parts, "\n")
-}
-
-func summarizeToolResultsAsText(blocks []AnthropicBlock) string {
-	var lines []string
-	for _, b := range blocks {
-		if b.Type != "tool_result" {
-			continue
-		}
-		// Summarize; could be full or truncated.
-		raw := b.ContentAny
-		line := fmt.Sprintf("Tool result (%s): %v", b.ToolUseID, raw)
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-func summarizeToolUsesAsText(blocks []AnthropicBlock) string {
-	var lines []string
-	for _, b := range blocks {
-		if b.Type != "tool_use" {
-			continue
-		}
-		line := fmt.Sprintf("Tool invoked (%s): %s", b.ID, b.Name)
-		lines = append(lines, line)
-	}
-	return strings.Join(lines, "\n")
-}
-
-// splitHistoryAndCurrent chooses the last user message as current; everything
-// before it is history. Implementation detail can be more sophisticated.
-func splitHistoryAndCurrent(
-	all []KiroHistoryMessage,
-) (history []KiroHistoryMessage, current KiroHistoryMessage) {
-	if len(all) == 0 {
-		return nil, KiroHistoryMessage{Role: "user", Content: ""}
-	}
-	// naive: last message is current
-	history = all[:len(all)-1]
-	current = all[len(all)-1]
-	return
-}
-```
-
----
-
-## 4. Kiro Translation Layer – Responses
-
-### 4.1 High-Level Entry Point
-
-```go
-// TranslateKiroResponse converts KiroResponse into an AnthropicMessagesResponse.
-func TranslateKiroResponse(
-	ctx context.Context,
-	req AnthropicMessagesRequest, // original request (for model, tokens, etc.)
-	kiroResp KiroResponse,
-) (AnthropicMessagesResponse, error) {
-	var contentBlocks []AnthropicBlock
-
-	for _, msg := range kiroResp.OutputMessages {
-		if strings.TrimSpace(msg.Content) == "" {
-			continue
-		}
-		contentBlocks = append(contentBlocks, AnthropicBlock{
-			Type: "text",
-			Text: sanitizeText(msg.Content),
-		})
-	}
-
-	resp := AnthropicMessagesResponse{
-		ID:      generateAnthropicID(),
-		Model:   req.Model,
-		Role:    "assistant",
-		Content: contentBlocks,
-	}
-
-	resp.StopReason = mapKiroStopReasonToAnthropic(kiroResp.StopReason)
-	resp.Usage = mapKiroUsageToAnthropic(kiroResp.Usage)
-
-	// Add natural-language lead-in for tool_use if needed (per Anthropic compliance).
-	resp.Content = ensureLeadInBeforeToolUse(resp.Content)
-
-	return resp, nil
-}
-```
-
----
-
-### 4.2 Usage & Stop Reason Mapping
-
-```go
-func mapKiroUsageToAnthropic(u *KiroUsage) *AnthropicUsage {
-	if u == nil {
-		return nil
-	}
-	return &AnthropicUsage{
-		InputTokens:  u.InputTokens,
-		OutputTokens: u.OutputTokens,
-		TotalTokens:  u.TotalTokens,
-	}
-}
-
-func mapKiroStopReasonToAnthropic(kiroReason string) string {
-	switch kiroReason {
-	case "MAX_TOKENS", "MAX_TOKENS_REACHED":
-		return "max_tokens"
-	case "STOP_SEQUENCE", "STOPPED":
-		return "end_turn"
-	case "TIMEOUT":
-		return "max_tokens" // or a more precise mapping if Anthropic supports it
-	default:
-		return "end_turn"
-	}
-}
-```
-
-Lead-in enforcement (natural language before tool_use; even if Kiro currently doesn’t emit tool_use, we keep this for correctness):
-
-```go
-func ensureLeadInBeforeToolUse(blocks []AnthropicBlock) []AnthropicBlock {
-	if len(blocks) == 0 {
-		return blocks
-	}
-	// If first block is a tool_use, prepend a short text lead-in.
-	if blocks[0].Type == "tool_use" {
-		lead := AnthropicBlock{
-			Type: "text",
-			Text: "I will call a tool to help with this:",
-		}
-		return append([]AnthropicBlock{lead}, blocks...)
-	}
-	return blocks
-}
-```
-
----
-
-## 5. Kiro Execution Layer (Non-Streaming + Synthetic SSE)
-
-### 5.1 Synchronous Execution
-
-```go
-// KiroExecutor wraps the HTTP client and translation logic for Kiro.
 type KiroExecutor struct {
-	Config   KiroExecutorConfig
-	TxConfig KiroTranslatorConfig
+    client *http.Client
+    // config: base URL, auth token, headers, etc.
 }
 
-// ExecuteMessages handles an Anthropic /v1/messages request via Kiro.
-func (e *KiroExecutor) ExecuteMessages(
-	ctx context.Context,
-	in AnthropicMessagesRequest,
-) (AnthropicMessagesResponse, error) {
-	// 1) Translate Anthropic → Kiro.
-	kiroReq, err := TranslateKiroRequest(ctx, e.TxConfig, in)
-	if err != nil {
-		return AnthropicMessagesResponse{}, err
-	}
+func (e *KiroExecutor) Execute(
+    ctx context.Context,
+    claudeReq ClaudeMessagesRequest,
+    kiroCfg KiroConfig,
+) (*ClaudeMessagesResponse, error) {
 
-	// 2) Call Kiro.
-	kiroResp, err := e.callKiro(ctx, kiroReq)
-	if err != nil {
-		// Optional: fallback if Kiro returns "Improperly formed request".
-		if isImproperlyFormedRequestError(err) && e.TxConfig.DropToolEvents == false {
-			// retry with tool events forcibly dropped.
-			forcedCfg := e.TxConfig
-			forcedCfg.DropToolEvents = true
-			kiroReq, err2 := TranslateKiroRequest(ctx, forcedCfg, in)
-			if err2 != nil {
-				return AnthropicMessagesResponse{}, err2
-			}
-			kiroResp, err = e.callKiro(ctx, kiroReq)
-			if err != nil {
-				return AnthropicMessagesResponse{}, err
-			}
-		} else {
-			return AnthropicMessagesResponse{}, err
-		}
-	}
+    // 1. Build Kiro request under protocol contract.
+    kiroReq, err := BuildKiroRequest(claudeReq)
+    if err != nil {
+        return nil, fmt.Errorf("build kiro request: %w", err)
+    }
 
-	// 3) Translate Kiro → Anthropic.
-	return TranslateKiroResponse(ctx, in, kiroResp)
+    // 2. Apply provider-specific headers (X-IFlow-Task-Directive, etc.),
+    //    though for Kiro this is usually auth + tracing.
+    httpReq, err := http.NewRequestWithContext(ctx, "POST", kiroCfg.Endpoint, encodeJSON(kiroReq))
+    if err != nil {
+        return nil, err
+    }
+
+    httpReq.Header.Set("Authorization", "Bearer "+kiroCfg.Token)
+    httpReq.Header.Set("Content-Type", "application/json")
+    applyCustomHeadersFromAttrs(httpReq.Header, kiroCfg.CustomHeaders)
+
+    // 3. Perform call.
+    resp, err := e.client.Do(httpReq)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    body, _ := io.ReadAll(resp.Body)
+
+    if resp.StatusCode >= 400 {
+        // For 400 "Improperly formed request", we may optionally:
+        // - log,
+        // - attempt a fallback rebuild that *strips* tool events even more aggressively.
+        return nil, fmt.Errorf("kiro error %d: %s", resp.StatusCode, truncate(body, 2<<10))
+    }
+
+    // 4. Parse Kiro response and map → Anthropic messages.
+    kiroResp, err := decodeKiroResponse(body)
+    if err != nil {
+        return nil, fmt.Errorf("decode kiro response: %w", err)
+    }
+
+    anthResp := ConvertKiroResponseToAnthropic(kiroResp)
+    return &anthResp, nil
 }
+```
 
-func (e *KiroExecutor) callKiro(ctx context.Context, req KiroRequest) (KiroResponse, error) {
-	body, _ := json.Marshal(req)
-	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, e.Config.EndpointURL, bytes.NewReader(body))
-	httpReq.Header.Set("Authorization", "Bearer "+e.Config.APIKey)
-	httpReq.Header.Set("Content-Type", "application/json")
+### 6.3 Kiro Response → Anthropic Messages
 
-	resp, err := e.Config.HTTPClient.Do(httpReq)
-	if err != nil {
-		return KiroResponse{}, err
-	}
-	defer resp.Body.Close()
+The specifics depend on Kiro’s schema, but the contract implied by your tests and docs is:
 
-	if resp.StatusCode >= 400 {
-		data, _ := io.ReadAll(resp.Body)
-		return KiroResponse{}, fmt.Errorf("kiro error %d: %s", resp.StatusCode, string(data))
-	}
+* Kiro outputs **text** and **tool use events** in a structured internal schema.
+* The translator:
 
-	var out KiroResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return KiroResponse{}, err
-	}
-	return out, nil
+  * Removes **protocol noise** (e.g., internal `content-type` fragments or headers accidentally embedded in content).
+  * Produces a **single Anthropic `message`** with:
+
+    * `role: "assistant"`,
+    * `content`: ordered blocks:
+
+      * natural language lead-in text before any `tool_use`, if absent in Kiro response (your test `TestBuildAnthropicMessagePayloadAddsLeadInWhenContentMissing`),
+      * `tool_use` blocks for any tools Kiro has invoked,
+      * follow-up text, if any.
+* `usage` is filled from Kiro’s accounting, and `stop_reason` / `stop_sequence` are aligned with Anthropic’s semantics.
+
+Pseudocode:
+
+```go
+func ConvertKiroResponseToAnthropic(kiroResp KiroResponse) ClaudeMessagesResponse {
+    blocks := []ClaudeContentBlock{}
+
+    // 1. Optional natural-language lead-in.
+    if lacksUserFacingIntro(kiroResp) {
+        blocks = append(blocks, ClaudeContentBlock{
+            Type: "text",
+            Text: "I'll use the requested tools and then continue.",
+        })
+    }
+
+    // 2. Tool invocations from Kiro internal schema.
+    for _, t := range kiroResp.ToolInvocations {
+        blocks = append(blocks, ClaudeContentBlock{
+            Type:  "tool_use",
+            ID:    t.ID,
+            Name:  t.Name,
+            Input: t.Args,
+        })
+    }
+
+    // 3. Plain text response (sanitized).
+    if txt := sanitizeKiroText(kiroResp.Text); txt != "" {
+        blocks = append(blocks, ClaudeContentBlock{
+            Type: "text",
+            Text: txt,
+        })
+    }
+
+    return ClaudeMessagesResponse{
+        ID:         newMessageID(),
+        Type:       "message",
+        Role:       "assistant",
+        Content:    blocks,
+        Model:      kiroResp.Model,
+        StopReason: mapKiroStopReasonToAnthropic(kiroResp.StopReason),
+        Usage: Usage{
+            InputTokens:  kiroResp.Usage.InputTokens,
+            OutputTokens: kiroResp.Usage.OutputTokens,
+        },
+    }
 }
 ```
 
 ---
 
-### 5.2 Synthetic Anthropic SSE from Kiro (Pseudo-Streaming)
+## 7. Pseudo-Streaming SSE Synthesis
 
-> Kiro only returns full responses; the proxy synthesizes Anthropic-style SSE events (`message_start`, `content_block_start/delta/stop`, `message_delta`, `message_stop`) once the full response arrives.
+Because **Kiro does not stream**, KiroExecutor must:
+
+1. Get the **full Kiro response**.
+2. Convert it to an Anthropic `message`.
+3. **Synthesize** Anthropic SSE events that mimic live streaming (CLIProxyAPI legacy behavior):
 
 ```go
-// StreamMessages synthesizes SSE events for /v1/messages?stream=true
-// from a full Kiro response.
-func (e *KiroExecutor) StreamMessages(
-	ctx context.Context,
-	in AnthropicMessagesRequest,
-	stream chan<- AnthropicStreamEvent,
-) error {
-	// 1) Run non-streaming execution.
-	resp, err := e.ExecuteMessages(ctx, in)
-	if err != nil {
-		return err
-	}
+func (e *KiroExecutor) Stream(ctx context.Context, claudeReq ClaudeMessagesRequest, writer SSEWriter) error {
+    resp, err := e.Execute(ctx, claudeReq, e.cfg)
+    if err != nil {
+        return err
+    }
 
-	// 2) Build synthetic event sequence.
-	id := resp.ID
-	model := resp.Model
+    // Build deterministic SSE sequence:
+    // message_start → content_block_start/delta/stop → message_delta → message_stop
+    s := NewAnthropicStreamBuilder(*resp)
 
-	// message_start
-	stream <- NewMessageStartEvent(id, model)
-
-	// For each block, we output content_block_* events.
-	for idx, block := range resp.Content {
-		// content_block_start
-		stream <- NewContentBlockStartEvent(id, idx, block.Type)
-
-		switch block.Type {
-		case "text":
-			// In a real implementation, we may chunk by sentences; here we send as one delta.
-			stream <- NewContentBlockDeltaEvent(id, idx, block.Text)
-		default:
-			// For non-text, we may either serialize or skip; depends on Anthropic contract.
-		}
-
-		// content_block_stop
-		stream <- NewContentBlockStopEvent(id, idx)
-	}
-
-	// message_delta (stop_reason, usage, etc.)
-	stream <- NewMessageDeltaEvent(id, resp.StopReason, resp.Usage)
-
-	// message_stop
-	stream <- NewMessageStopEvent(id)
-
-	return nil
+    writer.Send(s.BuildMessageStart())
+    for i, block := range resp.Content {
+        writer.Send(s.BuildContentBlockStart(i, block))
+        for _, delta := range s.BuildContentDeltas(i, block) {
+            writer.Send(delta)
+        }
+        writer.Send(s.BuildContentBlockStop(i, block))
+    }
+    writer.Send(s.BuildMessageDelta())
+    writer.Send(s.BuildMessageStop())
+    return nil
 }
 ```
 
-Event structs are conceptual:
+This preserves:
 
-```go
-type AnthropicStreamEvent struct {
-	Type string // "message_start", "content_block_start", ...
-	Data any
-}
-
-func NewMessageStartEvent(id, model string) AnthropicStreamEvent    { /* ... */ }
-func NewContentBlockStartEvent(id string, index int, blockType string) AnthropicStreamEvent { /* ... */ }
-func NewContentBlockDeltaEvent(id string, index int, text string) AnthropicStreamEvent      { /* ... */ }
-func NewContentBlockStopEvent(id string, index int) AnthropicStreamEvent                    { /* ... */ }
-func NewMessageDeltaEvent(id, stopReason string, usage *AnthropicUsage) AnthropicStreamEvent { /* ... */ }
-func NewMessageStopEvent(id string) AnthropicStreamEvent                                    { /* ... */ }
-```
-
----
-
-## 6. Invariants & Guarantees
-
-1. **No Tool Events Sent to Kiro**
-
-   * `KiroConversationState.History` and `KiroUserInputMessage.Content` **never** contain serialized `tool_use` or `tool_result` structures.
-   * Tool events from Anthropic are **flattened to plain text context** when `DropToolEvents == true`.
-
-2. **Tool Description Clamping & Manifest**
-
-   * Every tool sent to Kiro has `Description` length ≤ `ClampToolDesc` (default: 256 chars).
-   * Full descriptions are preserved in `ToolContextManifest` and in the appended system “Tool reference manifest (hash → tool)” section.
-
-3. **Tool Choice Preservation**
-
-   * Anthropic `tool_choice` is mirrored into `KiroMessageContext.ClaudeToolChoice`, plus a brief “Tool directive” sentence injected into the system prompt (not shown in code, but implied by `buildSystemPromptWithToolReferences` extensibility).
-
-4. **Sanitization**
-
-   * All user/system/assistant texts sent to Kiro are passed through `sanitizeText`, removing:
-
-     * ANSI escape sequences
-     * Non-printable control characters
-     * Known protocol noise (e.g., `<system-reminder>`).
-
-5. **JSON Safety**
-
-   * Tool arguments and results are parsed via `safeParseJSON`.
-   * Failure to parse does **not** crash the translator; it falls back to the raw string.
-
-6. **Stable Streaming Sequence**
-
-   * Synthetic SSE respects Anthropic’s event order:
-
-     * `message_start → [content_block_start → content_block_delta → content_block_stop]+ → message_delta → message_stop`.
-
-7. **Fallback on Kiro Protocol Rejection**
-
-   * If Kiro returns an “Improperly formed request” error and `DropToolEvents == false`, executor retries once with `DropToolEvents = true`, ensuring legacy misconfigurations don’t leave the UI stuck.
+* Tool blocks **first**, then text (as in your recorded SSE fixtures).
+* `stop_reason`, `usage`, and any `followupPrompt` or metadata fields.

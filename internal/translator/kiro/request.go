@@ -29,6 +29,62 @@ type toolContextEntry struct {
 	Length      int
 }
 
+// sanitizeMessageForKiro removes tool_use and tool_result blocks from a message
+// to comply with Kiro's "Improperly formed request" constraint.
+// It converts tool events to text summaries if they exist.
+func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
+	content := msg.Get("content")
+	role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+
+	textParts := make([]string, 0, 4)
+	images := make([]map[string]any, 0)
+	hasToolEvents := false
+
+	if content.Type == gjson.String {
+		textParts = append(textParts, content.String())
+	} else if content.IsArray() {
+		content.ForEach(func(_, part gjson.Result) bool {
+			partType := strings.ToLower(part.Get("type").String())
+			switch partType {
+			case "text", "input_text", "output_text":
+				textParts = append(textParts, part.Get("text").String())
+			case "tool_use":
+				hasToolEvents = true
+				// Convert tool_use to text summary
+				name := part.Get("name").String()
+				if name != "" {
+					textParts = append(textParts, fmt.Sprintf("[Tool invoked: %s]", name))
+				}
+			case "tool_result":
+				hasToolEvents = true
+				// Convert tool_result to text summary
+				resultContent := extractNestedContent(part.Get("content"))
+				if resultContent != "" {
+					textParts = append(textParts, fmt.Sprintf("[Tool result: %s]", resultContent))
+				}
+			case "image", "input_image":
+				if img := buildImagePart(part); img != nil {
+					images = append(images, img)
+				}
+			}
+			return true
+		})
+	} else if content.Exists() {
+		textParts = append(textParts, content.String())
+	}
+
+	// If message had only tool events and no text, add a placeholder
+	if len(textParts) == 0 && hasToolEvents {
+		if role == "assistant" {
+			textParts = append(textParts, "[Assistant used tools]")
+		} else {
+			textParts = append(textParts, "[Tool interaction]")
+		}
+	}
+
+	return sanitizeTextContent(strings.Join(textParts, "\n")), images
+}
+
 // BuildRequest converts an OpenAI-compatible chat payload into Kiro's conversation request format.
 func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage, metadata map[string]any) ([]byte, error) {
 	if token == nil {
@@ -69,9 +125,10 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		first := messageArray[0]
 		firstIsUser := strings.EqualFold(first.Get("role").String(), "user")
 		if firstIsUser && len(messageArray) > 1 {
-			text, toolResults, toolUses, images := extractUserMessage(first)
+			// Sanitize first message to remove tool events from history
+			text, images := sanitizeMessageForKiro(first)
 			content := combineContent(systemPrompt, text)
-			history = append(history, wrapUserMessage(content, kiroModel, toolResults, toolUses, images, nil))
+			history = append(history, wrapUserMessage(content, kiroModel, nil, nil, images, nil))
 			startIndex = 1
 		} else {
 			history = append(history, wrapUserMessage(systemPrompt, kiroModel, nil, nil, nil, nil))
@@ -87,24 +144,32 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 			break
 		}
 
-		text, toolUses := extractAssistantMessage(msg)
-		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, toolUses)}, trailingAssistants...)
+		// Sanitize trailing assistant messages to remove tool_use blocks
+		text, _ := sanitizeMessageForKiro(msg)
+		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistants...)
 		currentIndex--
 	}
 	if currentIndex < 0 {
 		return nil, fmt.Errorf("kiro translator: no user turn found to forward to kiro")
 	}
 
+	// Sanitize history messages to remove tool_use/tool_result blocks
+	// per Kiro contract: "Any assistant tool_use or user tool_result in the request body
+	// leads to 'Improperly formed request.'"
 	for i := startIndex; i < currentIndex; i++ {
 		msg := messageArray[i]
 		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+
+		// Use sanitization for history to strip tool events
+		text, images := sanitizeMessageForKiro(msg)
+
 		switch role {
 		case "assistant":
-			text, toolUses := extractAssistantMessage(msg)
-			history = append(history, wrapAssistantMessage(text, toolUses))
+			// History assistant messages: text only, no tool_use blocks
+			history = append(history, wrapAssistantMessage(text, nil))
 		case "user", "system", "tool":
-			text, toolResults, toolUses, images := extractUserMessage(msg)
-			history = append(history, wrapUserMessage(text, kiroModel, toolResults, toolUses, images, nil))
+			// History user messages: text only, no tool_result/tool_use blocks
+			history = append(history, wrapUserMessage(text, kiroModel, nil, nil, images, nil))
 		}
 	}
 
@@ -478,18 +543,45 @@ func combineContent(parts ...string) string {
 	return strings.Join(acc, "\n\n")
 }
 
-func parseJSONSafely(primary, fallback gjson.Result) any {
-	if primary.Exists() && primary.Raw != "" {
-		var obj any
-		if err := json.Unmarshal([]byte(primary.Raw), &obj); err == nil {
-			return obj
+// safeParseJSON robustly parses JSON-ish strings that may contain truncated escape sequences.
+// It handles dangling backslashes, incomplete Unicode escapes, and other malformed JSON.
+// On failure, it returns the original string rather than failing hard.
+func safeParseJSON(raw string) any {
+	if raw == "" {
+		return ""
+	}
+	cleaned := raw
+
+	// Handle dangling backslash (e.g. truncated JSON)
+	if strings.HasSuffix(cleaned, `\`) && !strings.HasSuffix(cleaned, `\\`) {
+		cleaned = cleaned[:len(cleaned)-1]
+	} else if strings.HasSuffix(cleaned, `\u`) ||
+		strings.HasSuffix(cleaned, `\u0`) ||
+		strings.HasSuffix(cleaned, `\u00`) {
+		// Remove incomplete Unicode escape at the end
+		idx := strings.LastIndex(cleaned, `\u`)
+		if idx >= 0 {
+			cleaned = cleaned[:idx]
 		}
 	}
+
+	var out any
+	if err := json.Unmarshal([]byte(cleaned), &out); err != nil {
+		// On failure, return original string rather than failing hard
+		return raw
+	}
+	if out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
+func parseJSONSafely(primary, fallback gjson.Result) any {
+	if primary.Exists() && primary.Raw != "" {
+		return safeParseJSON(primary.Raw)
+	}
 	if fallback.Exists() && fallback.Raw != "" {
-		var obj any
-		if err := json.Unmarshal([]byte(fallback.Raw), &obj); err == nil {
-			return obj
-		}
+		return safeParseJSON(fallback.Raw)
 	}
 	return nil
 }
