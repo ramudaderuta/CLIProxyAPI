@@ -111,7 +111,7 @@ tests/
 ├── regression/
 │   └── kiro/
 │       ├── kiro_bug_regression_test.go (bug-linked repros only)
-│       ├── kiro_tool_result_bug_test.go
+│       ├── kiro_translation_test.go  (includes tool_result edge cases)
 │       ├── kiro_thinking_truncation_test.go
 │       ├── kiro_fix_verification_test.go
 │       ├── kiro_sse_buffer_test.go (SSE buffer limit tests)

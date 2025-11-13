@@ -12,6 +12,12 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 - **Tool hygiene + parity**: All Claude Code built-ins (Task, Bash, Grep, Skill, SlashCommand, etc.) pass through to Kiro with descriptions clamped to ≤256 chars (hard limit enforced by Kiro). When a description is truncated we inject a `Tool reference (full descriptions preserved…)` block into the system prompt so Claude still sees the complete instructions. User-defined tools share the same sanitizer.
 - **Tool-choice handling**: Anthropic `tool_choice` is translated into `claudeToolChoice` metadata (and a short “Tool directive” sentence in the system prompt) so mandatory tool calls survive the Kiro hop even though the native API doesn’t understand Anthropic’s schema.
 - **Anthropic response compliance**: `BuildAnthropicMessagePayload` now generates natural-language lead-ins before a `tool_use`, strips `total_tokens`, and keeps `stop_reason`/`usage` aligned with the current Messages API.
+- **Translator runtime guarantees (Kiro request)**:
+  - The active current turn is always a user message with non-empty text. If the last user turn is tool_result-only or sanitizes to empty/whitespace, we synthesize `"."`.
+  - Assistant turns that contain only `tool_use` get a minimal `"."` text placeholder.
+  - Trailing assistant `tool_use` blocks are attached to the upcoming current user turn (`toolUses`) and a text-only assistant placeholder is inserted after any preceding `tool_result` so a non-tool message always follows a tool_result.
+  - History user messages that carry only `toolResults` also receive a `"."` placeholder to satisfy Kiro’s non-empty-content requirement in complex transcripts.
+  - When the request omits `tools` but messages reference tool names via `tool_use`, we synthesize minimal tool specifications for those names (generic object schema, short description) so Kiro accepts the referenced tools.
 - **iFlow TodoWrite loop fix**: The repeating `TodoWrite` invocations reported in Nov ’25 were traced to iFlow requests losing the operator-mandated `X-IFlow-Task-Directive` header when passing through the proxy. Commit `0c115df` adds `headers:` to config entries, mirrors them into auth `header:*` attributes, and calls `util.ApplyCustomHeadersFromAttrs` inside every OpenAI-compatible executor (iFlow rides this path). If you change watcher auth synthesis or executor header plumbing, re-run `go test ./tests/unit/iflow -run TestIFlowExecutorForwardsCustomHeaders -count=1` to ensure the directive still survives the hop.
 - **Reference parity / captured fixtures**:
   - Recorded SSE runs from CLIProxyAPI live under `tmp/CLIProxyAPI` (checked into this repo). When adjusting streaming logic, grab the matching inputs from `src/claude/claude-kiro.js` fixtures and mirror the event order (tool blocks first, then text).
@@ -19,9 +25,10 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 - **Tests covering the fixes**:
   - `TestParseResponseStripsProtocolNoiseFromContent` and `TestBuildAnthropicMessagePayloadAddsLeadInWhenContentMissing` (anthropic sanitizer).
   - `TestBuildRequestStripsControlCharactersFromUserContent`, `TestBuildRequestPreservesLongToolDescriptions`, `TestBuildRequestStripsMarkupFromToolDescriptions`, `TestBuildRequestPreservesClaudeCodeBuiltinTools`, and `TestBuildRequestMovesTrailingAssistantMessagesIntoHistory` (request translator hardening).
+  - `TestBuildRequest_PreservesToolEventsInHistory` and `TestBuildRequest_EnsuresNonEmptyFinalUserContent` ensure tool_use/tool_result blocks stay structured in history, trailing tool_result-only user messages are moved out of the active turn, and a placeholder `"."` user turn is emitted whenever Kiro would otherwise receive a tool_result message as the final user turn.
   - `TestBuildAnthropicStreamingChunksMatchReference`, `TestConvertKiroStreamToAnthropic_*`, and `TestConvertKiroStreamToAnthropic_StopReasonOverrides` validate the Go SSE output vs. CLIProxyAPI recordings (plain text, tool chains, follow-ups, cancel/timeout).
   - All run via `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`.
-  - Full regression sweep: `go test ./tests/regression/kiro` plus `go test ./...` before shipping.
+  - Full regression sweep: `go test ./tests/regression/kiro` plus `go test ./...` (latest run passes) before shipping.
 
 ### Outstanding TODOs for Claude Code feature parity
 
@@ -94,75 +101,24 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 1. **Plan-mode parity (not planned)**: We continue to document the limitation, pass through `planMode` metadata, and inject textual directives, but no executor/runtime state machine work is scheduled.
 2. **Regression hardening**: After each change above, add targeted fixtures/tests under `tests/unit/kiro/` and update `tests/TEST_DOCUMENTATION.md` so the CLIProxyAPI parity guarantees remain enforced long-term.
 
-### Solution approach for the Nov 2025 “Improperly formed request” issue
+### Revised understanding of the Nov 2025 “Improperly formed request” issue
 
-1. **Clamp + mirror tool descriptions**: Kiro refuses payloads with >256-char tool descriptions, so we hard-cap descriptions inside `userInputMessageContext` but append a `Tool reference (full descriptions preserved…)` block to the system prompt containing the original text. This keeps Kiro happy without hiding instructions from Claude Code.
-2. **Propagate tool_choice metadata**: When Claude Code sets `tool_choice`, we emit a `claudeToolChoice` map and a short “Tool directive” sentence in the system prompt so Kiro honors mandatory tool invocations.
-3. **Regression coverage**: `TestBuildRequestPreservesLongToolDescriptions`, `TestBuildRequestPreservesClaudeCodeBuiltinTools`, and `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` ensure the clamping + mirroring behavior doesn’t regress. Always run `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1` before shipping changes that touch Kiro request translation.
+After retesting, `tool_use` and `tool_result` in history are broadly acceptable to Kiro. The 400 “Improperly formed request” errors reproduce reliably in only these cases:
+- The last user turn ends with a `tool_result` and no trailing user text (`tests/shared/testdata/nonstream/claude_request_todowrite_bad.json`).
+- The effective final user turn has empty/whitespace content (e.g., a trailing newline), even if a prior `tool_use` exists (`tests/shared/testdata/nonstream/claude_request_todowrite_bad2.json`).
 
-## Kiro "Improperly formed request" deep‑dive
+What we are doing instead:
+- Keep `tool_use`/`tool_result` blocks intact in history and current turns. Do not strip or summarize them by default.
+- Ensure the final forwarded user turn has non-empty `content`. If the last user message would sanitize to empty or ends with only `tool_result`, synthesize a minimal placeholder (e.g., `"."`) as the current user turn so the request never ends on a tool result.
+- Ensure assistant turns that contain only `tool_use` have non-empty `content` by injecting a minimal placeholder (e.g., `"."`).
+- For trailing assistants, attach their `tool_use` entries to the current user’s `toolUses` and insert a text-only assistant placeholder after any preceding tool_result; this guarantees a non-tool message follows each tool_result.
+- History user tool_result-only entries also get a `"."` placeholder to avoid empty text in complex transcripts.
+- When no `tools` are provided but tool_use names are present, synthesize minimal tool specs for those names so Kiro recognizes referenced tools.
+- Continue using `safeParseJSON` to defensively parse tool inputs with truncated escapes or control bytes.
 
-### Bisection Results
-
-- orig (full `claude_request_todowrite_continue.json`): 200 with SSE `error` (body: "Improperly formed request.")
-- no_tools (drop `.tools`): 200 with SSE `error` (same body)
-- no_tools_no_sys (drop `.tools` and `.system`): 200 with SSE `error`
-- only_first_user (keep only `messages[0]`): 200 OK, normal response
-- two_user (keep `messages[0]`, `messages[1]`): 200 OK, normal response
-- user_and_assistant (keep `messages[0]`, assistant `tool_use`): 400 Improperly formed request
-- user_and_result (keep `messages[0]`, user `tool_result`): 400 Improperly formed request
-- user_asst_result (keep `messages[0]`, assistant `tool_use`, user `tool_result`): 400 Improperly formed request
-
-### Implementation
-
-**Problem:** TodoWrite and other tools triggered "Improperly formed request" 400 errors when used in conversations with history because the Kiro translator was passing through `tool_use` and `tool_result` blocks from previous turns.
-
-**Root Cause:** The `BuildRequest` function in `internal/translator/kiro/request.go` was calling `extractUserMessage` and `extractAssistantMessage` for all history messages, which preserved tool events and sent them to Kiro. Per the contract, Kiro treats tool events as output-only and rejects any request containing them in history.
-
-**Solution (Commit 2025-11-13):**
-
-1. **Enhanced `safeParseJSON` (lines 481-512)**
-   - Added defensive JSON parsing to handle truncated escape sequences per sdk-kiro-contract.md section 3.1
-   - Handles dangling backslashes (`\`), incomplete Unicode escapes (`\u`, `\u0`, `\u00`)
-   - Returns original string on parse failure instead of crashing
-   - Prevents crashes when tool arguments are malformed or truncated mid-stream
-
-2. **Added `sanitizeMessageForKiro` (lines 32-86)**
-   - Strips `tool_use` and `tool_result` blocks from messages before adding to history
-   - Converts tool events to text summaries: `[Tool invoked: get_weather]`, `[Tool result: Temperature: 22°C]`
-   - Preserves images and regular text content
-   - Adds placeholder text if message had only tool events (e.g., `[Assistant used tools]`)
-
-3. **Updated `BuildRequest` to sanitize history**
-   - **Line 128-132**: Sanitizes first message when merged with system prompt
-   - **Line 147-148**: Sanitizes trailing assistant messages (moved into history per existing logic)
-   - **Line 157-172**: Sanitizes all history messages (both user and assistant roles)
-   - **Preserves tool results in current message** (lines 175-179) - this is allowed per contract since current message is not history
-
-**Test Coverage:**
-
-Added comprehensive regression tests in `tests/unit/kiro/kiro_translation_test.go` (lines 1369-1697):
-
-- `TestBuildRequest_StripsToolEventsFromHistory`
-  - `strips_assistant_tool_use_from_history`: Verifies assistant tool_use blocks are removed from history
-  - `strips_user_tool_result_from_history`: Verifies user tool_result blocks are removed from history
-  - `preserves_tool_results_in_current_message`: Confirms current message tool results are kept (allowed by contract)
-  - `converts_tool_events_to_text_summaries`: Validates text summary conversion (e.g., `[Tool invoked: calculate]`)
-
-- `TestSafeParseJSON_TruncatedJSON`
-  - `handles_dangling_backslash`: Tests truncated JSON with trailing `\`
-  - `handles_incomplete_unicode_escape`: Tests incomplete `\u` sequences
-
-All tests pass: `go test ./tests/unit/kiro -run 'TestBuildRequest_StripsToolEventsFromHistory|TestSafeParseJSON_TruncatedJSON' -v`
-
-**Contract Compliance:**
-
-The implementation now fully complies with `./docs/sdk-kiro-contract.md`:
-- Section 3.1: `safeParseJSON` handles truncated JSON defensively
-- Section 4.2: History sanitization strips tool events before sending to Kiro
-- Section 6.2: `BuildRequest` applies Kiro contract correctly
-- Zero tool events in Kiro request history (only text summaries)
-- Current message tool results preserved (allowed by contract)
+Tests to rely on:
+- `TestSafeParseJSON_TruncatedJSON` remains valid and protects input parsing.
+- The edge cases now live in `tests/unit/kiro/kiro_translation_test.go` and validate that `BuildRequest` produces a valid Kiro request (non-empty current user content) while preserving structured tool events and ordering.
 
 ### How to verify locally
 
@@ -172,7 +128,8 @@ The implementation now fully complies with `./docs/sdk-kiro-contract.md`:
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
   `tests/shared/testdata/nonstream/claude_request_todowrite_continue.json` to `/v1/messages`.
   - Should now succeed without "Improperly formed request" errors
-  - Latest request bodies are logged under `logs/v1-messages-*.log`; verify no client‑sent `tool_use`/`tool_result` reach Kiro in history (only in current message if present)
+  - Latest request bodies are logged under `logs/v1-messages-*.log`; verify structured `tool_use`/`tool_result` are preserved in history, assistant tool_use-only turns have a `content` placeholder, and the active current user turn contains non-empty text (".") when needed.
+  - Hard case: POST `tests/shared/testdata/nonstream/test_hard_request.json` (stream=true). Expect Anthropic-style SSE with an initial text placeholder followed by a `tool_use`; no upstream 400s. If the request omits `tools`, confirm minimal tool specs were synthesized under `userInputMessageContext.tools`.
 
 ## Architecture Analysis
 

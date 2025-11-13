@@ -29,60 +29,38 @@ type toolContextEntry struct {
 	Length      int
 }
 
-// sanitizeMessageForKiro removes tool_use and tool_result blocks from a message
-// to comply with Kiro's "Improperly formed request" constraint.
-// It converts tool events to text summaries if they exist.
-func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
+func isToolResultOnlyMessage(msg gjson.Result) bool {
 	content := msg.Get("content")
-	role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
-
-	textParts := make([]string, 0, 4)
-	images := make([]map[string]any, 0)
-	hasToolEvents := false
-
+	if !content.Exists() {
+		return false
+	}
 	if content.Type == gjson.String {
-		textParts = append(textParts, content.String())
-	} else if content.IsArray() {
-		content.ForEach(func(_, part gjson.Result) bool {
-			partType := strings.ToLower(part.Get("type").String())
-			switch partType {
-			case "text", "input_text", "output_text":
-				textParts = append(textParts, part.Get("text").String())
-			case "tool_use":
-				hasToolEvents = true
-				// Convert tool_use to text summary
-				name := part.Get("name").String()
-				if name != "" {
-					textParts = append(textParts, fmt.Sprintf("[Tool invoked: %s]", name))
-				}
-			case "tool_result":
-				hasToolEvents = true
-				// Convert tool_result to text summary
-				resultContent := extractNestedContent(part.Get("content"))
-				if resultContent != "" {
-					textParts = append(textParts, fmt.Sprintf("[Tool result: %s]", resultContent))
-				}
-			case "image", "input_image":
-				if img := buildImagePart(part); img != nil {
-					images = append(images, img)
-				}
+		return strings.TrimSpace(content.String()) == ""
+	}
+	if !content.IsArray() {
+		return false
+	}
+	hasUserFacing := false
+	hasToolResult := false
+	content.ForEach(func(_, part gjson.Result) bool {
+		typ := strings.ToLower(strings.TrimSpace(part.Get("type").String()))
+		switch typ {
+		case "text", "input_text", "output_text":
+			if strings.TrimSpace(part.Get("text").String()) != "" {
+				hasUserFacing = true
 			}
-			return true
-		})
-	} else if content.Exists() {
-		textParts = append(textParts, content.String())
-	}
-
-	// If message had only tool events and no text, add a placeholder
-	if len(textParts) == 0 && hasToolEvents {
-		if role == "assistant" {
-			textParts = append(textParts, "[Assistant used tools]")
-		} else {
-			textParts = append(textParts, "[Tool interaction]")
+		case "tool_result":
+			hasToolResult = true
+		case "image", "input_image":
+			hasUserFacing = true
+		default:
+			if part.Get("text").Exists() && strings.TrimSpace(part.Get("text").String()) != "" {
+				hasUserFacing = true
+			}
 		}
-	}
-
-	return sanitizeTextContent(strings.Join(textParts, "\n")), images
+		return true
+	})
+	return hasToolResult && !hasUserFacing
 }
 
 // BuildRequest converts an OpenAI-compatible chat payload into Kiro's conversation request format.
@@ -101,8 +79,8 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	}
 
 	systemPrompt := extractSystemPrompt(root.Get("system"))
-	tools := root.Get("tools")
-	toolDefinitions, toolContextEntries := buildToolSpecifications(tools)
+    tools := root.Get("tools")
+    toolDefinitions, toolContextEntries := buildToolSpecifications(tools)
 	toolChoiceMeta, toolChoiceDirective := buildToolChoiceMetadata(root.Get("tool_choice"))
 	planModeMeta, planDirective := buildPlanModeMetadata(messages, tools)
 
@@ -116,7 +94,15 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		systemPrompt = combineContent(systemPrompt, planDirective)
 	}
 
-	kiroModel := MapModel(model)
+    // If no explicit tools are provided but the transcript contains tool_use blocks,
+    // synthesize minimal tool specifications so Kiro accepts referenced tools.
+    if len(toolDefinitions) == 0 {
+        if inferred := collectToolUseNames(messages); len(inferred) > 0 {
+            toolDefinitions = buildSyntheticToolSpecifications(inferred)
+        }
+    }
+
+    kiroModel := MapModel(model)
 
 	history := make([]map[string]any, 0, len(messageArray))
 	startIndex := 0
@@ -125,63 +111,131 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		first := messageArray[0]
 		firstIsUser := strings.EqualFold(first.Get("role").String(), "user")
 		if firstIsUser && len(messageArray) > 1 {
-			// Sanitize first message to remove tool events from history
-			text, images := sanitizeMessageForKiro(first)
+			// Preserve tool events; merge system prompt into first user content
+			text, toolResults, toolUses, images := extractUserMessage(first)
 			content := combineContent(systemPrompt, text)
-			history = append(history, wrapUserMessage(content, kiroModel, nil, nil, images, nil))
+			history = append(history, wrapUserMessage(content, kiroModel, toolResults, toolUses, images, nil))
 			startIndex = 1
 		} else {
 			history = append(history, wrapUserMessage(systemPrompt, kiroModel, nil, nil, nil, nil))
 		}
 	}
 
-	currentIndex := len(messageArray) - 1
-	trailingAssistants := make([]map[string]any, 0)
-	for currentIndex >= 0 {
-		msg := messageArray[currentIndex]
-		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
-		if role != "assistant" {
-			break
-		}
-
-		// Sanitize trailing assistant messages to remove tool_use blocks
-		text, _ := sanitizeMessageForKiro(msg)
-		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistants...)
-		currentIndex--
-	}
+    currentIndex := len(messageArray) - 1
+    // Collect trailing assistant tool_uses and move them to the upcoming current user turn.
+    // Place a non-empty assistant placeholder (text only) in history to satisfy Kiro’s requirement
+    // that a tool_result is followed by a non-tool message.
+    pendingToolUses := make([]map[string]any, 0)
+    trailingAssistantTexts := make([]map[string]any, 0)
+    for currentIndex >= 0 {
+        msg := messageArray[currentIndex]
+        role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+        if role != "assistant" {
+            break
+        }
+        text, toolUses := extractAssistantMessage(msg)
+        if len(toolUses) > 0 {
+            pendingToolUses = append(toolUses, pendingToolUses...)
+        }
+        // Always add a text-only assistant message to history (wrapAssistantMessage will inject "." if empty)
+        trailingAssistantTexts = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistantTexts...)
+        currentIndex--
+    }
 	if currentIndex < 0 {
 		return nil, fmt.Errorf("kiro translator: no user turn found to forward to kiro")
 	}
 
-	// Sanitize history messages to remove tool_use/tool_result blocks
-	// per Kiro contract: "Any assistant tool_use or user tool_result in the request body
-	// leads to 'Improperly formed request.'"
-	for i := startIndex; i < currentIndex; i++ {
+	movedToolResultHistory := make([]map[string]any, 0)
+	for currentIndex >= startIndex {
+		msg := messageArray[currentIndex]
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if role != "user" {
+			break
+		}
+		if !isToolResultOnlyMessage(msg) {
+			break
+		}
+		text, toolResults, toolUses, images := extractUserMessage(msg)
+		movedToolResultHistory = append([]map[string]any{
+			wrapUserMessage(text, kiroModel, toolResults, toolUses, images, nil),
+		}, movedToolResultHistory...)
+		currentIndex--
+	}
+
+	syntheticCurrent := false
+	if currentIndex < startIndex {
+		syntheticCurrent = true
+	}
+
+	// Build history preserving tool events and media
+	historyLimit := currentIndex
+	if historyLimit < startIndex {
+		historyLimit = startIndex
+	}
+	for i := startIndex; i < historyLimit; i++ {
 		msg := messageArray[i]
 		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
 
-		// Use sanitization for history to strip tool events
-		text, images := sanitizeMessageForKiro(msg)
-
 		switch role {
 		case "assistant":
-			// History assistant messages: text only, no tool_use blocks
-			history = append(history, wrapAssistantMessage(text, nil))
+			text, toolUses := extractAssistantMessage(msg)
+			history = append(history, wrapAssistantMessage(text, toolUses))
 		case "user", "system", "tool":
-			// History user messages: text only, no tool_result/tool_use blocks
-			history = append(history, wrapUserMessage(text, kiroModel, nil, nil, images, nil))
+			text, toolResults, toolUses, images := extractUserMessage(msg)
+			history = append(history, wrapUserMessage(text, kiroModel, toolResults, toolUses, images, nil))
 		}
 	}
 
-	current := messageArray[currentIndex]
-	currentRole := strings.ToLower(strings.TrimSpace(current.Get("role").String()))
-	if currentRole != "user" {
-		return nil, fmt.Errorf("kiro translator: latest non-assistant message must be a user turn, got %s", currentRole)
+	// (deferred) movedToolResultHistory will be appended after trailing assistant texts
+
+	if !syntheticCurrent {
+		if currentIndex < 0 {
+			syntheticCurrent = true
+		} else {
+			currentMsgCheck := messageArray[currentIndex]
+			currentRole := strings.ToLower(strings.TrimSpace(currentMsgCheck.Get("role").String()))
+			if currentRole != "user" {
+				switch currentRole {
+				case "assistant":
+					text, toolUses := extractAssistantMessage(currentMsgCheck)
+					history = append(history, wrapAssistantMessage(text, toolUses))
+				case "system", "tool":
+					text, toolResults, toolUses, images := extractUserMessage(currentMsgCheck)
+					history = append(history, wrapUserMessage(text, kiroModel, toolResults, toolUses, images, nil))
+				}
+				syntheticCurrent = true
+			}
+		}
 	}
 
-	history = append(history, trailingAssistants...)
+    // Place any moved trailing user tool_results first, then the assistant text placeholders
+    // so that a tool_result is immediately followed by a non-tool assistant message.
+    history = append(history, movedToolResultHistory...)
+    if len(trailingAssistantTexts) > 0 {
+        history = append(history, trailingAssistantTexts...)
+    }
 
-	text, toolResults, toolUses, images := extractUserMessage(current)
+	var (
+		text        string
+		toolResults []map[string]any
+		toolUses    []map[string]any
+		images      []map[string]any
+	)
+
+	if syntheticCurrent {
+		text = "."
+	} else {
+		current := messageArray[currentIndex]
+		text, toolResults, toolUses, images = extractUserMessage(current)
+		if strings.TrimSpace(text) == "" {
+			text = "."
+		}
+	}
+    // Attach any collected trailing assistant tool_uses to the current user turn
+    // to avoid leaving orphan assistant tool_use messages without a corresponding tool_result in history.
+    if len(pendingToolUses) > 0 {
+        toolUses = append(pendingToolUses, toolUses...)
+    }
 	context := map[string]any{}
 	if len(toolResults) > 0 {
 		context["toolResults"] = toolResults
@@ -238,13 +292,18 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 }
 
 func wrapUserMessage(content, model string, toolResults, toolUses, images []map[string]any, tools []map[string]any) map[string]any {
-	payload := map[string]any{
-		"userInputMessage": map[string]any{
-			"content": content,
-			"modelId": model,
-			"origin":  origin,
-		},
-	}
+    // Kiro is stricter about non-empty message content. If this user entry only
+    // carries structured toolResults and no visible text, inject a minimal placeholder.
+    if strings.TrimSpace(content) == "" && len(toolResults) > 0 {
+        content = "."
+    }
+    payload := map[string]any{
+        "userInputMessage": map[string]any{
+            "content": content,
+            "modelId": model,
+            "origin":  origin,
+        },
+    }
 	context := map[string]any{}
 	if len(toolResults) > 0 {
 		context["toolResults"] = toolResults
@@ -265,6 +324,12 @@ func wrapUserMessage(content, model string, toolResults, toolUses, images []map[
 }
 
 func wrapAssistantMessage(content string, toolUses []map[string]any) map[string]any {
+	if strings.TrimSpace(content) == "" {
+		// Kiro requires assistant content to be non-empty.
+		// If the assistant turn only contains tool_use blocks (no text),
+		// insert a minimal placeholder so the message is accepted.
+		content = "."
+	}
 	payload := map[string]any{
 		"assistantResponseMessage": map[string]any{
 			"content": content,
@@ -417,6 +482,63 @@ func buildToolSpecifications(tools gjson.Result) ([]map[string]any, []toolContex
 		return true
 	})
 	return specs, contexts
+}
+
+// collectToolUseNames scans messages for assistant tool_use entries and returns
+// a sorted unique list of tool names referenced.
+func collectToolUseNames(messages gjson.Result) []string {
+    if !messages.Exists() || !messages.IsArray() {
+        return nil
+    }
+    seen := make(map[string]struct{})
+    names := make([]string, 0)
+    messages.ForEach(func(_, msg gjson.Result) bool {
+        content := msg.Get("content")
+        if content.IsArray() {
+            content.ForEach(func(_, part gjson.Result) bool {
+                if strings.EqualFold(strings.TrimSpace(part.Get("type").String()), "tool_use") {
+                    name := strings.TrimSpace(part.Get("name").String())
+                    if name != "" {
+                        key := strings.ToLower(name)
+                        if _, ok := seen[key]; !ok {
+                            seen[key] = struct{}{}
+                            names = append(names, name)
+                        }
+                    }
+                }
+                return true
+            })
+        }
+        return true
+    })
+    sort.Slice(names, func(i, j int) bool { return strings.ToLower(names[i]) < strings.ToLower(names[j]) })
+    return names
+}
+
+// buildSyntheticToolSpecifications constructs minimal tool specifications for the given tool names.
+// It uses a generic object schema and a short placeholder description.
+func buildSyntheticToolSpecifications(toolNames []string) []map[string]any {
+    if len(toolNames) == 0 {
+        return nil
+    }
+    specs := make([]map[string]any, 0, len(toolNames))
+    for _, name := range toolNames {
+        cleanName := sanitizeTextContent(name)
+        if cleanName == "" {
+            continue
+        }
+        desc := fmt.Sprintf("Tool %s", cleanName)
+        desc, _, _ = sanitizeToolDescription(cleanName, desc)
+        entry := map[string]any{
+            "toolSpecification": map[string]any{
+                "name":        cleanName,
+                "description": desc,
+                "inputSchema": map[string]any{"json": map[string]any{"type": "object"}},
+            },
+        }
+        specs = append(specs, entry)
+    }
+    return specs
 }
 
 func sanitizeToolDescription(name, desc string) (string, string, bool) {
@@ -837,14 +959,17 @@ func (p *planModeTracker) handleToolResult(part gjson.Result) {
 }
 
 func (p *planModeTracker) export() (map[string]any, string) {
-	if len(p.available) == 0 && !p.seen {
-		return nil, ""
-	}
+    if len(p.available) == 0 && !p.seen {
+        return nil, ""
+    }
 
-	meta := map[string]any{
-		"available": p.available,
-		"active":    len(p.pendingEnter) > 0,
-	}
+    meta := map[string]any{
+        "active": len(p.pendingEnter) > 0,
+    }
+    if len(p.available) > 0 {
+        // Only include when non-empty to avoid sending null arrays upstream
+        meta["available"] = p.available
+    }
 	if len(p.pending) > 0 {
 		pending := make([]map[string]string, 0, len(p.pending))
 		for _, id := range p.pendingOrder {
