@@ -1413,29 +1413,43 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify history doesn't contain tool_use blocks
+		// Verify history preserves structured tool metadata but strips tool_use blocks from content
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
 		for i, msg := range history {
 			msgMap := msg.(map[string]any)
 			if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
-				// Assistant messages in history should not have toolUses
-				if toolUses, exists := assistantMsg["toolUses"]; exists && toolUses != nil {
-					toolUsesArray := toolUses.([]any)
-					if len(toolUsesArray) > 0 {
-						t.Errorf("History message %d contains tool_use blocks (should be stripped): %v", i, toolUses)
-					}
-				}
-				// Content should be sanitized text
 				content := assistantMsg["content"].(string)
 				if strings.Contains(content, "tool_use") {
-					t.Logf("History message %d content: %s", i, content)
+					t.Errorf("History message %d still contains raw tool_use data: %s", i, content)
+				}
+
+				toolUsesAny, exists := assistantMsg["toolUses"]
+				if !exists {
+					t.Fatalf("History message %d is missing structured toolUses metadata", i)
+				}
+				toolUses, ok := toolUsesAny.([]any)
+				if !ok || len(toolUses) == 0 {
+					t.Fatalf("History message %d has invalid toolUses metadata: %#v", i, toolUsesAny)
+				}
+
+				for _, toolUseAny := range toolUses {
+					toolUse := toolUseAny.(map[string]any)
+					if toolUse["name"] == "" {
+						t.Errorf("History message %d tool use missing name: %+v", i, toolUse)
+					}
+					if toolUse["toolUseId"] == "" {
+						t.Errorf("History message %d tool use missing toolUseId: %+v", i, toolUse)
+					}
+					if toolUse["input"] == nil {
+						t.Errorf("History message %d tool use missing input payload: %+v", i, toolUse)
+					}
 				}
 			}
 		}
 
-		t.Logf("✅ Assistant tool_use blocks successfully stripped from history")
+		t.Logf("✅ Assistant tool_use metadata preserved while stripping raw blocks from history")
 	})
 
 	t.Run("strips_user_tool_result_from_history", func(t *testing.T) {

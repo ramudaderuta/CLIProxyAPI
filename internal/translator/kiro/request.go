@@ -144,9 +144,10 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 			break
 		}
 
-		// Sanitize trailing assistant messages to remove tool_use blocks
+		// Sanitize trailing assistant messages to remove tool_use blocks while preserving tool call metadata
 		text, _ := sanitizeMessageForKiro(msg)
-		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistants...)
+		_, toolUses := extractAssistantMessage(msg)
+		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, toolUses)}, trailingAssistants...)
 		currentIndex--
 	}
 	if currentIndex < 0 {
@@ -165,8 +166,9 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 
 		switch role {
 		case "assistant":
-			// History assistant messages: text only, no tool_use blocks
-			history = append(history, wrapAssistantMessage(text, nil))
+			// History assistant messages: strip tool_use blocks from content but preserve structured tool metadata
+			_, toolUses := extractAssistantMessage(msg)
+			history = append(history, wrapAssistantMessage(text, toolUses))
 		case "user", "system", "tool":
 			// History user messages: text only, no tool_result/tool_use blocks
 			history = append(history, wrapUserMessage(text, kiroModel, nil, nil, images, nil))
