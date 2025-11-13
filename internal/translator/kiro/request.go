@@ -29,6 +29,48 @@ type toolContextEntry struct {
 	Length      int
 }
 
+func summarizeToolUse(part gjson.Result) string {
+	name := sanitizeTextContent(part.Get("name").String())
+	inputSummary := summarizeToolInput(part)
+
+	switch {
+	case name != "" && inputSummary != "":
+		return fmt.Sprintf("[Tool invoked: %s | input: %s]", name, inputSummary)
+	case name != "":
+		return fmt.Sprintf("[Tool invoked: %s]", name)
+	case inputSummary != "":
+		return fmt.Sprintf("[Tool invoked with input: %s]", inputSummary)
+	default:
+		return "[Tool invoked]"
+	}
+}
+
+func summarizeToolInput(part gjson.Result) string {
+	inputValue := parseJSONSafely(part.Get("input"), part.Get("arguments"))
+	switch value := inputValue.(type) {
+	case string:
+		return sanitizeTextContent(value)
+	case nil:
+		// fall through to other checks
+	default:
+		if marshaled, err := json.Marshal(value); err == nil {
+			return sanitizeTextContent(string(marshaled))
+		}
+		return sanitizeTextContent(fmt.Sprintf("%v", value))
+	}
+
+	if raw := strings.TrimSpace(part.Get("input").String()); raw != "" {
+		return sanitizeTextContent(raw)
+	}
+	if raw := strings.TrimSpace(part.Get("arguments").String()); raw != "" {
+		return sanitizeTextContent(raw)
+	}
+	if nested := extractNestedContent(part.Get("text")); nested != "" {
+		return sanitizeTextContent(nested)
+	}
+	return ""
+}
+
 // sanitizeMessageForKiro removes tool_use and tool_result blocks from a message
 // to comply with Kiro's "Improperly formed request" constraint.
 // It converts tool events to text summaries if they exist.
@@ -50,10 +92,8 @@ func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
 				textParts = append(textParts, part.Get("text").String())
 			case "tool_use":
 				hasToolEvents = true
-				// Convert tool_use to text summary
-				name := part.Get("name").String()
-				if name != "" {
-					textParts = append(textParts, fmt.Sprintf("[Tool invoked: %s]", name))
+				if summary := summarizeToolUse(part); summary != "" {
+					textParts = append(textParts, summary)
 				}
 			case "tool_result":
 				hasToolEvents = true
@@ -144,7 +184,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 			break
 		}
 
-		// Sanitize trailing assistant messages to remove tool_use blocks
+		// Sanitize trailing assistant messages to remove tool_use blocks entirely
 		text, _ := sanitizeMessageForKiro(msg)
 		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistants...)
 		currentIndex--
@@ -165,7 +205,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 
 		switch role {
 		case "assistant":
-			// History assistant messages: text only, no tool_use blocks
+			// History assistant messages: strip tool_use blocks entirely from both content and metadata
 			history = append(history, wrapAssistantMessage(text, nil))
 		case "user", "system", "tool":
 			// History user messages: text only, no tool_result/tool_use blocks
