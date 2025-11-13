@@ -133,11 +133,11 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
    - Preserves images and regular text content
    - Adds placeholder text if message had only tool events (e.g., `[Assistant used tools]`)
 
-3. **Updated `BuildRequest` to sanitize history**
+3. **Updated `BuildRequest` to sanitize history and current turns**
    - **Line 128-132**: Sanitizes first message when merged with system prompt
    - **Line 147-148**: Sanitizes trailing assistant messages (moved into history per existing logic)
    - **Line 157-172**: Sanitizes all history messages (both user and assistant roles)
-   - **Preserves tool results in current message** (lines 175-179) - this is allowed per contract since current message is not history
+   - **Current user tool results are folded into plain text summaries** instead of structured `toolResults` payloads so Kiro never receives tool events, even on the active turn
 
 **Test Coverage:**
 
@@ -146,7 +146,7 @@ Added comprehensive regression tests in `tests/unit/kiro/kiro_translation_test.g
 - `TestBuildRequest_StripsToolEventsFromHistory`
   - `strips_assistant_tool_use_from_history`: Verifies assistant tool_use blocks are removed from history
   - `strips_user_tool_result_from_history`: Verifies user tool_result blocks are removed from history
-  - `preserves_tool_results_in_current_message`: Confirms current message tool results are kept (allowed by contract)
+  - `folds_tool_results_into_current_message_text`: Confirms current message tool results are summarized as text with no structured payloads
   - `converts_tool_events_to_text_summaries`: Validates text summary conversion (e.g., `[Tool invoked: calculate]`)
 
 - `TestSafeParseJSON_TruncatedJSON`

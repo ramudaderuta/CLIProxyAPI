@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
@@ -1413,29 +1414,33 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify history doesn't contain tool_use blocks
+		// Verify history strips tool_use metadata while summarizing it in text content
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
 		for i, msg := range history {
 			msgMap := msg.(map[string]any)
 			if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
-				// Assistant messages in history should not have toolUses
-				if toolUses, exists := assistantMsg["toolUses"]; exists && toolUses != nil {
-					toolUsesArray := toolUses.([]any)
-					if len(toolUsesArray) > 0 {
-						t.Errorf("History message %d contains tool_use blocks (should be stripped): %v", i, toolUses)
-					}
-				}
-				// Content should be sanitized text
 				content := assistantMsg["content"].(string)
 				if strings.Contains(content, "tool_use") {
-					t.Logf("History message %d content: %s", i, content)
+					t.Errorf("History message %d still contains raw tool_use data: %s", i, content)
+				}
+
+				if !strings.Contains(content, "[Tool invoked: get_weather]") {
+					t.Errorf("History message %d should summarize tool usage with tool name: %s", i, content)
+				}
+
+				if strings.Contains(content, "Tokyo") {
+					t.Errorf("History message %d should not expose tool input arguments, got: %s", i, content)
+				}
+
+				if _, exists := assistantMsg["toolUses"]; exists {
+					t.Fatalf("History message %d should not include toolUses metadata to avoid Kiro 400s", i)
 				}
 			}
 		}
 
-		t.Logf("✅ Assistant tool_use blocks successfully stripped from history")
+		t.Logf("✅ Assistant tool_use blocks stripped from history and summarized in text")
 	})
 
 	t.Run("strips_user_tool_result_from_history", func(t *testing.T) {
@@ -1497,12 +1502,12 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 		t.Logf("✅ User tool_result blocks successfully stripped from history")
 	})
 
-	t.Run("preserves_tool_results_in_current_message", func(t *testing.T) {
+	t.Run("folds_tool_results_into_current_message_text", func(t *testing.T) {
 		openAIRequest := []byte(`{
-			"model": "claude-sonnet-4-5",
-			"messages": [
-				{
-					"role": "user",
+                        "model": "claude-sonnet-4-5",
+                        "messages": [
+                                {
+                                        "role": "user",
 					"content": "What's the weather?"
 				},
 				{
@@ -1530,28 +1535,132 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify current message DOES contain tool_result (this is allowed)
+		// Verify current message text contains summarized tool result content
 		convState := kiroReq["conversationState"].(map[string]any)
 		currentMsg := convState["currentMessage"].(map[string]any)
 		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
 
-		context, ok := userInputMsg["userInputMessageContext"].(map[string]any)
-		if !ok {
-			t.Fatalf("Expected userInputMessageContext in current message")
+		content := userInputMsg["content"].(string)
+		if !strings.Contains(content, "[Tool result:") {
+			t.Fatalf("Expected tool result summary in current message content, got: %s", content)
 		}
 
-		toolResults, ok := context["toolResults"].([]any)
-		if !ok || len(toolResults) == 0 {
-			t.Fatalf("Expected tool_result in current message (should be preserved)")
+		if context, exists := userInputMsg["userInputMessageContext"].(map[string]any); exists {
+			if _, hasResults := context["toolResults"]; hasResults {
+				t.Fatalf("Current message should not include structured toolResults to satisfy Kiro contract: %+v", context)
+			}
 		}
 
-		t.Logf("✅ Tool results preserved in current message as expected")
+		t.Logf("✅ Tool results folded into current message text without structured payloads")
+	})
+
+	t.Run("truncates_tool_result_summaries_over_length_limit", func(t *testing.T) {
+		longResult := strings.Repeat("A", 600)
+		openAIRequest := []byte(fmt.Sprintf(`{
+                        "model": "claude-sonnet-4-5",
+                        "messages": [
+                                {
+                                        "role": "user",
+                                        "content": "Run the diagnostic"
+                                },
+                                {
+                                        "role": "assistant",
+                                        "content": [
+                                                {"type": "tool_use", "id": "call_long", "name": "diagnostic_tool", "input": {"target": "system"}}
+                                        ]
+                                },
+                                {
+                                        "role": "user",
+                                        "content": [
+                                                {"type": "tool_result", "tool_use_id": "call_long", "content": "%s"}
+                                        ]
+                                }
+                        ]
+                }`, longResult))
+
+		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
+		if err != nil {
+			t.Fatalf("BuildRequest failed: %v", err)
+		}
+
+		var kiroReq map[string]any
+		if err := json.Unmarshal(kiroRequest, &kiroReq); err != nil {
+			t.Fatalf("Failed to parse Kiro request: %v", err)
+		}
+
+		convState := kiroReq["conversationState"].(map[string]any)
+		currentMsg := convState["currentMessage"].(map[string]any)
+		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
+
+		content := userInputMsg["content"].(string)
+		if !strings.Contains(content, "(truncated)") {
+			t.Fatalf("Expected truncated marker in tool result summary, got: %s", content)
+		}
+		if count := utf8.RuneCountInString(content); count > 512 {
+			t.Fatalf("Tool result summary should be capped at 512 characters, got length %d", count)
+		}
+
+		t.Logf("✅ Tool result summary truncated to 512 characters with marker")
+	})
+
+	t.Run("retains_only_last_n_tool_result_summaries", func(t *testing.T) {
+		results := make([]string, 0, 10)
+		for i := 0; i < 10; i++ {
+			results = append(results, fmt.Sprintf(`{"type": "tool_result", "tool_use_id": "call_%d", "content": "Result %d"}`, i, i))
+		}
+
+		openAIRequest := []byte(fmt.Sprintf(`{
+                        "model": "claude-sonnet-4-5",
+                        "messages": [
+                                {
+                                        "role": "user",
+                                        "content": "Start"
+                                },
+                                {
+                                        "role": "assistant",
+                                        "content": [
+                                                {"type": "tool_use", "id": "call_0", "name": "workflow", "input": {"step": "start"}}
+                                        ]
+                                },
+                                {
+                                        "role": "user",
+                                        "content": [%s]
+                                }
+                        ]
+                }`, strings.Join(results, ",")))
+
+		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
+		if err != nil {
+			t.Fatalf("BuildRequest failed: %v", err)
+		}
+
+		var kiroReq map[string]any
+		if err := json.Unmarshal(kiroRequest, &kiroReq); err != nil {
+			t.Fatalf("Failed to parse Kiro request: %v", err)
+		}
+
+		convState := kiroReq["conversationState"].(map[string]any)
+		currentMsg := convState["currentMessage"].(map[string]any)
+		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
+
+		content := userInputMsg["content"].(string)
+		if strings.Contains(content, "call_0") || strings.Contains(content, "call_1") {
+			t.Fatalf("Oldest tool result summaries should have been dropped, got: %s", content)
+		}
+		if !strings.Contains(content, "call_9") {
+			t.Fatalf("Newest tool result summary should be preserved, got: %s", content)
+		}
+		if count := strings.Count(content, "[Tool result:"); count != 8 {
+			t.Fatalf("Expected exactly 8 tool result summaries, got %d in %s", count, content)
+		}
+
+		t.Logf("✅ Tool result summaries limited to the most recent eight entries")
 	})
 
 	t.Run("converts_tool_events_to_text_summaries", func(t *testing.T) {
 		openAIRequest := []byte(`{
-			"model": "claude-sonnet-4-5",
-			"messages": [
+                        "model": "claude-sonnet-4-5",
+                        "messages": [
 				{
 					"role": "user",
 					"content": "Calculate 2+2"
@@ -1592,6 +1701,12 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 				// Should contain the original text and a summary of the tool use
 				if strings.Contains(content, "I'll calculate that") {
 					foundAssistant = true
+					if !strings.Contains(content, "[Tool invoked: calculate]") {
+						t.Errorf("Expected tool invocation summary with name only, got: %s", content)
+					}
+					if strings.Contains(content, "2+2") {
+						t.Errorf("Tool invocation summary should not leak arguments, got: %s", content)
+					}
 					t.Logf("Assistant message content: %s", content)
 				}
 			}

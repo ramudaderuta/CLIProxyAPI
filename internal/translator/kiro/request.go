@@ -17,9 +17,12 @@ import (
 )
 
 const (
-	chatTrigger              = "MANUAL"
-	origin                   = "AI_EDITOR"
-	maxToolDescriptionLength = 256
+	chatTrigger                = "MANUAL"
+	origin                     = "AI_EDITOR"
+	maxToolDescriptionLength   = 256
+	maxToolResultSummaries     = 8
+	maxToolResultSummaryLength = 512
+	toolResultTruncatedSuffix  = " (truncated)"
 )
 
 type toolContextEntry struct {
@@ -27,6 +30,155 @@ type toolContextEntry struct {
 	Description string
 	Hash        string
 	Length      int
+}
+
+func clampToolResultSummary(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	runes := []rune(text)
+	if len(runes) <= maxToolResultSummaryLength {
+		return text
+	}
+
+	suffixRunes := []rune(toolResultTruncatedSuffix)
+	if maxToolResultSummaryLength <= len(suffixRunes) {
+		return string(runes[:maxToolResultSummaryLength])
+	}
+
+	trimmed := runes[:maxToolResultSummaryLength-len(suffixRunes)]
+	return string(trimmed) + toolResultTruncatedSuffix
+}
+
+func formatSimpleToolResultSummary(content string) string {
+	cleaned := sanitizeTextContent(content)
+	if cleaned == "" {
+		return ""
+	}
+	summary := fmt.Sprintf("[Tool result: %s]", cleaned)
+	return clampToolResultSummary(summary)
+}
+
+func summarizeToolResults(results []map[string]any) string {
+	if len(results) == 0 {
+		return ""
+	}
+
+	if len(results) > maxToolResultSummaries {
+		results = results[len(results)-maxToolResultSummaries:]
+	}
+
+	summaries := make([]string, 0, len(results))
+	for _, result := range results {
+		id := sanitizeTextContent(asString(result["toolUseId"]))
+		status := sanitizeTextContent(asString(result["status"]))
+		contentText := sanitizeTextContent(flattenToolResultContent(result["content"]))
+
+		parts := make([]string, 0, 3)
+		if id != "" {
+			parts = append(parts, fmt.Sprintf("id=%s", id))
+		}
+		if contentText != "" {
+			parts = append(parts, contentText)
+		}
+		if status != "" && !strings.EqualFold(status, "success") {
+			parts = append(parts, fmt.Sprintf("status=%s", status))
+		}
+
+		if len(parts) == 0 {
+			// Preserve at least the id if everything else is empty
+			if id != "" {
+				summaries = append(summaries, fmt.Sprintf("[Tool result: id=%s]", id))
+			}
+			continue
+		}
+
+		summary := fmt.Sprintf("[Tool result: %s]", strings.Join(parts, " | "))
+		summaries = append(summaries, clampToolResultSummary(summary))
+	}
+
+	return strings.Join(summaries, "\n")
+}
+
+func flattenToolResultContent(content any) string {
+	if content == nil {
+		return ""
+	}
+
+	switch value := content.(type) {
+	case string:
+		return value
+	case []map[string]string:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			if text, ok := entry["text"]; ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	case []map[string]any:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			if text, ok := entry["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			switch typed := entry.(type) {
+			case string:
+				parts = append(parts, typed)
+			case map[string]any:
+				if text, ok := typed["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			case map[string]string:
+				if text, ok := typed["text"]; ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	case map[string]any:
+		if text, ok := value["text"].(string); ok {
+			return text
+		}
+		if marshaled, err := json.Marshal(value); err == nil {
+			return string(marshaled)
+		}
+	case map[string]string:
+		if text, ok := value["text"]; ok {
+			return text
+		}
+	}
+
+	return fmt.Sprintf("%v", content)
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	case []byte:
+		return string(v)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func summarizeToolUse(part gjson.Result) string {
+	name := sanitizeTextContent(part.Get("name").String())
+	if name != "" {
+		return fmt.Sprintf("[Tool invoked: %s]", name)
+	}
+	return "[Tool invoked]"
 }
 
 // sanitizeMessageForKiro removes tool_use and tool_result blocks from a message
@@ -40,6 +192,8 @@ func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
 	images := make([]map[string]any, 0)
 	hasToolEvents := false
 
+	toolResultIndices := make([]int, 0, maxToolResultSummaries)
+
 	if content.Type == gjson.String {
 		textParts = append(textParts, content.String())
 	} else if content.IsArray() {
@@ -50,17 +204,21 @@ func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
 				textParts = append(textParts, part.Get("text").String())
 			case "tool_use":
 				hasToolEvents = true
-				// Convert tool_use to text summary
-				name := part.Get("name").String()
-				if name != "" {
-					textParts = append(textParts, fmt.Sprintf("[Tool invoked: %s]", name))
+				if summary := summarizeToolUse(part); summary != "" {
+					textParts = append(textParts, summary)
 				}
 			case "tool_result":
 				hasToolEvents = true
 				// Convert tool_result to text summary
-				resultContent := extractNestedContent(part.Get("content"))
-				if resultContent != "" {
-					textParts = append(textParts, fmt.Sprintf("[Tool result: %s]", resultContent))
+				summary := formatSimpleToolResultSummary(extractNestedContent(part.Get("content")))
+				if summary != "" {
+					textParts = append(textParts, summary)
+					toolResultIndices = append(toolResultIndices, len(textParts)-1)
+					if len(toolResultIndices) > maxToolResultSummaries {
+						oldestIndex := toolResultIndices[0]
+						toolResultIndices = toolResultIndices[1:]
+						textParts[oldestIndex] = ""
+					}
 				}
 			case "image", "input_image":
 				if img := buildImagePart(part); img != nil {
@@ -72,6 +230,14 @@ func sanitizeMessageForKiro(msg gjson.Result) (string, []map[string]any) {
 	} else if content.Exists() {
 		textParts = append(textParts, content.String())
 	}
+
+	filteredParts := make([]string, 0, len(textParts))
+	for _, part := range textParts {
+		if strings.TrimSpace(part) != "" {
+			filteredParts = append(filteredParts, part)
+		}
+	}
+	textParts = filteredParts
 
 	// If message had only tool events and no text, add a placeholder
 	if len(textParts) == 0 && hasToolEvents {
@@ -144,7 +310,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 			break
 		}
 
-		// Sanitize trailing assistant messages to remove tool_use blocks
+		// Sanitize trailing assistant messages to remove tool_use blocks entirely
 		text, _ := sanitizeMessageForKiro(msg)
 		trailingAssistants = append([]map[string]any{wrapAssistantMessage(text, nil)}, trailingAssistants...)
 		currentIndex--
@@ -165,7 +331,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 
 		switch role {
 		case "assistant":
-			// History assistant messages: text only, no tool_use blocks
+			// History assistant messages: strip tool_use blocks entirely from both content and metadata
 			history = append(history, wrapAssistantMessage(text, nil))
 		case "user", "system", "tool":
 			// History user messages: text only, no tool_result/tool_use blocks
@@ -182,6 +348,10 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	history = append(history, trailingAssistants...)
 
 	text, toolResults, toolUses, images := extractUserMessage(current)
+	if summary := summarizeToolResults(toolResults); summary != "" {
+		text = combineContent(text, summary)
+		toolResults = nil
+	}
 	context := map[string]any{}
 	if len(toolResults) > 0 {
 		context["toolResults"] = toolResults
