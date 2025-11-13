@@ -29,6 +29,114 @@ type toolContextEntry struct {
 	Length      int
 }
 
+func summarizeToolResults(results []map[string]any) string {
+	if len(results) == 0 {
+		return ""
+	}
+
+	summaries := make([]string, 0, len(results))
+	for _, result := range results {
+		id := sanitizeTextContent(asString(result["toolUseId"]))
+		status := sanitizeTextContent(asString(result["status"]))
+		contentText := sanitizeTextContent(flattenToolResultContent(result["content"]))
+
+		parts := make([]string, 0, 3)
+		if id != "" {
+			parts = append(parts, fmt.Sprintf("id=%s", id))
+		}
+		if contentText != "" {
+			parts = append(parts, contentText)
+		}
+		if status != "" && !strings.EqualFold(status, "success") {
+			parts = append(parts, fmt.Sprintf("status=%s", status))
+		}
+
+		if len(parts) == 0 {
+			// Preserve at least the id if everything else is empty
+			if id != "" {
+				summaries = append(summaries, fmt.Sprintf("[Tool result: id=%s]", id))
+			}
+			continue
+		}
+
+		summaries = append(summaries, fmt.Sprintf("[Tool result: %s]", strings.Join(parts, " | ")))
+	}
+
+	return strings.Join(summaries, "\n")
+}
+
+func flattenToolResultContent(content any) string {
+	if content == nil {
+		return ""
+	}
+
+	switch value := content.(type) {
+	case string:
+		return value
+	case []map[string]string:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			if text, ok := entry["text"]; ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	case []map[string]any:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			if text, ok := entry["text"].(string); ok {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "")
+	case []any:
+		parts := make([]string, 0, len(value))
+		for _, entry := range value {
+			switch typed := entry.(type) {
+			case string:
+				parts = append(parts, typed)
+			case map[string]any:
+				if text, ok := typed["text"].(string); ok {
+					parts = append(parts, text)
+				}
+			case map[string]string:
+				if text, ok := typed["text"]; ok {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "")
+	case map[string]any:
+		if text, ok := value["text"].(string); ok {
+			return text
+		}
+		if marshaled, err := json.Marshal(value); err == nil {
+			return string(marshaled)
+		}
+	case map[string]string:
+		if text, ok := value["text"]; ok {
+			return text
+		}
+	}
+
+	return fmt.Sprintf("%v", content)
+}
+
+func asString(value any) string {
+	switch v := value.(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	case []byte:
+		return string(v)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
 func summarizeToolUse(part gjson.Result) string {
 	name := sanitizeTextContent(part.Get("name").String())
 	inputSummary := summarizeToolInput(part)
@@ -222,6 +330,10 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	history = append(history, trailingAssistants...)
 
 	text, toolResults, toolUses, images := extractUserMessage(current)
+	if summary := summarizeToolResults(toolResults); summary != "" {
+		text = combineContent(text, summary)
+		toolResults = nil
+	}
 	context := map[string]any{}
 	if len(toolResults) > 0 {
 		context["toolResults"] = toolResults

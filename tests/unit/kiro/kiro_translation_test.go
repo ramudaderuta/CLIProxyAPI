@@ -1501,12 +1501,12 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 		t.Logf("✅ User tool_result blocks successfully stripped from history")
 	})
 
-	t.Run("preserves_tool_results_in_current_message", func(t *testing.T) {
+	t.Run("folds_tool_results_into_current_message_text", func(t *testing.T) {
 		openAIRequest := []byte(`{
-			"model": "claude-sonnet-4-5",
-			"messages": [
-				{
-					"role": "user",
+                        "model": "claude-sonnet-4-5",
+                        "messages": [
+                                {
+                                        "role": "user",
 					"content": "What's the weather?"
 				},
 				{
@@ -1534,22 +1534,23 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify current message DOES contain tool_result (this is allowed)
+		// Verify current message text contains summarized tool result content
 		convState := kiroReq["conversationState"].(map[string]any)
 		currentMsg := convState["currentMessage"].(map[string]any)
 		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
 
-		context, ok := userInputMsg["userInputMessageContext"].(map[string]any)
-		if !ok {
-			t.Fatalf("Expected userInputMessageContext in current message")
+		content := userInputMsg["content"].(string)
+		if !strings.Contains(content, "[Tool result:") {
+			t.Fatalf("Expected tool result summary in current message content, got: %s", content)
 		}
 
-		toolResults, ok := context["toolResults"].([]any)
-		if !ok || len(toolResults) == 0 {
-			t.Fatalf("Expected tool_result in current message (should be preserved)")
+		if context, exists := userInputMsg["userInputMessageContext"].(map[string]any); exists {
+			if _, hasResults := context["toolResults"]; hasResults {
+				t.Fatalf("Current message should not include structured toolResults to satisfy Kiro contract: %+v", context)
+			}
 		}
 
-		t.Logf("✅ Tool results preserved in current message as expected")
+		t.Logf("✅ Tool results folded into current message text without structured payloads")
 	})
 
 	t.Run("converts_tool_events_to_text_summaries", func(t *testing.T) {

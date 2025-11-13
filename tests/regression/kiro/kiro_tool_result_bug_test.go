@@ -2,71 +2,130 @@ package kiro_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
-	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	"github.com/stretchr/testify/assert"
 	"github.com/tidwall/gjson"
 )
+
+func extractCurrentUserInput(t *testing.T, request map[string]any) map[string]any {
+	t.Helper()
+	conversationState, ok := request["conversationState"].(map[string]any)
+	if !ok {
+		t.Fatalf("conversationState missing from request: %+v", request)
+	}
+	current, ok := conversationState["currentMessage"].(map[string]any)
+	if !ok {
+		t.Fatalf("currentMessage missing from conversationState: %+v", conversationState)
+	}
+	userInput, ok := current["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatalf("userInputMessage missing from currentMessage: %+v", current)
+	}
+	return userInput
+}
+
+func gatherToolResultSummaries(content string) []string {
+	lines := strings.Split(content, "\n")
+	summaries := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[Tool result:") {
+			summaries = append(summaries, trimmed)
+		}
+	}
+	return summaries
+}
+
+func assertNoStructuredToolResults(t *testing.T, request map[string]any) {
+	t.Helper()
+	conversationState := request["conversationState"].(map[string]any)
+	if current, ok := conversationState["currentMessage"].(map[string]any); ok {
+		if userInput, ok := current["userInputMessage"].(map[string]any); ok {
+			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
+				if _, exists := context["toolResults"]; exists {
+					t.Fatalf("structured toolResults should be removed from current message context: %+v", context)
+				}
+			}
+		}
+	}
+
+	historyAny, ok := conversationState["history"].([]any)
+	if !ok {
+		return
+	}
+	for i, item := range historyAny {
+		msg, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if userMsg, ok := msg["userInputMessage"].(map[string]any); ok {
+			if context, ok := userMsg["userInputMessageContext"].(map[string]any); ok {
+				if _, exists := context["toolResults"]; exists {
+					t.Fatalf("structured toolResults should be removed from history entry %d: %+v", i, context)
+				}
+			}
+		}
+	}
+}
 
 // TestExtractUserMessage_ToolResultContentExtraction tests the critical tool result extraction bug
 // This test demonstrates the exact bug where tool result content extraction incorrectly
 // falls back to non-existent "text" field when content is empty or missing
 func TestExtractUserMessage_ToolResultContentExtraction(t *testing.T) {
-	// Test case 1: Tool result with empty content - should NOT fall back to "text" field
-	// This demonstrates the core bug: line 177 in request.go tries part.Get("text").String()
-	// but tool_result objects don't have a "text" field
 	testCases := []struct {
-		name     string
-		payload  string
-		expectBug bool
+		name              string
+		payload           string
+		expectedSummaries []string
 	}{
 		{
 			name: "Empty content should not fall back to text field",
 			payload: `{
-				"messages": [
-					{"role": "user", "content": "Use calculator"},
-					{"role": "assistant", "content": [
-						{"type": "tool_use", "id": "calc_1", "name": "calculator", "input": {"expression": "2+2"}}
-					]},
-					{"role": "user", "content": [
-						{"type": "tool_result", "tool_use_id": "calc_1", "content": ""}
-					]}
-				]
-			}`,
-			expectBug: true, // This will trigger the bug
+                                "messages": [
+                                        {"role": "user", "content": "Use calculator"},
+                                        {"role": "assistant", "content": [
+                                                {"type": "tool_use", "id": "calc_1", "name": "calculator", "input": {"expression": "2+2"}}
+                                        ]},
+                                        {"role": "user", "content": [
+                                                {"type": "tool_result", "tool_use_id": "calc_1", "content": ""}
+                                        ]}
+                                ]
+                        }`,
+			expectedSummaries: []string{"[Tool result: id=calc_1]"},
 		},
 		{
 			name: "Missing content should not fall back to text field",
 			payload: `{
-				"messages": [
+                                "messages": [
 					{"role": "user", "content": "Use tool"},
 					{"role": "assistant", "content": [
 						{"type": "tool_use", "id": "tool_1", "name": "test_tool", "input": {}}
 					]},
-					{"role": "user", "content": [
-						{"type": "tool_result", "tool_use_id": "tool_1"}
-					]}
-				]
-			}`,
-			expectBug: true, // This will trigger the bug
+                                        {"role": "user", "content": [
+                                                {"type": "tool_result", "tool_use_id": "tool_1"}
+                                        ]}
+                                ]
+                        }`,
+			expectedSummaries: []string{"[Tool result: id=tool_1]"},
 		},
 		{
 			name: "Valid content should work correctly",
 			payload: `{
-				"messages": [
+                                "messages": [
 					{"role": "user", "content": "Use calculator"},
 					{"role": "assistant", "content": [
 						{"type": "tool_use", "id": "calc_2", "name": "calculator", "input": {"expression": "2+2"}}
 					]},
-					{"role": "user", "content": [
-						{"type": "tool_result", "tool_use_id": "calc_2", "content": "4"}
-					]}
-				]
-			}`,
-			expectBug: false, // This should work
+                                        {"role": "user", "content": [
+                                                {"type": "tool_result", "tool_use_id": "calc_2", "content": "4"}
+                                        ]}
+                                ]
+                        }`,
+			expectedSummaries: []string{"[Tool result: id=calc_2 | 4]"},
 		},
 	}
 
@@ -99,98 +158,19 @@ func TestExtractUserMessage_ToolResultContentExtraction(t *testing.T) {
 				t.Fatalf("Failed to unmarshal result: %v", err)
 			}
 
-			// Extract tool results from the request
-			conversationState := request["conversationState"].(map[string]any)
+			assertNoStructuredToolResults(t, request)
 
-			// Check both current message context and history for tool results
-			var toolResults []map[string]any
+			userInput := extractCurrentUserInput(t, request)
+			content := userInput["content"].(string)
+			summaries := gatherToolResultSummaries(content)
 
-			// First check if tool results are in current message context
-			if currentMessage, ok := conversationState["currentMessage"].(map[string]any); ok {
-				if userInput, ok := currentMessage["userInputMessage"].(map[string]any); ok {
-					if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-						if trAny, ok := context["toolResults"].([]any); ok {
-							toolResults = make([]map[string]any, len(trAny))
-							for i, tr := range trAny {
-								toolResults[i] = tr.(map[string]any)
-							}
-						}
-					}
-				}
+			if len(summaries) != len(tc.expectedSummaries) {
+				t.Fatalf("unexpected number of tool result summaries. got %d want %d: %v", len(summaries), len(tc.expectedSummaries), summaries)
 			}
 
-			// If not found in current message, check history
-			if len(toolResults) == 0 {
-				historyAny := conversationState["history"].([]any)
-				history := make([]map[string]any, len(historyAny))
-				for i, h := range historyAny {
-					history[i] = h.(map[string]any)
-				}
-
-				for _, msg := range history {
-					if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-						if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-							if trAny, ok := context["toolResults"].([]any); ok {
-								toolResults = make([]map[string]any, len(trAny))
-								for i, tr := range trAny {
-									toolResults[i] = tr.(map[string]any)
-								}
-								break
-							}
-						}
-					}
-				}
-			}
-
-			// Debug: Log the found tool results
-			t.Logf("Found %d tool results", len(toolResults))
-			for i, tr := range toolResults {
-				t.Logf("Tool result %d: %+v", i, tr)
-			}
-
-			// Debug: Log the full request structure
-			t.Logf("Full request structure: %+v", request)
-
-			if len(toolResults) == 0 {
-				if tc.expectBug {
-					t.Log("BUG CONFIRMED: No tool results found due to extraction failure")
-					t.Fail()
-				} else {
-					t.Error("Expected tool results but found none")
-				}
-				return
-			}
-
-			toolResult := toolResults[0]
-			t.Logf("Tool result structure: %+v", toolResult)
-
-			// Handle content field type assertion safely
-			var resultText string
-			if content, ok := toolResult["content"]; ok {
-				if contentArray, ok := content.([]any); ok && len(contentArray) > 0 {
-					if contentMap, ok := contentArray[0].(map[string]any); ok {
-						if text, ok := contentMap["text"]; ok {
-							if textStr, ok := text.(string); ok {
-								resultText = textStr
-							}
-						}
-					}
-				}
-			}
-
-			if tc.expectBug {
-				// After the fix: empty content should be handled correctly without incorrect fallback
-				// The tool result should exist but content should be empty (no incorrect fallback to 'text' field)
-				if resultText == "" {
-					t.Logf("FIX WORKING: Tool result content is empty (correctly no fallback to 'text' field)")
-					// This is now expected behavior after the fix
-				} else {
-					t.Error("Expected empty content but got non-empty")
-				}
-			} else {
-				// Should work correctly
-				if resultText == "" {
-					t.Error("Expected non-empty content but got empty")
+			for i, expected := range tc.expectedSummaries {
+				if summaries[i] != expected {
+					t.Fatalf("summary %d mismatch. got %q want %q", i, summaries[i], expected)
 				}
 			}
 		})
@@ -241,58 +221,13 @@ func TestExtractUserMessage_ToolResultWithArrayContent(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// Verify the tool result content is correctly extracted from array
-	conversationState := request["conversationState"].(map[string]any)
+	assertNoStructuredToolResults(t, request)
 
-	// Check both current message context and history for tool results
-	var toolResults []map[string]any
+	userInput := extractCurrentUserInput(t, request)
+	content := userInput["content"].(string)
+	summaries := gatherToolResultSummaries(content)
 
-	// First check if tool results are in current message context
-	if currentMessage, ok := conversationState["currentMessage"].(map[string]any); ok {
-		if userInput, ok := currentMessage["userInputMessage"].(map[string]any); ok {
-			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-				if trAny, ok := context["toolResults"].([]any); ok {
-					toolResults = make([]map[string]any, len(trAny))
-					for i, tr := range trAny {
-						toolResults[i] = tr.(map[string]any)
-					}
-				}
-			}
-		}
-	}
-
-	// If not found in current message, check history
-	if len(toolResults) == 0 {
-		historyAny := conversationState["history"].([]any)
-		history := make([]map[string]any, len(historyAny))
-		for i, h := range historyAny {
-			history[i] = h.(map[string]any)
-		}
-
-		for _, msg := range history {
-			if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-				if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-					if trAny, ok := context["toolResults"].([]any); ok {
-						toolResults = make([]map[string]any, len(trAny))
-						for i, tr := range trAny {
-							toolResults[i] = tr.(map[string]any)
-						}
-						break
-					}
-				}
-			}
-		}
-	}
-
-	assert.Len(t, toolResults, 1, "Expected one tool result")
-	toolResult := toolResults[0]
-	contentArray := toolResult["content"].([]any)
-	contentMap := contentArray[0].(map[string]any)
-	resultText := contentMap["text"].(string)
-
-	// This should pass because array content extraction works
-	expectedText := "Processed: testStatus: complete"
-	assert.Equal(t, expectedText, resultText, "Array content should be concatenated correctly")
+	assert.Equal(t, []string{"[Tool result: id=process_1 | Processed: testStatus: complete]"}, summaries, "Array content should be concatenated correctly")
 }
 
 // TestExtractUserMessage_ToolResultMissingContent tests tool result with missing content field
@@ -336,44 +271,18 @@ func TestExtractUserMessage_ToolResultMissingContent(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// Verify the tool result is handled even with missing content
-	conversationState := request["conversationState"].(map[string]any)
-	historyInterface := conversationState["history"].([]interface{})
+	assertNoStructuredToolResults(t, request)
 
-	// Convert to proper typed slice
-	var history []map[string]any
-	for _, h := range historyInterface {
-		if hMap, ok := h.(map[string]any); ok {
-			history = append(history, hMap)
-		}
-	}
+	userInput := extractCurrentUserInput(t, request)
+	content := userInput["content"].(string)
+	summaries := gatherToolResultSummaries(content)
 
-	var toolResults []map[string]any
-	for _, msg := range history {
-		if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-				if tr, ok := context["toolResults"].([]map[string]any); ok {
-					toolResults = tr
-					break
-				}
-			}
-		}
-	}
-
-	if len(toolResults) == 0 {
+	if len(summaries) == 0 {
 		// The tool result might not be processed due to missing content
-		// This is expected behavior for tool results with only status and no content
-		t.Skip("Skipping test because tool result with only status (no content) is not processed")
+		t.Skip("Skipping test because tool result with only status (no content) was omitted")
 	}
 
-	assert.Len(t, toolResults, 1, "Expected one tool result")
-	toolResult := toolResults[0]
-	contentArray := toolResult["content"].([]any)
-	contentMap := contentArray[0].(map[string]any)
-
-	// This demonstrates the bug - content will be empty due to incorrect fallback
-	assert.Equal(t, "", contentMap["text"], "BUG: Content should be empty due to incorrect fallback to 'text' field")
-	assert.Equal(t, "error", toolResult["status"], "Status should be preserved")
+	assert.Equal(t, []string{"[Tool result: id=tool_123 | status=error]"}, summaries, "Status should be preserved in summary")
 }
 
 // TestExtractUserMessage_MultipleToolResults tests multiple tool results in one message
@@ -419,44 +328,23 @@ func TestExtractUserMessage_MultipleToolResults(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// Verify multiple tool results are processed correctly
-	conversationState := request["conversationState"].(map[string]any)
-	historyInterface := conversationState["history"].([]interface{})
+	assertNoStructuredToolResults(t, request)
 
-	// Convert to proper typed slice
-	var history []map[string]any
-	for _, h := range historyInterface {
-		if hMap, ok := h.(map[string]any); ok {
-			history = append(history, hMap)
-		}
-	}
+	userInput := extractCurrentUserInput(t, request)
+	content := userInput["content"].(string)
+	summaries := gatherToolResultSummaries(content)
 
-	var toolResults []map[string]any
-	for _, msg := range history {
-		if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-				if tr, ok := context["toolResults"].([]map[string]any); ok {
-					toolResults = tr
-					break
-				}
-			}
-		}
-	}
-
-	if len(toolResults) == 0 {
-		// Skip if no tool results are found - this might be due to BuildRequest implementation
+	if len(summaries) == 0 {
 		t.Skip("Skipping test because no tool results were processed")
 	}
 
-	assert.Len(t, toolResults, 2, "Expected two tool results")
-
-	// Verify first tool result
-	assert.Equal(t, "4", toolResults[0]["content"].([]any)[0].(map[string]any)["text"])
-	assert.Equal(t, "tool_1", toolResults[0]["toolUseId"])
-
-	// Verify second tool result
-	assert.Equal(t, "72°F and sunny", toolResults[1]["content"].([]any)[0].(map[string]any)["text"])
-	assert.Equal(t, "tool_2", toolResults[1]["toolUseId"])
+	assert.Equal(t,
+		[]string{
+			"[Tool result: id=tool_1 | 4]",
+			"[Tool result: id=tool_2 | 72°F and sunny]",
+		},
+		summaries,
+	)
 }
 
 // TestExtractUserMessage_ToolResultWithErrorStatus tests tool result with error status
@@ -500,41 +388,17 @@ func TestExtractUserMessage_ToolResultWithErrorStatus(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// Verify error status is preserved
-	conversationState := request["conversationState"].(map[string]any)
-	historyInterface := conversationState["history"].([]interface{})
+	assertNoStructuredToolResults(t, request)
 
-	// Convert to proper typed slice
-	var history []map[string]any
-	for _, h := range historyInterface {
-		if hMap, ok := h.(map[string]any); ok {
-			history = append(history, hMap)
-		}
-	}
+	userInput := extractCurrentUserInput(t, request)
+	content := userInput["content"].(string)
+	summaries := gatherToolResultSummaries(content)
 
-	var toolResults []map[string]any
-	for _, msg := range history {
-		if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-				if tr, ok := context["toolResults"].([]map[string]any); ok {
-					toolResults = tr
-					break
-				}
-			}
-		}
-	}
-
-	if len(toolResults) == 0 {
-		// Skip if no tool results are found - this might be due to BuildRequest implementation
+	if len(summaries) == 0 {
 		t.Skip("Skipping test because no tool results were processed")
 	}
 
-	assert.Len(t, toolResults, 1, "Expected one tool result")
-	toolResult := toolResults[0]
-
-	assert.Equal(t, "API Error: Connection failed", toolResult["content"].([]any)[0].(map[string]any)["text"])
-	assert.Equal(t, "error", toolResult["status"], "Error status should be preserved")
-	assert.Equal(t, "api_1", toolResult["toolUseId"])
+	assert.Equal(t, []string{"[Tool result: id=api_1 | API Error: Connection failed | status=error]"}, summaries)
 }
 
 // TestExtractUserMessage_ToolResultWithAlternativeToolUseId tests alternative tool_use_id field
@@ -578,40 +442,17 @@ func TestExtractUserMessage_ToolResultWithAlternativeToolUseId(t *testing.T) {
 		t.Fatalf("Failed to unmarshal result: %v", err)
 	}
 
-	// Verify alternative tool_use_id field is handled
-	conversationState := request["conversationState"].(map[string]any)
-	historyInterface := conversationState["history"].([]interface{})
+	assertNoStructuredToolResults(t, request)
 
-	// Convert to proper typed slice
-	var history []map[string]any
-	for _, h := range historyInterface {
-		if hMap, ok := h.(map[string]any); ok {
-			history = append(history, hMap)
-		}
-	}
+	userInput := extractCurrentUserInput(t, request)
+	content := userInput["content"].(string)
+	summaries := gatherToolResultSummaries(content)
 
-	var toolResults []map[string]any
-	for _, msg := range history {
-		if userInput, ok := msg["userInputMessage"].(map[string]any); ok {
-			if context, ok := userInput["userInputMessageContext"].(map[string]any); ok {
-				if tr, ok := context["toolResults"].([]map[string]any); ok {
-					toolResults = tr
-					break
-				}
-			}
-		}
-	}
-
-	if len(toolResults) == 0 {
-		// Skip if no tool results are found - this might be due to BuildRequest implementation
+	if len(summaries) == 0 {
 		t.Skip("Skipping test because no tool results were processed")
 	}
 
-	assert.Len(t, toolResults, 1, "Expected one tool result")
-	toolResult := toolResults[0]
-
-	assert.Equal(t, "Success with alternative ID field", toolResult["content"].([]any)[0].(map[string]any)["text"])
-	assert.Equal(t, "tool_123", toolResult["toolUseId"], "Alternative tool_useId field should be handled")
+	assert.Equal(t, []string{"[Tool result: id=tool_123 | Success with alternative ID field]"}, summaries)
 }
 
 // TestExtractNestedContent_Function tests the extractNestedContent function directly
