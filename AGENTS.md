@@ -93,6 +93,7 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 
 1. **Plan-mode parity (not planned)**: We continue to document the limitation, pass through `planMode` metadata, and inject textual directives, but no executor/runtime state machine work is scheduled.
 2. **Regression hardening**: After each change above, add targeted fixtures/tests under `tests/unit/kiro/` and update `tests/TEST_DOCUMENTATION.md` so the CLIProxyAPI parity guarantees remain enforced long-term.
+
 ### Solution approach for the Nov 2025 “Improperly formed request” issue
 
 1. **Clamp + mirror tool descriptions**: Kiro refuses payloads with >256-char tool descriptions, so we hard-cap descriptions inside `userInputMessageContext` but append a `Tool reference (full descriptions preserved…)` block to the system prompt containing the original text. This keeps Kiro happy without hiding instructions from Claude Code.
@@ -114,99 +115,9 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 
 ### Conclusion (request contract with Kiro)
 
+- Kiro’s contract kept in `./docs/sdk-kiro-contract.md`.
 - Kiro’s `generateAssistantResponse` rejects client‑sent transcript events: any assistant `tool_use` or user `tool_result` in the request body leads to “Improperly formed request.”
 - Kiro accepts plain user text (and optional tool specifications) but treats tool events as output‑only. Therefore, client resumes must not send tool events; instead, fold tool outputs into plain text.
-
-### Action Plan
-
-Option 1: Strip Tool Events; Fold Results Into Text (Kiro‑safe path)                                        
-                                                                                                            
-- Summary: Remove assistant tool_use and user tool_result from the Kiro request. Append tool result         
-  text to the user message content and keep tool specs in userInputMessageContext.tools (≤256 char          
-  descriptions).                                                                                            
-- UX impact:                                                                                                
-    - Pros: Works with Kiro; user gets a normal continuation; no provider errors.                           
-    - Cons: “Mandatory tool” semantics aren’t enforced upstream; Claude Code will render tool updates from  
-      content, not structured events.                                                                       
-- Difficulty: Low (translator-only change).                                                                 
-- Risks:                                                                                                    
-    - Large tool outputs inlined into content can increase tokens; mitigate with summarization/clamping.    
-    - Some tests expecting structured toolResults must be adapted to Kiro‑safe behavior.                    
-- Where to implement:                                                                                       
-    - Build Kiro request: internal/translator/kiro/request.go:80–220                                        
-    - Tool result extraction: internal/translator/kiro/request.go:217–260                                   
-- Tests to (re)run:                                                                                         
-    - go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1                                  
-    - Replay fixture to verify 200 OK and no toolUse/toolResults in logs.                                   
-                                                                                                            
-Option 2: Intelligent Routing (Preserve Tool Semantics via OpenAI‑compat)                                   
-                                                                                                            
-- Summary: If transcript includes tool_use or tool_result, route the request to the OpenAI-compatible       
-  executor (e.g., iFlow) instead of Kiro. Keep Kiro as default for plain-text chats.                        
-- UX impact:                                                                                                
-    - Pros: Tool fidelity preserved (structured events, tool_choice enforcement).                           
-    - Cons: Mixed provider behavior; latency/usage differs by route; requires provider credentials          
-      configured.                                                                                           
-- Difficulty: Medium (routing rule + config + tests).                                                       
-- Risks:                                                                                                    
-    - Misrouting edge cases; add logs/metrics to monitor routing.                                           
-    - Operators must supply iFlow/OpenAI-compatible keys.                                                   
-- Where to implement:                                                                                       
-    - Executor routing layer: internal/runtime/executor (detect in request, branch to Kiro vs.              
-      openai_compat).                                                                                       
-- Tests:                                                                                                    
-    - Unit test to assert: with tool events → OpenAI path; without → Kiro path.                             
-                                                                                                            
-Option 3: Two‑Step Emulation (Textual Tool Context Injection)                                               
-                                                                                                            
-- Summary: For transcripts with tool events, convert to plain text and inject a small “Tool result          
-  context:” block in the system/user content. Optionally add the “Tool directive” sentence to prompt        
-  behavior.                                                                                                 
-- UX impact:                                                                                                
-    - Pros: Kiro gets the context; user sees coherent continuation; stays on one provider.                  
-    - Cons: No structured tool enforcement; longer prompts; potential token increase.                       
-- Difficulty: Low–Medium (translator prompt stitching + clamping policy).                                   
-- Risks:                                                                                                    
-    - Must sanitize to avoid control characters; clamp long tool outputs.                                   
-- Where to implement:                                                                                       
-    - System prompt combining: internal/translator/kiro/request.go:58–112                                   
-    - Text sanitizer: internal/translator/kiro/request.go:520–566                                           
-                                                                                                            
-Option 4: Fallback Retry on Kiro Error (Self‑Healing)                                                       
-                                                                                                            
-- Summary: On “Improperly formed request.” from Kiro, automatically retry once after removing tool events   
-  and folding their text into the user message.                                                             
-- UX impact:                                                                                                
-    - Pros: Robust; hides upstream constraints from users.                                                  
-    - Cons: One extra round-trip when first attempt fails.                                                  
-- Difficulty: Medium (error interception + rewrite + retry).                                                
-- Risks:                                                                                                    
-    - Must prevent loops; cap retries; ensure idempotence.                                                  
-- Where to implement:                                                                                       
-    - Kiro client: internal/runtime/executor/kiro_client.go:59–117 (wrap doRequest with retry transform).   
-                                                                                                            
-Option 5: Feature Flag (Operator Control)                                                                   
-                                                                                                            
-- Summary: Add config flag kiro.dropToolEvents: true|false to toggle Kiro‑safe behavior. Default true.      
-- UX impact:                                                                                                
-    - Pros: Operators can experiment without redeploys; easy rollback.                                      
-    - Cons: More configuration surface.                                                                     
-- Difficulty: Low (config + conditional branches).                                                          
-- Risks:                                                                                                    
-    - Divergent environments; document defaults clearly.                                                    
-- Where to implement:                                                                                       
-    - Config read: internal/config/… and branch in internal/translator/kiro/request.go.                     
-                                                                                                            
-Option 6 (Not Recommended Now): Build a Local Plan/Tool Orchestrator                                        
-                                                                                                            
-- Summary: Implement a runtime engine to ingest tool_use/tool_result client events and orchestrate          
-  subcalls to Kiro.                                                                                         
-- UX impact:                                                                                                
-    - Pros: Full fidelity; consistent across providers.                                                     
-    - Cons: Complex state machine, error handling, and long‑lived orchestration; high maintenance.          
-- Difficulty: High.                                                                                         
-- Risks:                                                                                                    
-    - Out of scope per AGENTS.md; large stability risk without upstream support.  
 
 ### How to verify locally
 

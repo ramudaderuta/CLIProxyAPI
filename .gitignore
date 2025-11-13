@@ -114,10 +114,6 @@ coverage.html
 prototype/
 archived/
 
-# Documentation
-docs/*
-!docs/kiro-token-migration.md
-
 # OpenSpec working directory
 # openspec/
 
