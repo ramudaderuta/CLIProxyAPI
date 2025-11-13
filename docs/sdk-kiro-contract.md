@@ -567,32 +567,36 @@ func toClaudeRequestFromOpenAI(openaiReq OpenAIChatRequest) ClaudeMessagesReques
 
 ### 4.2 Where Kiro Comes In
 
-Kiro’s Go-side translator (`BuildKiroRequest`) consumes `ClaudeMessagesRequest` and must **strip out client-side tool events** (assistant `tool_use` and user `tool_result`) before hitting Kiro.
+Kiro’s Go-side translator (`BuildKiroRequest`) consumes `ClaudeMessagesRequest` and must construct a valid Kiro `conversationState` while preserving tool context. In practice, Kiro accepts `tool_use` and `tool_result` in history; the key constraint is that the final user turn forwarded to Kiro must have non-empty `content`.
 
-Kiro translator contract is:
+Translator contract is:
 
 ```go
 func BuildKiroRequest(claudeReq ClaudeMessagesRequest) (KiroRequest, error) {
     // 1. Partition current vs history.
     hist, current := splitMessages(claudeReq.Messages)
 
-    // 2. Sanitize history for Kiro:
-    //    - DROP all tool_use / tool_result blocks.
-    //    - Fold them into plain text if necessary.
-    sanitizedHistory := sanitizeHistoryForKiro(hist)
+    // 2. Map history preserving tool events and text/media.
+    history := mapClaudeMessagesToKiroHistory(hist)
 
     // 3. Build Kiro conversationState.currentMessage with:
-    //    - userInputMessage.content (latest user text only)
+    //    - userInputMessage.content (latest user text; ensure non-empty)
     //    - userInputMessageContext.tools (clamped tool specs)
+    //    - userInputMessageContext.toolResults (structured)
     //    - toolContextManifest + system prompt appendix for full tool descriptions
     //    - claudeToolChoice metadata and textual “Tool directive …” block
     currentMsg := buildKiroUserInputMessage(claudeReq, current)
 
-    // 4. Return Kiro request in provider’s native schema.
+    // 4. Ensure current user content is non-empty (edge case: trailing tool_result or whitespace-only content).
+    if strings.TrimSpace(currentMsg.UserInputMessage.Content) == "" {
+        currentMsg.UserInputMessage.Content = "." // minimal placeholder
+    }
+
+    // 5. Return Kiro request in provider’s native schema.
     return KiroRequest{
         ConversationState: ConversationState{
             CurrentMessage: currentMsg,
-            History:        sanitizedHistory,
+            History:        history,
         },
     }, nil
 }
@@ -601,38 +605,20 @@ func BuildKiroRequest(claudeReq ClaudeMessagesRequest) (KiroRequest, error) {
 Where:
 
 ```go
-func sanitizeHistoryForKiro(claudeMsgs []ClaudeMessage) []KiroHistoryItem {
+func mapClaudeMessagesToKiroHistory(claudeMsgs []ClaudeMessage) []KiroHistoryItem {
     var out []KiroHistoryItem
-
     for _, msg := range claudeMsgs {
-        // Drop tool_use/tool_result events completely to satisfy Kiro contract.
-        filteredBlocks := filterOutToolEvents(msg.Content)
-
-        // Optionally fold tool outputs into text summaries if you want Kiro to “see” them
-        // as natural language:
-        if len(filteredBlocks) == 0 && containsToolEvents(msg.Content) {
-            summary := summarizeToolEvents(msg.Content)
-            if summary != "" {
-                filteredBlocks = []ClaudeContentBlock{{
-                    Type: "text",
-                    Text: summary,
-                }}
-            }
-        }
-
-        if len(filteredBlocks) == 0 {
-            continue
-        }
-
-        // Convert Anthropic blocks -> Kiro’s internal message schema (plain text only).
-        kiroMsg := mapClaudeBlocksToKiroHistoryItem(msg.Role, filteredBlocks)
+        // Convert Anthropic blocks -> Kiro’s internal message schema, preserving tool events.
+        kiroMsg := mapClaudeBlocksToKiroHistoryItem(msg.Role, msg.Content)
         out = append(out, kiroMsg)
     }
     return out
 }
 ```
 
-This is where TodoWrite was intermittently failing: **resume flows that carried `tool_use` / `tool_result` events into the rebuilt Kiro request** violate this contract and yield a 400.
+Known edge cases to avoid “Improperly formed request”:
+- Final forwarded user turn must have non-empty `content` (when the last user message is only a `tool_result` or whitespace, inject a minimal placeholder like `"."`).
+- Tool call arguments may include truncated escapes; use `safeParseJSON` defensively.
 
 ---
 
@@ -735,9 +721,12 @@ The **Kiro executor** is responsible for:
 1. Accepting a canonical *provider-agnostic* request (Anthropic Messages format).
 2. Applying Kiro’s **request contract**:
 
-   * Only user text + model/context fields,
-   * Tool specs in `userInputMessageContext.tools`, **truncated** descriptions,
-   * No `tool_use` / `tool_result` events in history.
+   * User text + model/context fields,
+   * Tool specs in `userInputMessageContext.tools` with clamped descriptions,
+   * `tool_use` / `tool_result` preserved in history and current turns (no summarization),
+   * Ensure the active current turn is a user message with non-empty `content` (inject `"."` when the last user content sanitizes to empty, or when the last user turn is a `tool_result`),
+   * Ensure assistant turns that contain only `tool_use` also carry non-empty `content` (inject `"."`),
+   * Preserve role ordering: assistant `tool_use` must appear in history immediately before the corresponding user `tool_result` — do not move assistant tool_use blocks into the current user turn.
 3. Issuing HTTP calls to Kiro (non-streaming).
 4. Mapping **Kiro responses → Anthropic Messages** and then, optionally, **Anthropic SSE** for CLI/Claude Code.
 

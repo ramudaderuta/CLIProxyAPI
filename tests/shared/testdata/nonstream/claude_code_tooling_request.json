@@ -1,48 +1,82 @@
 {
-  "model": "claude-sonnet-4-5",
-  "temperature": 0.1,
-  "max_tokens": 1024,
+  "metadata": {
+    "user_id": "test_user"
+  },
+  "model": "claude-sonnet-4-5-20250929",
   "system": [
     {
       "type": "text",
-      "text": "You are Claude Code running inside a developer shell. Prefer concise answers."
-    },
-    {
-      "type": "text",
-      "text": "<system-reminder>Tools listed below are available inside this repo. Use TodoWrite liberally to keep the operator informed.</system-reminder>"
+      "text": "Test system message."
     }
   ],
-  "tool_choice": {
-    "type": "tool",
-    "name": "get_weather"
-  },
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Test prompt"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "id": "tooluse_1",
+          "input": {
+            "todos": [
+              {
+                "content": "Test todo",
+                "status": "pending",
+                "activeForm": "Testing"
+              }
+            ]
+          },
+          "name": "TodoWrite",
+          "type": "tool_use"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Continue without tool result"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 1024,
+  "stream": false,
   "tools": [
     {
       "name": "Task",
-      "description": "Create, update, and list todos in a persistent task list. Use this whenever you plan work, even for very small follow ups, so the user can audit your progress later. You can call Task multiple times within a single turn to reflect status transitions. Always mark tasks done as soon as you complete them, otherwise operators cannot resume the session safely.",
+      "description": "Launch background plan executors that can fork long-running subtasks, coordinate multi-step workflows, capture partial results, retry failing commands, and report granular progress back to Claude Code operators. Use this whenever multi-step planning is required, or when you need concurrent execution of thinking, coding, testing, and deployment activities across multiple environments.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "action": {"type": "string"},
-          "items": {"type": "array"}
-        }
+          "goal": {"type": "string"},
+          "priority": {"type": "string"}
+        },
+        "required": ["goal"]
       }
     },
     {
       "name": "Bash",
-      "description": "Execute shell commands with full stdout/stderr streaming. Prefer Bash for filesystem inspection, formatting, tests, and git operations. Never use it to communicate with the user; only tool results should contain command output.",
+      "description": "Run bash command.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "command": {"type": "string"},
-          "timeout": {"type": "integer"}
+          "command": {"type": "string"}
         },
         "required": ["command"]
       }
     },
     {
       "name": "Glob",
-      "description": "Enumerate files via glob expressions. Use this before broad refactors or when you must confirm the set of files matching a pattern.",
+      "description": "List files that match the supplied glob pattern.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -53,7 +87,7 @@
     },
     {
       "name": "Grep",
-      "description": "Search the repository for literal strings or regular expressions. This is the fastest way to find symbols or usages. Supports ripgrep compatible flags like -n, -C, head_limit, and path filters.",
+      "description": "Search for text across files.",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -65,59 +99,77 @@
     },
     {
       "name": "TodoWrite",
-      "description": "Write or update todos so the operator can track execution. Include enough detail for another engineer to resume the task without rereading the conversation. Mark entries as in_progress or completed as soon as their status changes.",
+      "description": "Create and manage todo list tasks.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "todos": {"type": "array"}
+          "todos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "content": {"type": "string"},
+                "status": {"type": "string"},
+                "activeForm": {"type": "string"}
+              },
+              "required": ["content", "status", "activeForm"]
+            }
+          }
         },
         "required": ["todos"]
       }
     },
     {
       "name": "Skill",
-      "description": "Execute a named skill package. Skills extend Claude Code with domain specific helpers (PDF readers, spreadsheet inspectors, etc). Pick the appropriate skill based on user intent before attempting manual work.",
+      "description": "Register reusable AI helpers.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "skill": {"type": "string"}
+          "skill_name": {"type": "string"},
+          "instructions": {"type": "string"}
         },
-        "required": ["skill"]
+        "required": ["skill_name", "instructions"]
       }
     },
     {
       "name": "SlashCommand",
-      "description": "Run a slash command such as /review-pr or /help. Treat commands as macros that expand to longer instructions.",
+      "description": "Expose quick entrypoints for common actions inside Claude Code.",
       "input_schema": {
         "type": "object",
         "properties": {
-          "command": {"type": "string"}
+          "command": {"type": "string"},
+          "args": {"type": "string"}
         },
         "required": ["command"]
       }
     },
     {
+      "name": "Write",
+      "description": "Write file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {"type": "string"},
+          "content": {"type": "string"}
+        },
+        "required": ["file_path", "content"]
+      }
+    },
+    {
       "name": "get_weather",
-      "description": "Get current weather by city name with °C or °F units.",
+      "description": "Fetch current weather conditions for a city and unit (C or F).",
       "input_schema": {
         "type": "object",
         "properties": {
           "city": {"type": "string"},
-          "unit": {"type": "string", "enum": ["°C", "°F"]}
+          "unit": {"type": "string", "enum": ["C", "F"]}
         },
         "required": ["city"]
       }
     }
   ],
-  "messages": [
-    {
-      "role": "user",
-      "content": [
-        {
-          "type": "text",
-          "text": "Audit AGENTS.md, describe unfinished items, and fetch the weather in Tokyo using the tool."
-        }
-      ]
-    }
-  ]
+  "tool_choice": {
+    "type": "tool",
+    "name": "get_weather"
+  }
 }

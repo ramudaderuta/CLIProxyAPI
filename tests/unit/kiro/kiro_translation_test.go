@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
@@ -603,10 +602,6 @@ func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 	}
 
 	toolsAny := ctx["tools"].([]any)
-	if len(toolsAny) < 6 {
-		t.Fatalf("expected builtin tools to pass through, only saw %d entries", len(toolsAny))
-	}
-
 	found := make(map[string]bool)
 	for _, tool := range toolsAny {
 		spec := tool.(map[string]any)["toolSpecification"].(map[string]any)
@@ -614,9 +609,10 @@ func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 		found[strings.ToLower(name)] = true
 	}
 
-	for _, builtin := range []string{"task", "bash", "glob", "grep", "todowrite", "skill", "slashcommand"} {
+	expected := []string{"task", "bash", "glob", "grep", "todowrite", "skill", "slashcommand", "write", "get_weather"}
+	for _, builtin := range expected {
 		if !found[builtin] {
-			t.Fatalf("expected builtin tool %s to be forwarded", builtin)
+			t.Fatalf("expected builtin tool %s to be forwarded; saw %v", builtin, found)
 		}
 	}
 
@@ -633,8 +629,10 @@ func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 		t.Fatalf("expected system prompt to be injected into history")
 	}
 	sysContent := history[0].(map[string]any)["userInputMessage"].(map[string]any)["content"].(string)
-	if !strings.Contains(sysContent, "Tool reference manifest") {
-		t.Fatalf("expected tool reference manifest in system prompt:\n%s", sysContent)
+	if manifest := ctx["toolContextManifest"]; manifest != nil {
+		if !strings.Contains(sysContent, "Tool reference manifest") {
+			t.Fatalf("expected tool reference manifest in system prompt when manifest exists:\n%s", sysContent)
+		}
 	}
 	if !strings.Contains(sysContent, "Tool directive: you must call the tool") {
 		t.Fatalf("expected tool directive in system prompt:\n%s", sysContent)
@@ -689,7 +687,7 @@ func TestBuildRequestAddsToolReferenceForTruncatedDescriptions(t *testing.T) {
 		if entry["name"] == "Task" {
 			foundTask = true
 			desc, _ := entry["description"].(string)
-			if !strings.Contains(desc, "Create, update, and list todos") {
+			if !strings.Contains(desc, "Launch background plan executors") {
 				t.Fatalf("expected full Task description inside manifest entry: %#v", entry)
 			}
 			if hash, _ := entry["hash"].(string); strings.TrimSpace(hash) == "" {
@@ -1160,7 +1158,7 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 
 		if context, ok := userInputMsg["userInputMessageContext"].(map[string]any); ok {
 			if tools, ok := context["tools"]; ok {
-				t.Logf("✅ Tools successfully converted to Kiro format")
+				t.Logf("Tools successfully converted to Kiro format")
 				toolsJSON, _ := json.MarshalIndent(tools, "", "  ")
 				t.Logf("Kiro tool format:\n%s", toolsJSON)
 
@@ -1178,7 +1176,7 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 					t.Fatalf("Expected description mismatch: %v", toolSpec["description"])
 				}
 			} else {
-				t.Fatalf("❌ Tools conversion failed")
+				t.Fatalf("Tools conversion failed")
 			}
 		}
 
@@ -1205,7 +1203,7 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 
 		// Parse Kiro response
 		content, toolCalls := kirotranslator.ParseResponse([]byte(kiroResponse))
-		t.Logf("✅ Kiro response parsing successful")
+		t.Logf("Kiro response parsing successful")
 		t.Logf("Text content: %s", content)
 		t.Logf("Tool calls count: %d", len(toolCalls))
 
@@ -1230,7 +1228,7 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 			t.Fatalf("OpenAI response parsing failed: %v", err)
 		}
 
-		t.Logf("✅ OpenAI format conversion successful")
+		t.Logf("OpenAI format conversion successful")
 
 		// Verify OpenAI response structure
 		choices := openaiResp["choices"].([]any)
@@ -1264,7 +1262,7 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 			t.Fatalf("Anthropic response parsing failed: %v", err)
 		}
 
-		t.Logf("✅ Anthropic format conversion successful")
+		t.Logf("Anthropic format conversion successful")
 
 		// Verify Anthropic response structure
 		if anthropicResp["type"] != "message" {
@@ -1359,22 +1357,18 @@ func TestKiroCompleteConversionFlow(t *testing.T) {
 				if toolSpec["description"] != "Perform mathematical calculations" {
 					t.Fatalf("Expected description mismatch: %v", toolSpec["description"])
 				}
-				t.Logf("✅ OpenAI format tools successfully converted to Kiro format")
+				t.Logf("OpenAI format tools successfully converted to Kiro format")
 			} else {
-				t.Fatalf("❌ OpenAI format tools conversion failed")
+				t.Fatalf("OpenAI format tools conversion failed")
 			}
 		}
 	})
 }
 
 // ============================================================================
-// Tool Event Sanitization Tests (sdk-kiro-contract.md compliance)
+// Tool Event Preservation Tests
 // ============================================================================
-
-// TestBuildRequest_StripsToolEventsFromHistory verifies that tool_use and tool_result
-// blocks are stripped from history messages to comply with Kiro's contract:
-// "Any assistant tool_use or user tool_result in the request body leads to 'Improperly formed request.'"
-func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
+func TestBuildRequest_PreservesToolEventsInHistory(t *testing.T) {
 	token := &authkiro.KiroTokenStorage{
 		ProfileArn:  "arn:aws:codewhisperer:us-east-1:699475941385:profile/test",
 		AccessToken: "test_access_token",
@@ -1382,27 +1376,18 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 		Type:        "kiro",
 	}
 
-	t.Run("strips_assistant_tool_use_from_history", func(t *testing.T) {
+	t.Run("preserves_assistant_tool_use_in_history", func(t *testing.T) {
 		openAIRequest := []byte(`{
-			"model": "claude-sonnet-4-5",
-			"messages": [
-				{
-					"role": "user",
-					"content": "What's the weather?"
-				},
-				{
-					"role": "assistant",
-					"content": [
-						{"type": "text", "text": "I'll check the weather for you."},
-						{"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"city": "Tokyo"}}
-					]
-				},
-				{
-					"role": "user",
-					"content": "Thanks!"
-				}
-			]
-		}`)
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text": "I'll check the weather for you."},
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"city": "Tokyo"}}
+                ]},
+                {"role": "user", "content": "Thanks!"}
+            ]
+        }`)
 
 		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
 		if err != nil {
@@ -1414,61 +1399,37 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify history strips tool_use metadata while summarizing it in text content
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
-		for i, msg := range history {
+		hasToolUses := false
+		for _, msg := range history {
 			msgMap := msg.(map[string]any)
 			if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
-				content := assistantMsg["content"].(string)
-				if strings.Contains(content, "tool_use") {
-					t.Errorf("History message %d still contains raw tool_use data: %s", i, content)
-				}
-
-				if !strings.Contains(content, "[Tool invoked: get_weather]") {
-					t.Errorf("History message %d should summarize tool usage with tool name: %s", i, content)
-				}
-
-				if strings.Contains(content, "Tokyo") {
-					t.Errorf("History message %d should not expose tool input arguments, got: %s", i, content)
-				}
-
 				if _, exists := assistantMsg["toolUses"]; exists {
-					t.Fatalf("History message %d should not include toolUses metadata to avoid Kiro 400s", i)
+					hasToolUses = true
 				}
 			}
 		}
-
-		t.Logf("✅ Assistant tool_use blocks stripped from history and summarized in text")
+		if !hasToolUses {
+			t.Fatalf("expected assistant toolUses preserved in history")
+		}
 	})
 
-	t.Run("strips_user_tool_result_from_history", func(t *testing.T) {
+	t.Run("preserves_user_tool_result_in_history", func(t *testing.T) {
 		openAIRequest := []byte(`{
-			"model": "claude-sonnet-4-5",
-			"messages": [
-				{
-					"role": "user",
-					"content": "What's the weather?"
-				},
-				{
-					"role": "assistant",
-					"content": [
-						{"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"city": "Tokyo"}}
-					]
-				},
-				{
-					"role": "user",
-					"content": [
-						{"type": "tool_result", "tool_use_id": "call_123", "content": "Temperature: 22°C"}
-					]
-				},
-				{
-					"role": "user",
-					"content": "What about tomorrow?"
-				}
-			]
-		}`)
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "What's the weather?"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"city": "Tokyo"}}
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "call_123", "content": "Temperature: 22°C"}
+                ]},
+                {"role": "user", "content": "What about tomorrow?"}
+            ]
+        }`)
 
 		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
 		if err != nil {
@@ -1480,50 +1441,38 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify history doesn't contain tool_result blocks
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
-		for i, msg := range history {
+		found := false
+		for _, msg := range history {
 			msgMap := msg.(map[string]any)
 			if userMsg, ok := msgMap["userInputMessage"].(map[string]any); ok {
-				// User messages in history should not have toolResults
 				if context, exists := userMsg["userInputMessageContext"].(map[string]any); exists {
 					if toolResults, exists := context["toolResults"]; exists && toolResults != nil {
-						toolResultsArray := toolResults.([]any)
-						if len(toolResultsArray) > 0 {
-							t.Errorf("History message %d contains tool_result blocks (should be stripped): %v", i, toolResults)
+						if len(toolResults.([]any)) > 0 {
+							found = true
 						}
 					}
 				}
 			}
 		}
-
-		t.Logf("✅ User tool_result blocks successfully stripped from history")
+		if !found {
+			t.Fatalf("expected tool_result blocks preserved in history")
+		}
 	})
 
-	t.Run("folds_tool_results_into_current_message_text", func(t *testing.T) {
-		openAIRequest := []byte(`{
-                        "model": "claude-sonnet-4-5",
-                        "messages": [
-                                {
-                                        "role": "user",
-					"content": "What's the weather?"
-				},
-				{
-					"role": "assistant",
-					"content": [
-						{"type": "tool_use", "id": "call_123", "name": "get_weather", "input": {"city": "Tokyo"}}
-					]
-				},
-				{
-					"role": "user",
-					"content": [
-						{"type": "tool_result", "tool_use_id": "call_123", "content": "Temperature: 22°C"}
-					]
-				}
-			]
-		}`)
+    t.Run("assistant_tool_use_kept_structured_in_history", func(t *testing.T) {
+        openAIRequest := []byte(`{
+            "model": "claude-sonnet-4-5",
+            "messages": [
+                {"role": "user", "content": "Calculate 2+2"},
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "call_456", "name": "calculate", "input": {"expression": "2+2"}}
+                ]},
+                {"role": "user", "content": "What's next?"}
+            ]
+        }`)
 
 		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
 		if err != nil {
@@ -1535,189 +1484,102 @@ func TestBuildRequest_StripsToolEventsFromHistory(t *testing.T) {
 			t.Fatalf("Failed to parse Kiro request: %v", err)
 		}
 
-		// Verify current message text contains summarized tool result content
-		convState := kiroReq["conversationState"].(map[string]any)
-		currentMsg := convState["currentMessage"].(map[string]any)
-		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
-
-		content := userInputMsg["content"].(string)
-		if !strings.Contains(content, "[Tool result:") {
-			t.Fatalf("Expected tool result summary in current message content, got: %s", content)
-		}
-
-		if context, exists := userInputMsg["userInputMessageContext"].(map[string]any); exists {
-			if _, hasResults := context["toolResults"]; hasResults {
-				t.Fatalf("Current message should not include structured toolResults to satisfy Kiro contract: %+v", context)
-			}
-		}
-
-		t.Logf("✅ Tool results folded into current message text without structured payloads")
-	})
-
-	t.Run("truncates_tool_result_summaries_over_length_limit", func(t *testing.T) {
-		longResult := strings.Repeat("A", 600)
-		openAIRequest := []byte(fmt.Sprintf(`{
-                        "model": "claude-sonnet-4-5",
-                        "messages": [
-                                {
-                                        "role": "user",
-                                        "content": "Run the diagnostic"
-                                },
-                                {
-                                        "role": "assistant",
-                                        "content": [
-                                                {"type": "tool_use", "id": "call_long", "name": "diagnostic_tool", "input": {"target": "system"}}
-                                        ]
-                                },
-                                {
-                                        "role": "user",
-                                        "content": [
-                                                {"type": "tool_result", "tool_use_id": "call_long", "content": "%s"}
-                                        ]
-                                }
-                        ]
-                }`, longResult))
-
-		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
-		if err != nil {
-			t.Fatalf("BuildRequest failed: %v", err)
-		}
-
-		var kiroReq map[string]any
-		if err := json.Unmarshal(kiroRequest, &kiroReq); err != nil {
-			t.Fatalf("Failed to parse Kiro request: %v", err)
-		}
-
-		convState := kiroReq["conversationState"].(map[string]any)
-		currentMsg := convState["currentMessage"].(map[string]any)
-		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
-
-		content := userInputMsg["content"].(string)
-		if !strings.Contains(content, "(truncated)") {
-			t.Fatalf("Expected truncated marker in tool result summary, got: %s", content)
-		}
-		if count := utf8.RuneCountInString(content); count > 512 {
-			t.Fatalf("Tool result summary should be capped at 512 characters, got length %d", count)
-		}
-
-		t.Logf("✅ Tool result summary truncated to 512 characters with marker")
-	})
-
-	t.Run("retains_only_last_n_tool_result_summaries", func(t *testing.T) {
-		results := make([]string, 0, 10)
-		for i := 0; i < 10; i++ {
-			results = append(results, fmt.Sprintf(`{"type": "tool_result", "tool_use_id": "call_%d", "content": "Result %d"}`, i, i))
-		}
-
-		openAIRequest := []byte(fmt.Sprintf(`{
-                        "model": "claude-sonnet-4-5",
-                        "messages": [
-                                {
-                                        "role": "user",
-                                        "content": "Start"
-                                },
-                                {
-                                        "role": "assistant",
-                                        "content": [
-                                                {"type": "tool_use", "id": "call_0", "name": "workflow", "input": {"step": "start"}}
-                                        ]
-                                },
-                                {
-                                        "role": "user",
-                                        "content": [%s]
-                                }
-                        ]
-                }`, strings.Join(results, ",")))
-
-		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
-		if err != nil {
-			t.Fatalf("BuildRequest failed: %v", err)
-		}
-
-		var kiroReq map[string]any
-		if err := json.Unmarshal(kiroRequest, &kiroReq); err != nil {
-			t.Fatalf("Failed to parse Kiro request: %v", err)
-		}
-
-		convState := kiroReq["conversationState"].(map[string]any)
-		currentMsg := convState["currentMessage"].(map[string]any)
-		userInputMsg := currentMsg["userInputMessage"].(map[string]any)
-
-		content := userInputMsg["content"].(string)
-		if strings.Contains(content, "call_0") || strings.Contains(content, "call_1") {
-			t.Fatalf("Oldest tool result summaries should have been dropped, got: %s", content)
-		}
-		if !strings.Contains(content, "call_9") {
-			t.Fatalf("Newest tool result summary should be preserved, got: %s", content)
-		}
-		if count := strings.Count(content, "[Tool result:"); count != 8 {
-			t.Fatalf("Expected exactly 8 tool result summaries, got %d in %s", count, content)
-		}
-
-		t.Logf("✅ Tool result summaries limited to the most recent eight entries")
-	})
-
-	t.Run("converts_tool_events_to_text_summaries", func(t *testing.T) {
-		openAIRequest := []byte(`{
-                        "model": "claude-sonnet-4-5",
-                        "messages": [
-				{
-					"role": "user",
-					"content": "Calculate 2+2"
-				},
-				{
-					"role": "assistant",
-					"content": [
-						{"type": "text", "text": "I'll calculate that."},
-						{"type": "tool_use", "id": "call_456", "name": "calculate", "input": {"expression": "2+2"}}
-					]
-				},
-				{
-					"role": "user",
-					"content": "What's next?"
-				}
-			]
-		}`)
-
-		kiroRequest, err := kirotranslator.BuildRequest("claude-sonnet-4-5", openAIRequest, token, nil)
-		if err != nil {
-			t.Fatalf("BuildRequest failed: %v", err)
-		}
-
-		var kiroReq map[string]any
-		if err := json.Unmarshal(kiroRequest, &kiroReq); err != nil {
-			t.Fatalf("Failed to parse Kiro request: %v", err)
-		}
-
-		// Verify assistant message in history has text summary
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
-		foundAssistant := false
-		for _, msg := range history {
-			msgMap := msg.(map[string]any)
-			if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
-				content := assistantMsg["content"].(string)
-				// Should contain the original text and a summary of the tool use
-				if strings.Contains(content, "I'll calculate that") {
-					foundAssistant = true
-					if !strings.Contains(content, "[Tool invoked: calculate]") {
-						t.Errorf("Expected tool invocation summary with name only, got: %s", content)
-					}
-					if strings.Contains(content, "2+2") {
-						t.Errorf("Tool invocation summary should not leak arguments, got: %s", content)
-					}
-					t.Logf("Assistant message content: %s", content)
+        found := false
+        placeholderOK := false
+        for _, msg := range history {
+            msgMap := msg.(map[string]any)
+            if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
+                if _, ok := assistantMsg["toolUses"]; ok {
+                    found = true
+                    if content, _ := assistantMsg["content"].(string); strings.TrimSpace(content) != "" {
+                        placeholderOK = true
+                    }
+                }
+            }
+        }
+        if !found {
+            t.Errorf("Expected structured toolUses on assistant history message")
+        }
+        if !placeholderOK {
+            t.Errorf("Expected non-empty assistant content (placeholder) when only tool_use is present")
+        }
+    })
+}
+
+func TestBuildRequest_EnsuresNonEmptyFinalUserContent(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	cases := []struct {
+		name                       string
+		fixture                    string
+		expectToolResultsInCurrent bool
+		expectToolResultsInHistory bool
+	}{
+		{"tool_result_last", "nonstream/claude_request_todowrite_bad.json", false, true},
+		{"whitespace_last", "nonstream/claude_request_todowrite_bad2.json", false, false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := testutil.LoadTestData(t, tc.fixture)
+
+			body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+			if err != nil {
+				t.Fatalf("BuildRequest returned error: %v", err)
+			}
+
+			var req map[string]any
+			if err := json.Unmarshal(body, &req); err != nil {
+				t.Fatalf("failed to unmarshal request: %v", err)
+			}
+
+			conv := req["conversationState"].(map[string]any)
+			current := conv["currentMessage"].(map[string]any)
+			user := current["userInputMessage"].(map[string]any)
+
+			content := strings.TrimSpace(user["content"].(string))
+			if content == "" {
+				t.Fatalf("expected non-empty current user content for final turn")
+			}
+
+			ctx, ok := user["userInputMessageContext"].(map[string]any)
+			if tc.expectToolResultsInCurrent {
+				if !ok {
+					t.Fatalf("expected userInputMessageContext with toolResults")
+				}
+				if tr, ok := ctx["toolResults"].([]any); !ok || len(tr) == 0 {
+					t.Fatalf("expected structured toolResults in current message context: %+v", ctx)
+				}
+			} else if ok {
+				if _, exists := ctx["toolResults"]; exists {
+					t.Fatalf("did not expect toolResults in current message context: %+v", ctx)
 				}
 			}
-		}
 
-		if !foundAssistant {
-			t.Errorf("Expected to find assistant message with text content in history")
-		}
-
-		t.Logf("✅ Tool events converted to text summaries in history")
-	})
+			if tc.expectToolResultsInHistory {
+				history := conv["history"].([]any)
+				found := false
+				for _, msg := range history {
+					msgMap := msg.(map[string]any)
+					userMsg, ok := msgMap["userInputMessage"].(map[string]any)
+					if !ok {
+						continue
+					}
+					if ctx, ok := userMsg["userInputMessageContext"].(map[string]any); ok {
+						if tr, ok := ctx["toolResults"].([]any); ok && len(tr) > 0 {
+							found = true
+							break
+						}
+					}
+				}
+				if !found {
+					t.Fatalf("expected toolResults preserved in history for fixture %s", tc.fixture)
+				}
+			}
+		})
+	}
 }
 
 // TestSafeParseJSON_TruncatedJSON verifies defensive JSON parsing
@@ -1767,7 +1629,7 @@ func TestSafeParseJSON_TruncatedJSON(t *testing.T) {
 			t.Fatalf("Expected non-nil Kiro request")
 		}
 
-		t.Logf("✅ Handled dangling backslash in tool input")
+		t.Logf("Handled dangling backslash in tool input")
 	})
 
 	t.Run("handles_incomplete_unicode_escape", func(t *testing.T) {
@@ -1807,6 +1669,6 @@ func TestSafeParseJSON_TruncatedJSON(t *testing.T) {
 			t.Fatalf("Expected non-nil Kiro request")
 		}
 
-		t.Logf("✅ Handled incomplete Unicode escape in tool input")
+		t.Logf("Handled incomplete Unicode escape in tool input")
 	})
 }
