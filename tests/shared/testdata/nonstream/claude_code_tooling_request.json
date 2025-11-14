@@ -2,7 +2,7 @@
   "metadata": {
     "user_id": "test_user"
   },
-  "model": "claude-sonnet-4-5-20250929",
+  "model": "claude-sonnet-4-5",
   "system": [
     {
       "type": "text",

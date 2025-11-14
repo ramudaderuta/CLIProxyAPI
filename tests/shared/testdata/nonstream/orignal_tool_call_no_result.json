@@ -1,0 +1,141 @@
+{
+  "metadata": {
+    "user_id": "user_fd4f99d961b75986847dac6c6384694acc7cc85d457882cb25b5ea88d1330080./truncated"
+  },
+  "model": "claude-sonnet-4-5",
+  "system": [
+    {
+      "type": "text",
+      "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    },
+    {
+      "type": "text",
+      "text": "\nYou are an interactive CLI tool that helps users with software engin./truncated",
+      "cache_control": {
+        "type": "ephemeral"
+      }
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": "<system-reminder>\nCalled the Read tool with the following input: {\"fi./truncated"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# Sub-Agen./truncated"
+        },
+        {
+          "type": "text",
+          "text": "<system-reminder>\nThis is a reminder that your todo list is currently./truncated"
+        },
+        {
+          "type": "text",
+          "text": "<system-reminder>\nAs you answer the user's questions, you can use the./truncated"
+        },
+        {
+          "type": "text",
+          "text": "This session is being continued from a previous conversation that ran./truncated"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "id": "tooluse_JZU_zQLIS7usPpEELf2wlg",
+          "input": {
+            "todos": [
+              {
+                "content": "Consolidate SEO & Content Marketing (10 → 1 agent): seo-expert",
+                "status": "completed",
+                "activeForm": "Consolidate SEO & Content Marketing"
+              },
+              {
+                "status": "completed",
+                "activeForm": "Consolidate Architecture & Design",
+                "content": "Consolidate Architecture & Design (8 → 3 agents): system-architect, c./truncated"
+              },
+              {
+                "content": "Consolidate Database Operations (3 → 1 agent): database-expert",
+                "status": "completed",
+                "activeForm": "Consolidate Database Operations"
+              },
+              {
+                "status": "in_progress",
+                "activeForm": "Consolidate Debugging & Troubleshooting",
+                "content": "Consolidate Debugging & Troubleshooting (3 → 1 agent): debug-expert"
+              },
+              {
+                "status": "pending",
+                "activeForm": "Consolidate Security Coding",
+                "content": "Consolidate Security Coding (3 → 1 agent): security-coder-expert"
+              },
+              {
+                "content": "Consolidate Shell Scripting (2 → 1 agent): shell-scripting-expert",
+                "status": "pending",
+                "activeForm": "Consolidate Shell Scripting"
+              },
+              {
+                "activeForm": "Delete old files",
+                "content": "Delete old consolidated agent files",
+                "status": "pending"
+              },
+              {
+                "content": "Update documentation and indexes",
+                "status": "pending",
+                "activeForm": "Update documentation"
+              }
+            ]
+          },
+          "name": "TodoWrite",
+          "type": "tool_use"
+        }
+      ]
+    }
+  ],
+  "max_tokens": 16384,
+  "stream": true,
+  "tools": [
+    {
+      "name": "TodoWrite",
+      "description": "Use this tool to create and manage a structured task list for your cu./truncated",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "todos": {
+            "description": "The updated todo list",
+            "type": "array",
+            "items": {
+              "properties": {
+                "activeForm": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "enum": ["pending", "in_progress", "completed"],
+                  "type": "string"
+                }
+              },
+              "required": ["content", "status", "activeForm"],
+              "type": "object"
+            }
+          }
+        },
+        "required": ["todos"],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#  "
+      }
+    }
+  ]
+}
