@@ -757,6 +757,56 @@ func TestBuildRequestIncludesPlanModeMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildRequestHydratesCurrentUserForAssistantToolUseFollowedByToolResult(t *testing.T) {
+	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
+	payload := testutil.LoadTestData(t, "streaming/orignal.json")
+
+	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
+	if err != nil {
+		t.Fatalf("BuildRequest returned error: %v", err)
+	}
+
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("failed to unmarshal request: %v", err)
+	}
+
+	conv := req["conversationState"].(map[string]any)
+	current := conv["currentMessage"].(map[string]any)["userInputMessage"].(map[string]any)
+	content := strings.TrimSpace(current["content"].(string))
+	if content != "." {
+		t.Fatalf("expected placeholder '.' for current user content, got %q", content)
+	}
+	ctx, ok := current["userInputMessageContext"].(map[string]any)
+	if ok {
+		if _, exists := ctx["toolResults"]; exists {
+			t.Fatalf("did not expect toolResults attached to synthetic current turn: %#v", ctx)
+		}
+	}
+	if _, exists := current["toolUses"]; exists {
+		t.Fatalf("did not expect tool_uses attached to synthetic current turn: %#v", current)
+	}
+
+	history := conv["history"].([]any)
+	if len(history) < 2 {
+		t.Fatalf("expected assistant tool_use and user tool_result in history: %#v", history)
+	}
+
+	last := history[len(history)-1].(map[string]any)
+	userEntry, ok := last["userInputMessage"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final history entry to carry the tool_result user message: %#v", last)
+	}
+	historyCtx, ok := userEntry["userInputMessageContext"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected tool_result context in history entry: %#v", userEntry)
+	}
+	results, ok := historyCtx["toolResults"].([]any)
+	if !ok || len(results) == 0 {
+		t.Fatalf("expected preserved tool_result in history: %#v", historyCtx)
+	}
+}
+
 func TestBuildRequestMovesTrailingAssistantMessagesIntoHistory(t *testing.T) {
 	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
 	payload := []byte(`{
@@ -1462,8 +1512,8 @@ func TestBuildRequest_PreservesToolEventsInHistory(t *testing.T) {
 		}
 	})
 
-    t.Run("assistant_tool_use_kept_structured_in_history", func(t *testing.T) {
-        openAIRequest := []byte(`{
+	t.Run("assistant_tool_use_kept_structured_in_history", func(t *testing.T) {
+		openAIRequest := []byte(`{
             "model": "claude-sonnet-4-5",
             "messages": [
                 {"role": "user", "content": "Calculate 2+2"},
@@ -1487,26 +1537,26 @@ func TestBuildRequest_PreservesToolEventsInHistory(t *testing.T) {
 		convState := kiroReq["conversationState"].(map[string]any)
 		history := convState["history"].([]any)
 
-        found := false
-        placeholderOK := false
-        for _, msg := range history {
-            msgMap := msg.(map[string]any)
-            if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
-                if _, ok := assistantMsg["toolUses"]; ok {
-                    found = true
-                    if content, _ := assistantMsg["content"].(string); strings.TrimSpace(content) != "" {
-                        placeholderOK = true
-                    }
-                }
-            }
-        }
-        if !found {
-            t.Errorf("Expected structured toolUses on assistant history message")
-        }
-        if !placeholderOK {
-            t.Errorf("Expected non-empty assistant content (placeholder) when only tool_use is present")
-        }
-    })
+		found := false
+		placeholderOK := false
+		for _, msg := range history {
+			msgMap := msg.(map[string]any)
+			if assistantMsg, ok := msgMap["assistantResponseMessage"].(map[string]any); ok {
+				if _, ok := assistantMsg["toolUses"]; ok {
+					found = true
+					if content, _ := assistantMsg["content"].(string); strings.TrimSpace(content) != "" {
+						placeholderOK = true
+					}
+				}
+			}
+		}
+		if !found {
+			t.Errorf("Expected structured toolUses on assistant history message")
+		}
+		if !placeholderOK {
+			t.Errorf("Expected non-empty assistant content (placeholder) when only tool_use is present")
+		}
+	})
 }
 
 func TestBuildRequest_EnsuresNonEmptyFinalUserContent(t *testing.T) {
@@ -1516,9 +1566,10 @@ func TestBuildRequest_EnsuresNonEmptyFinalUserContent(t *testing.T) {
 		fixture                    string
 		expectToolResultsInCurrent bool
 		expectToolResultsInHistory bool
+		expectedContent            string
 	}{
-		{"tool_result_last", "nonstream/claude_request_todowrite_bad.json", false, true},
-		{"whitespace_last", "nonstream/claude_request_todowrite_bad2.json", false, false},
+		{"tool_result_last", "nonstream/claude_request_todowrite_bad.json", false, true, "."},
+		{"whitespace_last", "nonstream/claude_request_todowrite_bad2.json", false, false, "."},
 	}
 
 	for _, tc := range cases {
@@ -1542,6 +1593,9 @@ func TestBuildRequest_EnsuresNonEmptyFinalUserContent(t *testing.T) {
 			content := strings.TrimSpace(user["content"].(string))
 			if content == "" {
 				t.Fatalf("expected non-empty current user content for final turn")
+			}
+			if tc.expectedContent != "" && content != tc.expectedContent {
+				t.Fatalf("expected current user content to be %q, got %q", tc.expectedContent, content)
 			}
 
 			ctx, ok := user["userInputMessageContext"].(map[string]any)
