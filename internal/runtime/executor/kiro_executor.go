@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -20,6 +21,11 @@ import (
 type KiroExecutor struct {
 	cfg    *config.Config
 	client *kiroClient
+}
+
+type requestAttempt struct {
+	label string
+	body  []byte
 }
 
 // NewKiroExecutor creates a new Kiro executor instance.
@@ -188,6 +194,7 @@ func (e *KiroExecutor) detectRequestFormat(req cliproxyexecutor.Request) string 
 }
 
 func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth.Auth, req cliproxyexecutor.Request, opts cliproxyexecutor.Options) (*kiroResult, error) {
+	log.WithField("executor", "kiro").Debug("performCompletion invoked")
 	if auth == nil {
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
@@ -204,14 +211,53 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 		regionOverride = strings.TrimSpace(auth.Attributes["region"])
 	}
 
-	body, err := kirotranslator.BuildRequest(req.Model, req.Payload, ts, opts.Metadata)
+	primaryBody, err := kirotranslator.BuildRequest(req.Model, req.Payload, ts, opts.Metadata)
 	if err != nil {
 		return nil, err
 	}
 
-	data, _, _, err := e.client.doRequest(ctx, auth, ts, regionOverride, req.Model, body)
-	if err != nil {
-		return nil, err
+	attempts := make([]requestAttempt, 0, 3)
+	attempts = append(attempts, requestAttempt{label: "primary", body: primaryBody})
+	if flattened, ferr := BuildFlattenedKiroRequest(primaryBody); ferr == nil {
+		attempts = append(attempts, requestAttempt{label: "flattened", body: flattened})
+	} else {
+		log.WithField("executor", "kiro").Debugf("kiro fallback builder (flattened) failed: %v", ferr)
+	}
+	if minimal, ferr := BuildMinimalKiroRequest(primaryBody); ferr == nil {
+		attempts = append(attempts, requestAttempt{label: "minimal", body: minimal})
+	} else {
+		log.WithField("executor", "kiro").Debugf("kiro fallback builder (minimal) failed: %v", ferr)
+	}
+
+	var data []byte
+	var attemptBody []byte
+	var lastErr error
+
+	for idx, attempt := range attempts {
+		attemptBody = attempt.body
+		log.WithField("executor", "kiro").Debugf("sending %s kiro request attempt", attempt.label)
+		data, _, _, err = e.client.doRequest(ctx, auth, ts, regionOverride, req.Model, attemptBody)
+		if err != nil {
+			lastErr = err
+			if shouldAttemptFlattenedFallback(err) && idx+1 < len(attempts) {
+				log.WithField("executor", "kiro").Warnf("kiro request (%s) failed due to %v; trying %s variant", attempt.label, err, attempts[idx+1].label)
+				continue
+			}
+			return nil, err
+		}
+		if isImproperlyFormedResponsePayload(data) {
+			lastErr = fmt.Errorf("improperly formed request")
+			if idx+1 < len(attempts) {
+				log.WithField("executor", "kiro").Warnf("kiro request (%s) returned Improperly formed request; trying %s variant", attempt.label, attempts[idx+1].label)
+				continue
+			}
+			return nil, fmt.Errorf("kiro executor: Improperly formed request after %s attempt", attempt.label)
+		}
+		break
+	}
+
+	if lastErr != nil && data == nil {
+		return nil, lastErr
 	}
 
 	text, toolCalls := kirotranslator.ParseResponse(data)
@@ -311,4 +357,251 @@ func FilterThinkingContent(text string) string {
 	}
 
 	return strings.TrimSpace(result)
+}
+
+func BuildFlattenedKiroRequest(original []byte) ([]byte, error) {
+	var root map[string]any
+	if err := json.Unmarshal(original, &root); err != nil {
+		return nil, err
+	}
+	cs, _ := root["conversationState"].(map[string]any)
+	if cs == nil {
+		return nil, fmt.Errorf("kiro fallback: missing conversationState")
+	}
+	historyAny, _ := cs["history"].([]any)
+
+	lines := make([]string, 0, len(historyAny)+4)
+	for _, raw := range historyAny {
+		entry, _ := raw.(map[string]any)
+		if entry == nil {
+			continue
+		}
+		if user, ok := entry["userInputMessage"].(map[string]any); ok {
+			lines = append(lines, summarizeUserEntry(user)...)
+			continue
+		}
+		if assistant, ok := entry["assistantResponseMessage"].(map[string]any); ok {
+			lines = append(lines, summarizeAssistantEntry(assistant)...)
+		}
+	}
+
+	current, _ := cs["currentMessage"].(map[string]any)
+	if current == nil {
+		return nil, fmt.Errorf("kiro fallback: missing currentMessage")
+	}
+	uim, _ := current["userInputMessage"].(map[string]any)
+	if uim == nil {
+		return nil, fmt.Errorf("kiro fallback: missing userInputMessage")
+	}
+	lines = append(lines, summarizeUserEntry(uim)...)
+
+	flattened := strings.TrimSpace(strings.Join(lines, "\n\n"))
+	if flattened == "" {
+		flattened = "."
+	} else {
+		flattened = flattened + "\n\n(Structured tool transcripts were flattened to satisfy Kiro request requirements.)"
+	}
+
+	cs["history"] = []any{}
+
+	newMsg := map[string]any{
+		"content": flattened,
+		"modelId": uim["modelId"],
+		"origin":  uim["origin"],
+	}
+	if images, ok := uim["images"]; ok {
+		newMsg["images"] = images
+	}
+	if ctx, ok := uim["userInputMessageContext"].(map[string]any); ok && len(ctx) > 0 {
+		newCtx := map[string]any{}
+		if plan, ok := ctx["planMode"]; ok {
+			newCtx["planMode"] = plan
+		}
+		if tools, ok := ctx["tools"]; ok {
+			newCtx["tools"] = tools
+		}
+		if manifest, ok := ctx["toolContextManifest"]; ok {
+			newCtx["toolContextManifest"] = manifest
+		}
+		if choice, ok := ctx["claudeToolChoice"]; ok {
+			newCtx["claudeToolChoice"] = choice
+		}
+		if len(newCtx) > 0 {
+			newMsg["userInputMessageContext"] = newCtx
+		}
+	}
+	current["userInputMessage"] = newMsg
+	delete(current, "toolUses")
+
+	return json.Marshal(root)
+}
+
+func BuildMinimalKiroRequest(original []byte) ([]byte, error) {
+	var root map[string]any
+	if err := json.Unmarshal(original, &root); err != nil {
+		return nil, err
+	}
+	cs, _ := root["conversationState"].(map[string]any)
+	if cs == nil {
+		return nil, fmt.Errorf("kiro minimal fallback: missing conversationState")
+	}
+	current, _ := cs["currentMessage"].(map[string]any)
+	if current == nil {
+		return nil, fmt.Errorf("kiro minimal fallback: missing currentMessage")
+	}
+	uim, _ := current["userInputMessage"].(map[string]any)
+	if uim == nil {
+		return nil, fmt.Errorf("kiro minimal fallback: missing userInputMessage")
+	}
+
+	summary := "Continue the previous task using the latest TodoWrite state."
+	if historyAny, ok := cs["history"].([]any); ok {
+		lines := make([]string, 0, len(historyAny))
+		for _, raw := range historyAny {
+			entry, _ := raw.(map[string]any)
+			if entry == nil {
+				continue
+			}
+			if user, ok := entry["userInputMessage"].(map[string]any); ok {
+				lines = append(lines, summarizeUserEntry(user)...)
+			}
+		}
+		if n := len(lines); n > 0 {
+			summary = lines[n-1]
+			if strings.HasPrefix(summary, "User: ") {
+				summary = strings.TrimPrefix(summary, "User: ")
+			}
+		}
+	}
+
+	cs["history"] = []any{}
+	minimal := map[string]any{
+		"content": summary,
+		"modelId": uim["modelId"],
+		"origin":  uim["origin"],
+	}
+	current["userInputMessage"] = minimal
+	return json.Marshal(root)
+}
+
+func summarizeUserEntry(user map[string]any) []string {
+	lines := make([]string, 0, 2)
+	if user == nil {
+		return lines
+	}
+	if text := strings.TrimSpace(fmt.Sprint(user["content"])); text != "" && text != "." {
+		lines = append(lines, "User: "+text)
+	}
+	if ctx, ok := user["userInputMessageContext"].(map[string]any); ok {
+		lines = append(lines, summarizeToolResults(ctx)...)
+	}
+	return lines
+}
+
+func summarizeAssistantEntry(assistant map[string]any) []string {
+	lines := make([]string, 0, 2)
+	if assistant == nil {
+		return lines
+	}
+	if text := strings.TrimSpace(fmt.Sprint(assistant["content"])); text != "" && text != "." {
+		lines = append(lines, "Assistant: "+text)
+	}
+	if tus, ok := assistant["toolUses"].([]any); ok {
+		for _, raw := range tus {
+			use, _ := raw.(map[string]any)
+			if use == nil {
+				continue
+			}
+			name := strings.TrimSpace(fmt.Sprint(use["name"]))
+			input := stringifyJSON(use["input"])
+			lines = append(lines, fmt.Sprintf("Assistant tool call %s with input %s", name, input))
+		}
+	}
+	return lines
+}
+
+func summarizeToolResults(ctx map[string]any) []string {
+	results, ok := ctx["toolResults"].([]any)
+	if !ok || len(results) == 0 {
+		return nil
+	}
+	lines := make([]string, 0, len(results))
+	for _, raw := range results {
+		result, _ := raw.(map[string]any)
+		if result == nil {
+			continue
+		}
+		texts := extractToolResultTexts(result["content"])
+		if len(texts) == 0 {
+			continue
+		}
+		useID := strings.TrimSpace(fmt.Sprint(result["toolUseId"]))
+		prefix := "Tool result"
+		if useID != "" {
+			prefix = fmt.Sprintf("Tool result %s", useID)
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s", prefix, strings.Join(texts, "\n")))
+	}
+	return lines
+}
+
+func extractToolResultTexts(content any) []string {
+	switch typed := content.(type) {
+	case []any:
+		lines := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			if entry, ok := raw.(map[string]any); ok {
+				if text, _ := entry["text"].(string); strings.TrimSpace(text) != "" {
+					lines = append(lines, strings.TrimSpace(text))
+				}
+			}
+		}
+		return lines
+	case []map[string]any:
+		lines := make([]string, 0, len(typed))
+		for _, entry := range typed {
+			if text, _ := entry["text"].(string); strings.TrimSpace(text) != "" {
+				lines = append(lines, strings.TrimSpace(text))
+			}
+		}
+		return lines
+	case string:
+		if strings.TrimSpace(typed) != "" {
+			return []string{strings.TrimSpace(typed)}
+		}
+	}
+	return nil
+}
+
+func stringifyJSON(v any) string {
+	if v == nil {
+		return "null"
+	}
+	buf, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	const limit = 256
+	if len(buf) > limit {
+		return string(buf[:limit]) + "..."
+	}
+	return string(buf)
+}
+
+func shouldAttemptFlattenedFallback(err error) bool {
+	statusErr, ok := err.(kiroStatusError)
+	if !ok {
+		return false
+	}
+	if statusErr.code != http.StatusBadRequest {
+		return false
+	}
+	return strings.Contains(strings.ToLower(statusErr.msg), "improperly formed request")
+}
+
+func isImproperlyFormedResponsePayload(data []byte) bool {
+	if len(data) == 0 {
+		return false
+	}
+	return bytes.Contains(bytes.ToLower(data), []byte("improperly formed request"))
 }

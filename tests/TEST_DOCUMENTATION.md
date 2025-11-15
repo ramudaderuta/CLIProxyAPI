@@ -80,6 +80,15 @@ Key coverage:
 | `TestConvertKiroStreamToAnthropic_FollowupPromptFlag` | same | Confirms `followupPrompt` booleans in upstream chunks become `followup_prompt` + `stop_reason: "followup"` in the outgoing `message_delta`, matching the reference stream contract. |
 | `TestConvertKiroStreamToAnthropic_StopReasonOverrides` | same | Covers cancel/time-out/fallback flows by asserting any upstream `stop_reason` values survive translation, while empty ones fall back to `end_turn`, mirroring AIClient-2-API’s behaviour. |
 
+**Manual debugging helpers**
+
+- `cmd/devtools/show_kiro_request` pretty-prints the exact payload `BuildRequest` emits. Run `go run ./cmd/devtools/show_kiro_request <path/to/openai_request.json>` when chasing a regression so you don’t have to instrument the server.
+- When reproducing the Nov’25 “Improperly formed request” flow locally, always run both variants:
+  1. `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`
+  2. `./cli-proxy-api --config config.test.yaml` and `curl -sS -D - -o /tmp/original_response.json -H 'Authorization: Bearer test-api-key-1234567890' -H 'Content-Type: application/json' --data @tests/shared/testdata/streaming/orignal.json http://localhost:8317/v1/messages`
+  3. Repeat the same curl with any additional streaming fixture (`tests/shared/testdata/streaming/orignal.json` already sets `"stream": true`; `tests/shared/testdata/nonstream/test_hard_request.json` is another high-stress case).
+- Expect to see `kiro request (primary) failed … trying flattened variant` (and, if necessary, `…trying minimal variant`) in `/tmp/cli-proxy-server.log`. The final SSE that reaches the client must match the recorded Anthropic stream even if Kiro emitted the legacy error body.
+
 When diagnosing future “Improperly formed request” errors, reproduce with `/tmp/claude_request.json` (saved during the Nov 2025 incident) and rerun the suite above before shipping changes.
 
 ---

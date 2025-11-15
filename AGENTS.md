@@ -13,11 +13,18 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 - **Tool-choice handling**: Anthropic `tool_choice` is translated into `claudeToolChoice` metadata (and a short “Tool directive” sentence in the system prompt) so mandatory tool calls survive the Kiro hop even though the native API doesn’t understand Anthropic’s schema.
 - **Anthropic response compliance**: `BuildAnthropicMessagePayload` now generates natural-language lead-ins before a `tool_use`, strips `total_tokens`, and keeps `stop_reason`/`usage` aligned with the current Messages API.
 - **Translator runtime guarantees (Kiro request)**:
-  - The active current turn is always a user message with non-empty text. If the last user turn is tool_result-only or sanitizes to empty/whitespace, we synthesize `"."`.
+  - The active current turn is always a user message with non-empty text. If the last user turn is tool_result-only or sanitizes to empty/whitespace, we synthesize `"."` and move the tool_result into history so Kiro never sees a tool_result in the active turn.
   - Assistant turns that contain only `tool_use` get a minimal `"."` text placeholder.
-  - Trailing assistant `tool_use` blocks are attached to the upcoming current user turn (`toolUses`) and a text-only assistant placeholder is inserted after any preceding `tool_result` so a non-tool message always follows a tool_result.
+  - Trailing assistant `tool_use` blocks are attached to the upcoming current user turn (`toolUses`) only when they precede the final user text; when the transcript ends with a tool_result, we preserve the assistant tool_use in history and insert a text-only assistant placeholder so a non-tool message always follows that tool_result.
   - History user messages that carry only `toolResults` also receive a `"."` placeholder to satisfy Kiro’s non-empty-content requirement in complex transcripts.
   - When the request omits `tools` but messages reference tool names via `tool_use`, we synthesize minimal tool specifications for those names (generic object schema, short description) so Kiro accepts the referenced tools.
+- **Kiro executor fallback handling**:
+  - `performCompletion` now retries “Improperly formed request” failures with progressively more conservative payloads. Attempt order:
+    1. **Primary**: translator output (full history, structured tool events).
+    2. **Flattened**: `BuildFlattenedKiroRequest` collapses the full transcript (system, user, assistant, tool events) into a single plain-text block plus a note indicating the flattening, while still passing through tools/plan metadata.
+    3. **Minimal**: `BuildMinimalKiroRequest` sends a short “continue previous task” summary with no history when both prior attempts fail.
+  - Each attempt is logged (`sending <variant> kiro request attempt`, `retrying … due to Improperly formed request`) so operators can confirm which payload succeeded.
+  - These fallbacks mirror the Nov’25 CLIProxy recordings and now keep both non-stream and streaming repros alive even when the upstream service rejects richly structured transcripts.
 - **iFlow TodoWrite loop fix**: The repeating `TodoWrite` invocations reported in Nov ’25 were traced to iFlow requests losing the operator-mandated `X-IFlow-Task-Directive` header when passing through the proxy. Commit `0c115df` adds `headers:` to config entries, mirrors them into auth `header:*` attributes, and calls `util.ApplyCustomHeadersFromAttrs` inside every OpenAI-compatible executor (iFlow rides this path). If you change watcher auth synthesis or executor header plumbing, re-run `go test ./tests/unit/iflow -run TestIFlowExecutorForwardsCustomHeaders -count=1` to ensure the directive still survives the hop.
 - **Reference parity / captured fixtures**:
   - Recorded SSE runs from CLIProxyAPI live under `tmp/CLIProxyAPI` (checked into this repo). When adjusting streaming logic, grab the matching inputs from `src/claude/claude-kiro.js` fixtures and mirror the event order (tool blocks first, then text).
@@ -127,9 +134,9 @@ Tests to rely on:
 - Full regression: `go test ./tests/unit/... ./tests/regression/... -race -cover`
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
   `tests/shared/testdata/nonstream/claude_request_todowrite_continue.json` to `/v1/messages`.
-  - Should now succeed without "Improperly formed request" errors
-  - Latest request bodies are logged under `logs/v1-messages-*.log`; verify structured `tool_use`/`tool_result` are preserved in history, assistant tool_use-only turns have a `content` placeholder, and the active current user turn contains non-empty text (".") when needed.
-  - Hard case: POST `tests/shared/testdata/nonstream/test_hard_request.json` (stream=true). Expect Anthropic-style SSE with an initial text placeholder followed by a `tool_use`; no upstream 400s. If the request omits `tools`, confirm minimal tool specs were synthesized under `userInputMessageContext.tools`.
+  - Should now succeed without "Improperly formed request" errors (you should see fallback log messages only on the first attempt; the final SSE delivered to the client matches the Anthropic reference stream).
+  - Latest request bodies are logged under `logs/v1-messages-*.log`; verify structured `tool_use`/`tool_result` are preserved in history, assistant tool_use-only turns have a `content` placeholder, and the active current user turn contains non-empty text (".") when needed. If a fallback fires you’ll also see the flattened/minimal payload snapshots inline in the logs.
+  - Hard case: POST `tests/shared/testdata/nonstream/test_hard_request.json` (stream=true) and `tests/shared/testdata/streaming/orignal.json`. Expect Anthropic-style SSE with the same event order the reference CLIProxy recordings show; even if the upstream emits the legacy “Improperly formed request” body, the executor should automatically resend and the stream shown to the client must contain the full assistant response.
 
 ## Architecture Analysis
 
