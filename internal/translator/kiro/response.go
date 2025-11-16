@@ -990,6 +990,9 @@ func (p *KiroSSEStreamParser) processSSELine(line string, context *SSEProcessing
 
 	// Process valid JSON line
 	node := p.jsonProcessor.ParseJSON([]byte(line))
+	if isContextUsagePayload(node) {
+		return
+	}
 	eventType := node.Get("type").String()
 	p.eventProcessor.ProcessEvent(eventType, node, context)
 }
@@ -1000,6 +1003,9 @@ func (p *KiroSSEStreamParser) processMalformedLine(line string, context *SSEProc
 	for _, jsonObj := range jsonObjects {
 		if p.jsonProcessor.IsValidJSON([]byte(jsonObj)) {
 			node := p.jsonProcessor.ParseJSON([]byte(jsonObj))
+			if isContextUsagePayload(node) {
+				continue
+			}
 			eventType := node.Get("type").String()
 			p.eventProcessor.ProcessEvent(eventType, node, context)
 		}

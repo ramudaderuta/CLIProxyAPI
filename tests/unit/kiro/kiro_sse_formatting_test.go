@@ -248,6 +248,19 @@ func TestNormalizeKiroStreamPayload_StripsMeteringEvents(t *testing.T) {
 	assert.Equal(t, "", string(decoded))
 }
 
+func TestNormalizeKiroStreamPayload_StripsContextUsageTelemetry(t *testing.T) {
+	payload := strings.Join([]string{
+		":event-type contextUsageEvent",
+		":content-type application/json",
+		":message-type event",
+		`{"contextUsagePercentage":12.5}`,
+	}, "\n")
+	raw := buildEventStreamChunk(payload + "\n")
+
+	decoded := kirotranslator.NormalizeKiroStreamPayload(raw)
+	assert.Equal(t, "", string(decoded))
+}
+
 func TestConvertKiroStreamToAnthropic_EventStreamPayload(t *testing.T) {
 	toolStart := strings.Join([]string{
 		":event-type toolUseEvent",
@@ -313,6 +326,33 @@ func TestConvertKiroStreamToAnthropic_IgnoresMeteringEvents(t *testing.T) {
 			assert.NotContains(t, delta["text"], "usage")
 		}
 	}
+}
+
+func TestConvertKiroStreamToAnthropic_IgnoresContextUsageTelemetry(t *testing.T) {
+	raw := strings.Join([]string{
+		`data: {"contextUsagePercentage":9.05}`,
+		"",
+		`data: {"content":"All good"}`,
+	}, "\n")
+
+	chunks := kirotranslator.ConvertKiroStreamToAnthropic([]byte(raw), "claude-sonnet-4-5", 0, 0)
+	require.NotEmpty(t, chunks, "telemetry should not prevent stream output")
+
+	events := parseSSEChunks(t, chunks)
+	var textDeltas []string
+	for _, ev := range events {
+		if ev.Event != "content_block_delta" {
+			continue
+		}
+		delta, ok := ev.Payload["delta"].(map[string]any)
+		if !ok || delta["type"] != "text_delta" {
+			continue
+		}
+		text := delta["text"].(string)
+		assert.NotContains(t, text, "contextUsagePercentage")
+		textDeltas = append(textDeltas, text)
+	}
+	assert.Equal(t, []string{"All good"}, textDeltas)
 }
 
 // TestKiroExecutor_StreamingChunkOrder ensures text is emitted as a single block following reference ordering.

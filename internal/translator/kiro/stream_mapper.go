@@ -132,6 +132,10 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 		return
 	}
 
+	if isContextUsagePayload(node) {
+		return
+	}
+
 	if sr := node.Get("delta.stop_reason"); sr.Exists() && sr.String() != "" {
 		b.stopReason = sr.String()
 	}

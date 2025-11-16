@@ -87,7 +87,7 @@ func extractJSONPayload(payload []byte) string {
 				continue
 			}
 		}
-		if isMeteringPayloadString(trimmed) {
+		if isMeteringPayloadString(trimmed) || isContextUsagePayloadString(trimmed) {
 			continue
 		}
 		if builder.Len() > 0 {

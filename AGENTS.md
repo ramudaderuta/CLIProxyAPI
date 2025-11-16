@@ -9,6 +9,7 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 - **Session summary prompt (drop into Claude Code when resuming work)**:  
   *“Continue the Nov’25 Kiro <> Claude Code parity effort. Kiro now clamps tool descriptions to ≤256 chars, injects a ‘Tool reference (full descriptions preserved…)’ block, and mirrors Anthropic `tool_choice` into `claudeToolChoice`. Verify future edits keep these guarantees by re-running `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`.”*
 - **Kiro ↔ Claude Code parity push**: Sanitized Anthropic payload translation to strip ANSI escapes, stray `<system-reminder>` blocks, and other control bytes before they touch Kiro (`internal/translator/kiro/request.go`). Anthropic responses are likewise scrubbed to remove protocol metadata (e.g. `content-type` fragments) before returning to Claude Code.
+- **Kiro telemetry filtering**: Upstream SSE payloads sometimes inject `{ "contextUsagePercentage": … }` frames between real response chunks. The AWS event-stream decoder, legacy stream mapper, and the SSE parser now recognize these as telemetry-only payloads and drop them (same as the existing metering filter) so Claude never sees stray JSON blobs. Guarded by `TestNormalizeKiroStreamPayload_StripsContextUsageTelemetry` and `TestConvertKiroStreamToAnthropic_IgnoresContextUsageTelemetry`.
 - **Tool hygiene + parity**: All Claude Code built-ins (Task, Bash, Grep, Skill, SlashCommand, etc.) pass through to Kiro with descriptions clamped to ≤256 chars (hard limit enforced by Kiro). When a description is truncated we inject a `Tool reference (full descriptions preserved…)` block into the system prompt so Claude still sees the complete instructions. User-defined tools share the same sanitizer.
 - **Tool-choice handling**: Anthropic `tool_choice` is translated into `claudeToolChoice` metadata (and a short “Tool directive” sentence in the system prompt) so mandatory tool calls survive the Kiro hop even though the native API doesn’t understand Anthropic’s schema.
 - **Anthropic response compliance**: `BuildAnthropicMessagePayload` now generates natural-language lead-ins before a `tool_use`, strips `total_tokens`, and keeps `stop_reason`/`usage` aligned with the current Messages API.
@@ -129,7 +130,7 @@ Tests to rely on:
 
 ### How to verify locally
 
-- Unit tests: `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`
+- Unit tests: `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse|ConvertKiroStreamToAnthropic|NormalizeKiroStreamPayload' -count=1`
 - Sanitization tests: `go test ./tests/unit/kiro -run 'TestBuildRequest_StripsToolEventsFromHistory|TestSafeParseJSON_TruncatedJSON' -v`
 - Full regression: `go test ./tests/unit/... ./tests/regression/... -race -cover`
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
