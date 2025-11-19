@@ -19,8 +19,9 @@ import (
 
 // KiroExecutor is a stateless executor for Kiro AI services.
 type KiroExecutor struct {
-	cfg    *config.Config
-	client *kiroClient
+	cfg          *config.Config
+	client       *kiroClient
+	tokenRotator *kiroTokenRotator
 }
 
 type requestAttempt struct {
@@ -31,8 +32,9 @@ type requestAttempt struct {
 // NewKiroExecutor creates a new Kiro executor instance.
 func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
 	return &KiroExecutor{
-		cfg:    cfg,
-		client: newKiroClient(cfg),
+		cfg:          cfg,
+		client:       newKiroClient(cfg),
+		tokenRotator: newKiroTokenRotator(cfg),
 	}
 }
 
@@ -130,7 +132,7 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 	if auth == nil {
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
-	ts, err := e.tokenStorageFromAuth(auth)
+	ts, err := e.tokenStorageFromAuth(ctx, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -138,12 +140,6 @@ func (e *KiroExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*c
 		return auth, nil
 	}
 
-	if err := e.client.ensureToken(ctx, ts); err != nil {
-		return nil, err
-	}
-
-	auth.Runtime = ts
-	auth.Metadata = attachTokenMetadata(auth.Metadata, ts)
 	now := time.Now().UTC()
 	auth.LastRefreshedAt = now
 	if !ts.ExpiresAt.IsZero() {
@@ -198,7 +194,7 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 	if auth == nil {
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
-	ts, err := e.tokenStorageFromAuth(auth)
+	ts, err := e.tokenStorageFromAuth(ctx, auth)
 	if err != nil {
 		return nil, err
 	}

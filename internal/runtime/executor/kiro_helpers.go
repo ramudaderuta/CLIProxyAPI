@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -17,27 +19,198 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/usage"
 )
 
-func (e *KiroExecutor) tokenStorageFromAuth(auth *cliproxyauth.Auth) (*authkiro.KiroTokenStorage, error) {
+const kiroTokenPathMetadataKey = "_kiro_token_path"
+
+type kiroTokenCandidate struct {
+	path         string
+	region       string
+	label        string
+	fromRotator  bool
+	rotatorIndex int
+}
+
+func (e *KiroExecutor) tokenStorageFromAuth(ctx context.Context, auth *cliproxyauth.Auth) (*authkiro.KiroTokenStorage, error) {
 	if auth == nil {
 		return nil, fmt.Errorf("kiro executor: auth is nil")
 	}
-	if ts, ok := auth.Runtime.(*authkiro.KiroTokenStorage); ok && ts != nil {
-		return ts, nil
+
+	rotate := e.shouldRotateConfiguredTokens(auth)
+
+	if !rotate {
+		if ts, ok := auth.Runtime.(*authkiro.KiroTokenStorage); ok && ts != nil {
+			if err := e.client.ensureToken(ctx, ts); err == nil {
+				return ts, nil
+			}
+			auth.Runtime = nil
+		}
+		if token := extractTokenFromMetadata(auth.Metadata); token != nil {
+			if err := e.client.ensureToken(ctx, token); err == nil {
+				auth.Runtime = token
+				return token, nil
+			}
+		}
 	}
-	if token := extractTokenFromMetadata(auth.Metadata); token != nil {
-		auth.Runtime = token
-		return token, nil
-	}
-	path := e.tokenFilePath(auth)
-	if path == "" {
+
+	candidates := e.tokenFileCandidates(auth, rotate)
+	if len(candidates) == 0 {
 		return nil, fmt.Errorf("kiro executor: token path unavailable for %s", auth.ID)
 	}
-	ts, err := authkiro.LoadTokenFromFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("kiro executor: load token: %w", err)
+
+	var errs []error
+	for _, cand := range candidates {
+		ts, err := authkiro.LoadTokenFromFile(cand.path)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("load %s: %w", cand.describe(), err))
+			e.advanceRotatorAfterAttempt(cand)
+			continue
+		}
+		if err := e.client.ensureToken(ctx, ts); err != nil {
+			errs = append(errs, fmt.Errorf("refresh %s: %w", cand.describe(), err))
+			e.advanceRotatorAfterAttempt(cand)
+			continue
+		}
+		e.applyCandidateSelection(auth, ts, cand)
+		e.advanceRotatorAfterAttempt(cand)
+		return ts, nil
+	}
+
+	if len(errs) == 1 {
+		return nil, errs[0]
+	}
+	return nil, errors.Join(errs...)
+}
+
+func (e *KiroExecutor) shouldRotateConfiguredTokens(auth *cliproxyauth.Auth) bool {
+	if e == nil || e.tokenRotator == nil {
+		return false
+	}
+	if e.tokenRotator.count() < 2 {
+		return false
+	}
+	if auth == nil {
+		return true
+	}
+	return strings.TrimSpace(e.attributeTokenPath(auth)) == ""
+}
+
+func (e *KiroExecutor) tokenFileCandidates(auth *cliproxyauth.Auth, rotate bool) []kiroTokenCandidate {
+	if auth == nil {
+		return nil
+	}
+
+	if path := e.attributeTokenPath(auth); path != "" {
+		return []kiroTokenCandidate{{path: path}}
+	}
+
+	rotatorCandidates := e.rotatorCandidates()
+	if rotate && len(rotatorCandidates) > 0 {
+		return rotatorCandidates
+	}
+
+	if !rotate {
+		if path := e.metadataTokenPath(auth); path != "" {
+			return []kiroTokenCandidate{{path: path}}
+		}
+		if len(rotatorCandidates) > 0 {
+			return rotatorCandidates
+		}
+	}
+
+	return e.fallbackTokenCandidates(auth)
+}
+
+func (e *KiroExecutor) attributeTokenPath(auth *cliproxyauth.Auth) string {
+	if auth == nil || auth.Attributes == nil {
+		return ""
+	}
+	if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
+		return expandPath(p)
+	}
+	return ""
+}
+
+func (e *KiroExecutor) metadataTokenPath(auth *cliproxyauth.Auth) string {
+	if auth == nil || len(auth.Metadata) == 0 {
+		return ""
+	}
+	if value, ok := auth.Metadata[kiroTokenPathMetadataKey]; ok {
+		if path, ok := value.(string); ok && strings.TrimSpace(path) != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func (e *KiroExecutor) rotatorCandidates() []kiroTokenCandidate {
+	if e == nil || e.tokenRotator == nil {
+		return nil
+	}
+	return e.tokenRotator.candidates()
+}
+
+func (e *KiroExecutor) fallbackTokenCandidates(auth *cliproxyauth.Auth) []kiroTokenCandidate {
+	if auth == nil {
+		return nil
+	}
+	var candidates []kiroTokenCandidate
+	names := []string{auth.FileName, auth.ID, "kiro-auth-token.json"}
+	base := ""
+	if e.cfg != nil && strings.TrimSpace(e.cfg.AuthDir) != "" {
+		base = expandPath(e.cfg.AuthDir)
+	}
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		path := name
+		if !filepath.IsAbs(path) && base != "" {
+			path = filepath.Join(base, path)
+		}
+		if filepath.IsAbs(path) {
+			if _, err := os.Stat(path); err == nil {
+				candidates = append(candidates, kiroTokenCandidate{path: path})
+			}
+		}
+	}
+	return candidates
+}
+
+func (e *KiroExecutor) applyCandidateSelection(auth *cliproxyauth.Auth, ts *authkiro.KiroTokenStorage, cand kiroTokenCandidate) {
+	if auth == nil || ts == nil {
+		return
 	}
 	auth.Runtime = ts
-	return ts, nil
+	auth.Metadata = attachTokenMetadata(auth.Metadata, ts)
+	if cand.path != "" {
+		if auth.Metadata == nil {
+			auth.Metadata = make(map[string]any)
+		}
+		auth.Metadata[kiroTokenPathMetadataKey] = cand.path
+	}
+	if cand.region != "" {
+		if auth.Attributes == nil {
+			auth.Attributes = make(map[string]string)
+		}
+		auth.Attributes["region"] = cand.region
+	}
+}
+
+func (e *KiroExecutor) advanceRotatorAfterAttempt(cand kiroTokenCandidate) {
+	if e == nil || e.tokenRotator == nil || !cand.fromRotator {
+		return
+	}
+	e.tokenRotator.advance(cand.rotatorIndex)
+}
+
+func (cand kiroTokenCandidate) describe() string {
+	if strings.TrimSpace(cand.label) != "" {
+		return fmt.Sprintf("token %s", cand.label)
+	}
+	if cand.path != "" {
+		return fmt.Sprintf("token %s", cand.path)
+	}
+	return "token"
 }
 
 func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
@@ -45,19 +218,18 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 		return ""
 	}
 
-	// First check for explicitly configured token files
+	if path := e.metadataTokenPath(auth); path != "" {
+		return path
+	}
+
+	if path := e.attributeTokenPath(auth); path != "" {
+		return path
+	}
+
 	if e.cfg != nil && len(e.cfg.KiroTokenFiles) > 0 {
-		// Use the first configured token file (could be enhanced later to match by region/label)
 		tokenFile := e.cfg.KiroTokenFiles[0]
 		if tokenFile.TokenFilePath != "" {
 			return expandPath(tokenFile.TokenFilePath)
-		}
-	}
-
-	// Fall back to auth attributes
-	if auth.Attributes != nil {
-		if p := strings.TrimSpace(auth.Attributes["path"]); p != "" {
-			return expandPath(p)
 		}
 	}
 
