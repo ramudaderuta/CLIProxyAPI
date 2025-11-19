@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestKiroConfig_TokenFilePrecedence validates that explicitly configured
@@ -117,8 +117,8 @@ func TestKiroConfig_BackwardCompatibility(t *testing.T) {
 	// Test both native and enhanced token files for backward compatibility
 
 	testCases := []struct {
-		name      string
-		hasType   bool  // Whether the token should have "type": "kiro"
+		name    string
+		hasType bool // Whether the token should have "type": "kiro"
 	}{
 		{
 			name:    "NativeTokenFile",
@@ -232,4 +232,38 @@ func TestKiroConfig_HotReloading(t *testing.T) {
 	}
 
 	// The test passes if configuration updates are properly handled
+}
+
+func TestKiroExecutor_FallbackDetectsPrefixedTokens(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	_ = writeRotatingTokenFile(t, tempDir, "not-kiro.json", "token-other")
+	expectedPath := writeRotatingTokenFile(t, tempDir, "kiro-sandbox.json", "token-sandbox")
+
+	cfg := &config.Config{
+		AuthDir: tempDir,
+	}
+	exec := executor.NewKiroExecutor(cfg)
+
+	auth := &cliproxyauth.Auth{
+		ID:       "fallback-auth",
+		Provider: "kiro",
+		FileName: "missing.json",
+		Metadata: map[string]any{},
+	}
+
+	refreshed, err := exec.Refresh(context.Background(), auth)
+	if err != nil {
+		t.Fatalf("Refresh failed: %v", err)
+	}
+	if refreshed == nil || refreshed.Metadata == nil {
+		t.Fatal("expected refreshed auth metadata")
+	}
+	if token, ok := refreshed.Metadata["accessToken"].(string); !ok || token != "token-sandbox" {
+		t.Fatalf("expected accessToken token-sandbox, got %v", refreshed.Metadata["accessToken"])
+	}
+	if path, _ := refreshed.Metadata["_kiro_token_path"].(string); path != expectedPath {
+		t.Fatalf("expected _kiro_token_path %s, got %s", expectedPath, path)
+	}
 }

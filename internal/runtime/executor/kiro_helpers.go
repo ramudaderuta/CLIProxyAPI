@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -153,25 +154,43 @@ func (e *KiroExecutor) fallbackTokenCandidates(auth *cliproxyauth.Auth) []kiroTo
 		return nil
 	}
 	var candidates []kiroTokenCandidate
-	names := []string{auth.FileName, auth.ID, "kiro-auth-token.json"}
+	names := []string{auth.FileName, auth.ID}
 	base := ""
 	if e.cfg != nil && strings.TrimSpace(e.cfg.AuthDir) != "" {
 		base = expandPath(e.cfg.AuthDir)
 	}
-	for _, name := range names {
+	seen := make(map[string]struct{})
+	addCandidate := func(path string) {
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		if _, exists := seen[path]; exists {
+			return
+		}
+		if _, err := os.Stat(path); err == nil {
+			seen[path] = struct{}{}
+			candidates = append(candidates, kiroTokenCandidate{path: path})
+		}
+	}
+	resolve := func(name string) {
 		name = strings.TrimSpace(name)
 		if name == "" {
-			continue
+			return
 		}
-		path := name
-		if !filepath.IsAbs(path) && base != "" {
-			path = filepath.Join(base, path)
+		if filepath.IsAbs(name) {
+			addCandidate(name)
+			return
 		}
-		if filepath.IsAbs(path) {
-			if _, err := os.Stat(path); err == nil {
-				candidates = append(candidates, kiroTokenCandidate{path: path})
-			}
+		if base != "" {
+			addCandidate(filepath.Join(base, name))
 		}
+	}
+	for _, name := range names {
+		resolve(name)
+	}
+	for _, path := range e.listPrefixedKiroFiles(base) {
+		addCandidate(path)
 	}
 	return candidates
 }
@@ -213,6 +232,29 @@ func (cand kiroTokenCandidate) describe() string {
 	return "token"
 }
 
+func (e *KiroExecutor) listPrefixedKiroFiles(base string) []string {
+	if strings.TrimSpace(base) == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		lower := strings.ToLower(name)
+		if strings.HasPrefix(lower, "kiro-") && strings.HasSuffix(lower, ".json") {
+			paths = append(paths, filepath.Join(base, name))
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
 func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 	if auth == nil {
 		return ""
@@ -234,7 +276,11 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 	}
 
 	// Fall back to default behavior
-	candidates := []string{auth.FileName, auth.ID, "kiro-auth-token.json"}
+	candidates := []string{auth.FileName, auth.ID}
+	base := ""
+	if e.cfg != nil && strings.TrimSpace(e.cfg.AuthDir) != "" {
+		base = expandPath(e.cfg.AuthDir)
+	}
 	for _, candidate := range candidates {
 		candidate = strings.TrimSpace(candidate)
 		if candidate == "" {
@@ -243,12 +289,17 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 		if filepath.IsAbs(candidate) {
 			return candidate
 		}
-		if e.cfg != nil && e.cfg.AuthDir != "" {
-			path := filepath.Join(expandPath(e.cfg.AuthDir), candidate)
+		if base != "" {
+			path := filepath.Join(base, candidate)
 			// Check if file exists before returning
 			if _, err := os.Stat(path); err == nil {
 				return path
 			}
+		}
+	}
+	if base != "" {
+		if prefixed := e.listPrefixedKiroFiles(base); len(prefixed) > 0 {
+			return prefixed[0]
 		}
 	}
 	return ""
