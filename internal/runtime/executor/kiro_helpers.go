@@ -189,7 +189,7 @@ func (e *KiroExecutor) fallbackTokenCandidates(auth *cliproxyauth.Auth) []kiroTo
 	for _, name := range names {
 		resolve(name)
 	}
-	for _, path := range e.listPrefixedKiroFiles(base) {
+	for _, path := range discoverKiroTokenFiles(base) {
 		addCandidate(path)
 	}
 	return candidates
@@ -232,7 +232,7 @@ func (cand kiroTokenCandidate) describe() string {
 	return "token"
 }
 
-func (e *KiroExecutor) listPrefixedKiroFiles(base string) []string {
+func discoverKiroTokenFiles(base string) []string {
 	if strings.TrimSpace(base) == "" {
 		return nil
 	}
@@ -298,7 +298,7 @@ func (e *KiroExecutor) tokenFilePath(auth *cliproxyauth.Auth) string {
 		}
 	}
 	if base != "" {
-		if prefixed := e.listPrefixedKiroFiles(base); len(prefixed) > 0 {
+		if prefixed := discoverKiroTokenFiles(base); len(prefixed) > 0 {
 			return prefixed[0]
 		}
 	}

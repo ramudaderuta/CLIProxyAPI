@@ -133,6 +133,7 @@ Tests to rely on:
 - Unit tests: `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse|ConvertKiroStreamToAnthropic|NormalizeKiroStreamPayload' -count=1`
 - Sanitization tests: `go test ./tests/unit/kiro -run 'TestBuildRequest_StripsToolEventsFromHistory|TestSafeParseJSON_TruncatedJSON' -v`
 - Multi-token rotation test: `go test ./tests/unit/kiro -run TestKiroExecutor_ConfiguredTokens_RoundRobinWithFailover -count=1` covers round-robin selection and failover whenever multiple `kiro-token-file` entries are configured.
+- Auth-dir discovery rotation: `go test ./tests/unit/kiro -run TestKiroExecutor_AuthDirDiscovery_RoundRobinWithFailover -count=1` ensures `auth-dir`-discovered `kiro-*.json` files also cycle and fail over correctly.
 - Full regression: `go test ./tests/unit/... ./tests/regression/... -race -cover`
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
   `tests/shared/testdata/nonstream/claude_request_todowrite_continue.json` to `/v1/messages`.

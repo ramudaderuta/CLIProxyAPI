@@ -21,7 +21,7 @@ type kiroRotatorEntry struct {
 
 func newKiroTokenRotator(cfg *config.Config) *kiroTokenRotator {
 	rot := &kiroTokenRotator{}
-	if cfg == nil || len(cfg.KiroTokenFiles) == 0 {
+	if cfg == nil {
 		return rot
 	}
 
@@ -30,23 +30,39 @@ func newKiroTokenRotator(cfg *config.Config) *kiroTokenRotator {
 		authDir = expandPath(authDir)
 	}
 
-	for _, entry := range cfg.KiroTokenFiles {
-		path := strings.TrimSpace(entry.TokenFilePath)
+	seen := make(map[string]struct{})
+	addEntry := func(path, region, label string) {
+		path = strings.TrimSpace(path)
 		if path == "" {
-			continue
+			return
 		}
-		path = expandPath(path)
 		if !filepath.IsAbs(path) && authDir != "" {
 			path = filepath.Join(authDir, path)
 		}
-		if path == "" {
-			continue
+		if !filepath.IsAbs(path) {
+			return
 		}
+		path = filepath.Clean(path)
+		if _, exists := seen[path]; exists {
+			return
+		}
+		seen[path] = struct{}{}
 		rot.entries = append(rot.entries, kiroRotatorEntry{
-			path:   filepath.Clean(path),
-			region: entry.Region,
-			label:  entry.Label,
+			path:   path,
+			region: strings.TrimSpace(region),
+			label:  strings.TrimSpace(label),
 		})
+	}
+
+	for _, entry := range cfg.KiroTokenFiles {
+		path := entry.TokenFilePath
+		addEntry(path, entry.Region, entry.Label)
+	}
+
+	if authDir != "" {
+		for _, path := range discoverKiroTokenFiles(authDir) {
+			addEntry(path, "", filepath.Base(path))
+		}
 	}
 
 	return rot

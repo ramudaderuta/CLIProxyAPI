@@ -59,6 +59,44 @@ func TestKiroExecutor_ConfiguredTokens_RoundRobinWithFailover(t *testing.T) {
 	require.Equal(t, "token-A", refreshed.Metadata["accessToken"], "round-robin should wrap back to the surviving token after failover")
 }
 
+func TestKiroExecutor_AuthDirDiscovery_RoundRobinWithFailover(t *testing.T) {
+	t.Parallel()
+
+	tempDir := t.TempDir()
+	tokenAlpha := writeRotatingTokenFile(t, tempDir, "kiro-alpha.json", "token-alpha")
+	tokenBeta := writeRotatingTokenFile(t, tempDir, "kiro-beta.json", "token-beta")
+	tokenGamma := writeRotatingTokenFile(t, tempDir, "kiro-gamma.json", "token-gamma")
+
+	cfg := &config.Config{AuthDir: tempDir}
+	exec := executor.NewKiroExecutor(cfg)
+
+	auth := &cliproxyauth.Auth{
+		ID:         "discovery-auth",
+		Provider:   "kiro",
+		Metadata:   map[string]any{},
+		Attributes: map[string]string{},
+	}
+
+	ctx := context.Background()
+
+	refreshed, err := exec.Refresh(ctx, auth)
+	require.NoError(t, err)
+	require.Equal(t, "token-alpha", refreshed.Metadata["accessToken"])
+	require.Equal(t, tokenAlpha, refreshed.Metadata["_kiro_token_path"])
+
+	require.NoError(t, os.Remove(tokenBeta))
+
+	refreshed, err = exec.Refresh(ctx, refreshed)
+	require.NoError(t, err)
+	require.Equal(t, "token-gamma", refreshed.Metadata["accessToken"])
+	require.Equal(t, tokenGamma, refreshed.Metadata["_kiro_token_path"])
+
+	refreshed, err = exec.Refresh(ctx, refreshed)
+	require.NoError(t, err)
+	require.Equal(t, "token-alpha", refreshed.Metadata["accessToken"])
+	require.Equal(t, tokenAlpha, refreshed.Metadata["_kiro_token_path"])
+}
+
 func writeRotatingTokenFile(t *testing.T, dir, name, accessToken string) string {
 	t.Helper()
 
