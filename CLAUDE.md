@@ -470,7 +470,7 @@ Your delegation message to a sub-agent should look conceptually like:
 > **Why:** [Goal, context, and constraints]  
 > **Where:** [Recommended skills, area and scope]  
 > **How:**  
-> 1. Run `python ./context_restore.py` to restore base project context.  
+> 1. Run `python3 ./context_restore.py` to restore base project context.  
 > 2. Use the recommended skills to outline at least two viable architectures.  
 > 3. For each option, list pros/cons and when it is preferable.  
 > 4. Conclude with a recommendation and reasoning.  
