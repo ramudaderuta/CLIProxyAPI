@@ -337,6 +337,8 @@ func (s *Service) ensureExecutorsForAuth(a *coreauth.Auth) {
 		s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	case "claude":
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
+	case "kiro":
+		s.coreManager.RegisterExecutor(executor.NewKiroExecutor(s.cfg))
 	case "codex":
 		s.coreManager.RegisterExecutor(executor.NewCodexExecutor(s.cfg))
 	case "qwen":
@@ -645,6 +647,8 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		if entry := s.resolveConfigClaudeKey(a); entry != nil && len(entry.Models) > 0 {
 			models = buildClaudeConfigModels(entry)
 		}
+	case "kiro":
+		models = registry.GetKiroModels()
 	case "codex":
 		models = registry.GetOpenAIModels()
 	case "qwen":

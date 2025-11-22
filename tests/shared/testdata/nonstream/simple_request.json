@@ -1,0 +1,11 @@
+{
+  "model": "kiro-sonnet",
+  "messages": [
+    {
+      "role": "user",
+      "content": "Write a Python hello world program"
+    }
+  ],
+  "temperature": 0.7,
+  "max_tokens": 1000
+}

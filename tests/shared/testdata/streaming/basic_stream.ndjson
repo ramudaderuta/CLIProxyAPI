@@ -1,0 +1,32 @@
+event: messageStart
+data: {"type":"messageStart","message":{"id":"msg_test123","type":"message","role":"assistant"}}
+
+event: contentBlockStart
+data: {"type":"contentBlockStart","index":0,"content_block":{"type":"text","text":""}}
+
+event: contentBlockDelta
+data: {"type":"contentBlockDelta","index":0,"delta":{"type":"text_delta","text":"Here's"}}
+
+event: contentBlockDelta
+data: {"type":"contentBlockDelta","index":0,"delta":{"type":"text_delta","text":" a"}}
+
+event: contentBlockDelta
+data: {"type":"contentBlockDelta","index":0,"delta":{"type":"text_delta","text":" hello"}}
+
+event: contentBlockDelta
+data: {"type":"contentBlockDelta","index":0,"delta":{"type":"text_delta","text":" world"}}
+
+event: contentBlockDelta
+data: {"type":"contentBlockDelta","index":0,"delta":{"type":"text_delta","text":" program:"}}
+
+event: contentBlockStop
+data: {"type":"contentBlockStop","index":0}
+
+event: messageDelta
+data: {"type":"messageDelta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":25}}
+
+event: messageStop
+data: {"type":"messageStop"}
+
+data: [DONE]
+

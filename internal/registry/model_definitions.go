@@ -847,6 +847,39 @@ func GetQwenModels() []*ModelInfo {
 	}
 }
 
+// GetKiroModels returns the standard Kiro (Amazon Q Developer) model definitions
+func GetKiroModels() []*ModelInfo {
+	return []*ModelInfo{
+		{
+			ID:          "kiro-sonnet",
+			Object:      "model",
+			Created:     1732320000, // Nov 23, 2024
+			OwnedBy:     "amazon",
+			Type:        "kiro",
+			DisplayName: "Amazon Q Developer Sonnet",
+			Description: "Mid-tier model balancing capability and speed",
+		},
+		{
+			ID:          "kiro-opus",
+			Object:      "model",
+			Created:     1732320000,
+			OwnedBy:     "amazon",
+			Type:        "kiro",
+			DisplayName: "Amazon Q Developer Opus",
+			Description: "Most capable model for complex tasks",
+		},
+		{
+			ID:          "kiro-haiku",
+			Object:      "model",
+			Created:     1732320000,
+			OwnedBy:     "amazon",
+			Type:        "kiro",
+			DisplayName: "Amazon Q Developer Haiku",
+			Description: "Fast and efficient model for simple tasks",
+		},
+	}
+}
+
 // GetIFlowModels returns supported models for iFlow OAuth accounts.
 
 func GetIFlowModels() []*ModelInfo {

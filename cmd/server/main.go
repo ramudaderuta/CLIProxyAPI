@@ -62,6 +62,7 @@ func main() {
 	var iflowCookie bool
 	var noBrowser bool
 	var antigravityLogin bool
+	var kiroLogin bool // Added kiroLogin flag
 	var projectID string
 	var vertexImport string
 	var configPath string
@@ -70,6 +71,7 @@ func main() {
 	// Define command-line flags for different operation modes.
 	flag.BoolVar(&login, "login", false, "Login Google Account")
 	flag.BoolVar(&codexLogin, "codex-login", false, "Login to Codex using OAuth")
+	flag.BoolVar(&kiroLogin, "kiro-login", false, "Login to Kiro (Amazon Q Developer) using OAuth") // Added kiro-login flag
 	flag.BoolVar(&claudeLogin, "claude-login", false, "Login to Claude using OAuth")
 	flag.BoolVar(&qwenLogin, "qwen-login", false, "Login to Qwen using OAuth")
 	flag.BoolVar(&iflowLogin, "iflow-login", false, "Login to iFlow using OAuth")

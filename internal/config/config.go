@@ -70,6 +70,9 @@ type Config struct {
 	// Codex defines a list of Codex API key configurations as specified in the YAML configuration file.
 	CodexKey []CodexKey `yaml:"codex-api-key" json:"codex-api-key"`
 
+	// KiroConfig defines the Kiro (Amazon Q Developer) CLI provider configuration.
+	KiroConfig KiroConfig `yaml:"kiro" json:"kiro"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 
@@ -226,6 +229,20 @@ type OpenAICompatibilityModel struct {
 
 	// Alias is the model name alias that clients will use to reference this model.
 	Alias string `yaml:"alias" json:"alias"`
+}
+
+// KiroConfig holds the configuration for Amazon Q Developer (Kiro) provider
+type KiroConfig struct {
+	Enabled      bool            `yaml:"enabled" json:"enabled"`
+	TokenFiles   []KiroTokenFile `yaml:"token-files,omitempty" json:"token-files,omitempty"`     // Optional: explicit token files
+	AutoDiscover bool            `yaml:"auto-discover,omitempty" json:"auto-discover,omitempty"` // Auto-discover kiro-*.json in auth-dir
+}
+
+// KiroTokenFile represents a single Kiro token file configuration
+type KiroTokenFile struct {
+	Path   string `yaml:"path" json:"path"`
+	Region string `yaml:"region,omitempty" json:"region,omitempty"`
+	Label  string `yaml:"label,omitempty" json:"label,omitempty"`
 }
 
 // LoadConfig reads a YAML configuration file from the given path,

@@ -3,6 +3,7 @@ cli-proxy-api
 *.exe
 
 # Configuration
+config.test.yaml
 config.yaml
 .env
 
@@ -21,6 +22,7 @@ auths/*
 !auths/.gitkeep
 
 # Documentation
+.context/*
 docs/*
 AGENTS.md
 CLAUDE.md
