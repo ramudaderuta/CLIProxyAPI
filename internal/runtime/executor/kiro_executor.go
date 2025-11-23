@@ -47,7 +47,7 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	return nil
 }
 
-// Execute performs a non-streaming request to Kiro API.
+// Execute performs a non-streaming request to Kiro API with 3-level fallback.
 func (e *KiroExecutor) Execute(
 	ctx context.Context,
 	auth *cliproxyauth.Auth,
@@ -80,10 +80,10 @@ func (e *KiroExecutor) Execute(
 	// Translate request to Kiro format
 	kiroRequest := chat_completions.ConvertOpenAIRequestToKiro(req.Model, req.Payload, false)
 
-	// Send request to Kiro API
-	httpResp, err := e.sendRequest(ctx, validToken, kiroRequest)
+	// Try request with 3-level fallback mechanism
+	httpResp, finalRequestBody, err := e.attemptRequestWithFallback(ctx, validToken, kiroRequest)
 	if err != nil {
-		return resp, fmt.Errorf("failed to send request: %w", err)
+		return resp, err
 	}
 	defer httpResp.Body.Close()
 
@@ -96,6 +96,11 @@ func (e *KiroExecutor) Execute(
 	// Check for HTTP errors
 	if httpResp.StatusCode != http.StatusOK {
 		return resp, fmt.Errorf("Kiro API error: status %d: %s", httpResp.StatusCode, string(body))
+	}
+
+	// Log if fallback was used
+	if !bytes.Equal(finalRequestBody, kiroRequest) {
+		log.Info("Successfully recovered using fallback mechanism")
 	}
 
 	// Convert response to OpenAI format
@@ -306,4 +311,168 @@ func (e *KiroExecutor) processStream(ctx context.Context, body io.ReadCloser, mo
 			}
 		}
 	}
+}
+
+// attemptRequestWithFallback tries request with 3-level fallback mechanism.
+// Returns the HTTP response and the final request body used.
+func (e *KiroExecutor) attemptRequestWithFallback(
+	ctx context.Context,
+	token *kiro.KiroTokenStorage,
+	requestBody []byte,
+) (*http.Response, []byte, error) {
+	// Level 1: Try primary request (full structured conversationState)
+	log.Debug("Attempting primary request with full history")
+	httpResp, err := e.sendRequest(ctx, token, requestBody)
+
+	if err == nil && !isImproperlFormedError(httpResp) {
+		return httpResp, requestBody, nil
+	}
+
+	// Close failed response
+	if httpResp != nil {
+		httpResp.Body.Close()
+	}
+
+	// Level 2: Try flattened history (text-only history)
+	log.Warn("Primary request failed with 'Improperly formed', trying flattened history")
+	flattenedBody := e.flattenHistory(requestBody)
+	httpResp, err = e.sendRequest(ctx, token, flattenedBody)
+
+	if err == nil && !isImproperlFormedError(httpResp) {
+		log.Info("Flattened history request succeeded")
+		return httpResp, flattenedBody, nil
+	}
+
+	// Close failed response
+	if httpResp != nil {
+		httpResp.Body.Close()
+	}
+
+	// Level 3: Try minimal request (no history)
+	log.Warn("Flattened request failed, trying minimal request with no history")
+	minimalBody := e.buildMinimalRequest(requestBody)
+	httpResp, err = e.sendRequest(ctx, token, minimalBody)
+
+	if err == nil && !isImproperlFormedError(httpResp) {
+		log.Info("Minimal request succeeded")
+		return httpResp, minimalBody, nil
+	}
+
+	// All fallbacks failed
+	if httpResp != nil {
+		httpResp.Body.Close()
+	}
+	return nil, nil, fmt.Errorf("all fallback attempts failed: %w", err)
+}
+
+// flattenHistory converts structured history to text-only format.
+func (e *KiroExecutor) flattenHistory(requestBody []byte) []byte {
+	// Parse request JSON
+	var req map[string]interface{}
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		log.Warnf("Failed to parse request for flattening: %v", err)
+		return requestBody
+	}
+
+	// Get conversationState
+	convState, ok := req["conversationState"].(map[string]interface{})
+	if !ok {
+		return requestBody
+	}
+
+	// Get and flatten history
+	history, ok := convState["history"].([]interface{})
+	if !ok || len(history) == 0 {
+		return requestBody // No history to flatten
+	}
+
+	// Convert history to text transcript
+	var textHistory []string
+	for _, item := range history {
+		msg, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		role, _ := msg["role"].(string)
+		content, _ := msg["content"].(string)
+
+		if role != "" && content != "" {
+			textHistory = append(textHistory, fmt.Sprintf("%s: %s", role, content))
+		}
+	}
+
+	// Replace history with text-only version
+	flattenedHistory := []interface{}{
+		map[string]interface{}{
+			"role":    "user",
+			"content": "Previous conversation:\n" + string(bytes.Join([][]byte{[]byte(fmt.Sprint(textHistory))}, []byte("\n"))) + "\n\n(Structured tool transcripts were flattened to text for compatibility)",
+		},
+	}
+	convState["history"] = flattenedHistory
+
+	// Re-encode
+	flattened, err := json.Marshal(req)
+	if err != nil {
+		log.Warnf("Failed to marshal flattened request: %v", err)
+		return requestBody
+	}
+
+	return flattened
+}
+
+// buildMinimalRequest creates minimal request with no history.
+func (e *KiroExecutor) buildMinimalRequest(requestBody []byte) []byte {
+	// Parse request JSON
+	var req map[string]interface{}
+	if err := json.Unmarshal(requestBody, &req); err != nil {
+		log.Warnf("Failed to parse request for minimal: %v", err)
+		return requestBody
+	}
+
+	// Get conversationState
+	convState, ok := req["conversationState"].(map[string]interface{})
+	if !ok {
+		return requestBody
+	}
+
+	// Clear history
+	convState["history"] = []interface{}{}
+
+	// Add note to current message
+	currentMsg, ok := convState["currentMessage"].(map[string]interface{})
+	if ok {
+		content, _ := currentMsg["content"].(string)
+		currentMsg["content"] = "(Continuing from previous context) " + content
+	}
+
+	// Re-encode
+	minimal, err := json.Marshal(req)
+	if err != nil {
+		log.Warnf("Failed to marshal minimal request: %v", err)
+		return requestBody
+	}
+
+	return minimal
+}
+
+// isImproperlFormedError checks if response indicates "Improperly formed request".
+func isImproperlFormedError(resp *http.Response) bool {
+	if resp == nil || resp.StatusCode != http.StatusBadRequest {
+		return false
+	}
+
+	// Read body to check error message
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+
+	// Re-wrap body for future reads
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+
+	// Check if error contains "improperly formed" or "malformed"
+	bodyStr := string(bytes.ToLower(body))
+	return bytes.Contains([]byte(bodyStr), []byte("improperly formed")) ||
+		bytes.Contains([]byte(bodyStr), []byte("malformed"))
 }

@@ -59,6 +59,7 @@ This document provides a comprehensive mapping of functions, classes, and their 
 | `DoQwenLogin()` | function | `internal/cmd/qwen_login.go` | Handles Qwen OAuth login |
 | `DoIFlowLogin()` | function | `internal/cmd/iflow_login.go` | Handles iFlow OAuth login |
 | `DoAntigravityLogin()` | function | `internal/cmd/antigravity_login.go` | Handles Antigravity OAuth login |
+| `DoKiroLogin()` | function | `internal/cmd/kiro_login.go` | Handles Kiro OAuth login flow |
 
 ### Auth Managers
 
@@ -78,6 +79,56 @@ This document provides a comprehensive mapping of functions, classes, and their 
 | `GeneratePKCECodes()` | function | `internal/auth/codex/pkce.go` | Generates PKCE codes for OAuth flow |
 | `NewClaudeAuth()` | function | `internal/auth/claude/` | Creates Claude authentication handler |
 | `NewGeminiAuth()` | function | `internal/auth/gemini/` | Creates Gemini authentication handler |
+| `NewKiroAuth()` | function | `internal/auth/kiro/` | Creates Kiro authentication handler |
+
+### Kiro Authentication Layer
+
+#### Authenticator (`internal/auth/kiro/auth.go`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|------------|
+| `NewKiroAuthenticator()` | function | `internal/auth/kiro/auth.go:34` | Creates new KiroAuthenticator instance |
+| `Authenticate()` | method | `internal/auth/kiro/auth.go:55` | Initiates OAuth device code flow |
+| `RefreshToken()` | method | `internal/auth/kiro/auth.go:87` | Refreshes expired access token using refresh token |
+| `ValidateToken()` | method | `internal/auth/kiro/auth.go:119` | Validates token and auto-refreshes if needed |
+| `GetAuthenticatedClient()` | method | `internal/auth/kiro/auth.go:156` | Creates HTTP client with token authentication |
+
+#### OAuth Device Code Flow (`internal/auth/kiro/oauth.go`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|------------|
+| `NewDeviceCodeFlow()` | function | `internal/auth/kiro/oauth.go:61` | Creates device code flow handler |
+| `StartDeviceFlow()` | method | `internal/auth/kiro/oauth.go:89` | Requests device code and user verification URL |
+| `PollForToken()` | method | `internal/auth/kiro/oauth.go:151` | Polls token endpoint until user authorizes |
+| `RefreshToken()` | method | `internal/auth/kiro/oauth.go:276` | Exchanges refresh token for new access token |
+| `RegisterClient()` | function | `internal/auth/kiro/oauth.go` | Registers public client with AWS SSO OIDC |
+
+#### Client Cache (`internal/auth/kiro/client_cache.go`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|------------|
+| `LoadCachedClient()` | function | `internal/auth/kiro/client_cache.go` | Loads registered client from disk cache |
+| `SaveCachedClient()` | function | `internal/auth/kiro/client_cache.go` | Saves registered client to disk cache |
+
+#### Token Manager (`internal/auth/kiro/token_manager.go`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|------------|
+| `NewTokenManager()` | function | `internal/auth/kiro/token_manager.go:35` | Creates token manager for rotation |
+| `LoadTokens()` | method | `internal/auth/kiro/token_manager.go:45` | Loads and auto-discovers token files |
+| `GetNextToken()` | method | `internal/auth/kiro/token_manager.go:133` | Returns next token in round-robin rotation |
+| `GetTokenCount()` | method | `internal/auth/kiro/token_manager.go:194` | Returns total token count |
+| `GetActiveTokenCount()` | method | `internal/auth/kiro/token_manager.go:201` | Returns non-disabled token count |
+| `ResetFailures()` | method | `internal/auth/kiro/token_manager.go:215` | Resets failure counters |
+| `GetTokenStats()` | method | `internal/auth/kiro/token_manager.go:230` | Returns token usage statistics |
+
+#### Token Storage (`internal/auth/kiro/token_store.go`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|------------|
+| `IsExpired()` | method | `internal/auth/kiro/token_store.go:47` | Checks if token expired with buffer |
+| `SaveTokenToFile()` | method | `internal/auth/kiro/token_store.go:65` | Persists token to JSON file (0600 perms) |
+| `LoadTokenFromFile()` | function | `internal/auth/kiro/token_store.go:105` | Loads token from JSON file |
 
 ---
 
@@ -91,6 +142,7 @@ This document provides a comprehensive mapping of functions, classes, and their 
 | `QwenExecutor` | struct | `internal/runtime/executor/qwen_executor.go` | Executes Qwen API requests |
 | `IFlowExecutor` | struct | `internal/runtime/executor/iflow_executor.go` | Executes iFlow API requests |
 | `AntigravityExecutor` | struct | `internal/runtime/executor/antigravity_executor.go` | Executes Antigravity API requests |
+| `KiroExecutor` | struct | `internal/runtime/executor/kiro_executor.go` | Executes Kiro API requests |
 
 ### Executor Interface Methods
 
@@ -143,6 +195,43 @@ This document provides a comprehensive mapping of functions, classes, and their 
 | `ClaudeTranslator` | struct | `internal/translator/claude/` | Claude API format translator |
 | `GeminiTranslator` | struct | `internal/translator/gemini/` | Gemini API format translator |
 | `CodexTranslator` | struct | `internal/translator/codex/` | Codex API format translator |
+| `KiroTranslator` | struct | `internal/translator/kiro/` | Kiro API format translator |
+
+### Kiro Translation Layer
+
+#### OpenAI Format (`internal/translator/kiro/openai/`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|---------|
+| `ConvertOpenAIRequestToKiro()` | function | `internal/translator/kiro/openai/chat-completions/kiro_openai_request.go:25` | Converts OpenAI request to Kiro conversationState |
+| `ConvertKiroResponseToOpenAI()` | function | `internal/translator/kiro/openai/responses/kiro_openai_response.go:22` | Converts Kiro response to OpenAI format |
+| `ConvertKiroStreamChunkToOpenAI()` | function | `internal/translator/kiro/openai/responses/kiro_openai_response.go:172` | Converts Kiro SSE chunk to OpenAI format |
+
+#### Claude Format (`internal/translator/kiro/claude/`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|---------|
+| `ConvertClaudeRequestToKiro()` | function | `internal/translator/kiro/claude/chat-completions/` | Converts Claude Messages API to Kiro format |
+| `ConvertKiroResponseToClaude()` | function | `internal/translator/kiro/claude/responses/` | Converts Kiro response to Claude format |
+
+#### Gemini Format (`internal/translator/kiro/gemini/`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|---------|
+| `ConvertGeminiRequestToKiro()` | function | `internal/translator/kiro/gemini/chat-completions/` | Converts Gemini generateContent to Kiro format |
+| `ConvertKiroResponseToGemini()` | function | `internal/translator/kiro/gemini/responses/` | Converts Kiro response to Gemini format |
+
+#### Defensive Helpers (`internal/translator/kiro/helpers/`)
+
+| Function | Type | Location | Summary |
+|----------|------|----------|---------|
+| `SafeParseJSON()` | function | `internal/translator/kiro/helpers/defensive.go:21` | Safely parses malformed JSON with sanitization |
+| `SanitizeToolCallID()` | function | `internal/translator/kiro/helpers/defensive.go:68` | Ensures tool call ID is non-empty, generates UUID if needed |
+| `FilterThinkingContent()` | function | `internal/translator/kiro/openai/responses/kiro_openai_response.go:154` | Removes `<thinking>` tags from content |
+| `TruncateString()` | function | `internal/translator/kiro/helpers/defensive.go:90` | Truncates string to max length with suffix |
+| `ExtractTextFromMultimodal()` | function | `internal/translator/kiro/helpers/defensive.go:108` | Extracts text parts from multimodal content |
+| `SafeStringValue()` | function | `internal/translator/kiro/helpers/defensive.go:157` | Safely extracts string from map |
+| `SafeInt64Value()` | function | `internal/translator/kiro/helpers/defensive.go:183` | Safely extracts int64 from map |
 
 ---
 
@@ -260,24 +349,10 @@ This document provides a comprehensive mapping of functions, classes, and their 
 
 ---
 
-## Testing Functions
-
-### Test Helpers
-
-| Function | Type | Location | Summary |
-|----------|------|----------|---------|
-| `TestCreateReverseProxy_ValidURL()` | function | `internal/api/modules/amp/proxy_test.go:35` | Tests reverse proxy creation with valid URL |
-| `TestAmpModule_Name()` | function | `internal/api/modules/amp/amp_test.go:30` | Tests AMP module name functionality |
-| `TestRegisterManagementRoutes()` | function | `internal/api/modules/amp/routes_test.go` | Tests management route registration |
-| `gzipBytes()` | helper | `internal/api/modules/amp/proxy_test.go:14` | Helper function to gzip compress data |
-| `mkResp()` | helper | `internal/api/modules/amp/proxy_test.go:23` | Helper function to create mock HTTP responses |
-
----
-
 ## Statistics Summary
 
-- **Total Functions Mapped**: 85+ key functions and methods
-- **Total Classes/Structs**: 45+ major structures
+- **Total Functions Mapped**: 90+ key functions and methods
+- **Total Classes/Structs**: 48+ major structures
 - **Core Modules**: 10 main functional areas
 - **File Coverage**: All major Go files in `/internal` and `/sdk` directories
-- **Provider Support**: 6 major AI providers (OpenAI, Claude, Gemini, Qwen, iFlow, Antigravity)
+- **Provider Support**: 7 major AI providers (OpenAI, Claude, Gemini, Qwen, iFlow, Antigravity, Kiro)

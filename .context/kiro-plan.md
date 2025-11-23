@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Kiro CLI Provider enables CLIProxyAPI to interact with Amazon Q Developer (formerly CodeWhisperer) using OAuth-based authentication. It provides a unified OpenAI-compatible API interface for accessing Kiro models.
+The Kiro CLI Provider enables CLIProxyAPI to interact with Kiro (formerly CodeWhisperer) using OAuth-based authentication. It provides a unified OpenAI-compatible API interface for accessing Kiro models.
 
 ### Features
 
@@ -18,9 +18,9 @@ The Kiro CLI Provider enables CLIProxyAPI to interact with Amazon Q Developer (f
 
 | Model ID | Display Name | Description | Best For |
 |----------|--------------|-------------|----------|
-| `kiro-sonnet` | Amazon Q Developer Sonnet | Mid-tier model | Balanced tasks |
-| `kiro-opus` | Amazon Q Developer Opus | Most capable | Complex reasoning |
-| `kiro-haiku` | Amazon Q Developer Haiku | Fast & efficient | Simple/quick tasks |
+| `kiro-sonnet` | Kiro Sonnet | Mid-tier model | Balanced tasks |
+| `kiro-opus` | Kiro Opus | Most capable | Complex reasoning |
+| `kiro-haiku` | Kiro Haiku | Fast & efficient | Simple/quick tasks |
 
 ---
 
@@ -30,7 +30,7 @@ The Kiro CLI Provider enables CLIProxyAPI to interact with Amazon Q Developer (f
 
 ```bash
 # Run login command
-./server --kiro-login
+./cli-proxy-api --kiro-login
 
 # Follow prompts:
 # 1. Browser opens to verification URL
@@ -46,7 +46,7 @@ The Kiro CLI Provider enables CLIProxyAPI to interact with Amazon Q Developer (f
 No configuration needed! Just create token files with `kiro-` prefix:
 ```bash
 # Authenticate and token will be saved as kiro-*.json
-./server --kiro-login
+./cli-proxy-api --kiro-login
 # Token automatically discovered and loaded
 ```
 
@@ -68,7 +68,7 @@ kiro:
 ### 3. Start Server
 
 ```bash
-./server --config config.yaml
+./cli-proxy-api --config config.yaml
 ```
 
 ### 4. Use API
@@ -230,13 +230,13 @@ The Kiro provider uses OAuth 2.0 Device Code Flow for secure authentication:
 
 **Step 1**: Initiate authentication
 ```bash
-./server --kiro-login
+./cli-proxy-api --kiro-login
 ```
 
 **Step 2**: System displays:
 ```
 ============================================================
-  Amazon Q Developer (Kiro) CLI - Device Code Authentication
+  Kiro CLI - Device Code Authentication
 ============================================================
 
 User Code: ABCD-1234
@@ -272,7 +272,7 @@ ls -la ~/.kiro/
 jq '.expiresAt' ~/.kiro/auth.json
 
 # Re-authenticate
-./server --kiro-login
+./cli-proxy-api --kiro-login
 ```
 
 ---
@@ -418,10 +418,17 @@ The TokenManager implements **round-robin rotation** with automatic failover:
 - `helpers/defensive.go` - Safe parsing utilities (200 lines)
 
 **Execution** (`internal/runtime/executor/`)
-- `kiro_executor.go` - Main executor (305 lines)
+- `kiro_executor.go` - Main executor with 3-level fallback (480 lines)
+  - Primary request with full history
+  - Flattened history fallback for "improperly formed" errors
+  - Minimal request fallback (no history)
 
 **CLI** (`internal/cmd/`)
 - `kiro_login.go` - Login command (70 lines)
+
+**Helpers** (`internal/translator/kiro/helpers/`)
+- `stream_decoder.go` - Amazon event-stream binary decoder (150 lines)
+- CRC32 validation and frame parsing
 
 ### Technical Highlights
 
@@ -436,6 +443,8 @@ The TokenManager implements **round-robin rotation** with automatic failover:
 - **Multi-Format**: Supports OpenAI, Claude, and Gemini API formats
 - **SSE Streaming**: Proper event conversion for real-time responses
 - **Token Refresh**: Automatic refresh using OAuth2 with updated `expiresAt`
+- **3-Level Fallback**: Primary → Flattened → Minimal request recovery for "improperly formed" errors
+- **Amazon Event-Stream**: Binary SSE format decoder with CRC validation
 
 ---
 
@@ -457,7 +466,7 @@ Error: failed to obtain token
 Error: token expired and refresh failed
 ```
 **Solutions**:
-- Run `./server --kiro-login` again
+- Run `./cli-proxy-api --kiro-login` again
 - Verify refresh token hasn't been revoked
 - Check token file permissions are 0600
 
@@ -497,7 +506,7 @@ grep "kiro" /var/log/cliproxy.log
 
 ```bash
 # Validate config
-./server validate-config
+./cli-proxy-api validate-config
 
 # List available models
 curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro"))'
@@ -511,7 +520,7 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 
 #### Added - Complete Implementation
 
-**New Provider: Amazon Q Developer (Kiro)**
+**New Provider: Kiro**
 - OAuth Authentication with device code flow  
 - Token Management with automatic refresh
 - Multi-Account support with round-robin rotation
@@ -520,13 +529,25 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 - Streaming Support (SSE) with 6 event types
 - Tool/Function Calling with ID sanitization
 - Multimodal content (text + images)
+- 3-Level Fallback Mechanism for error recovery
+- Amazon Event-Stream binary format support
 
-#### New Files (11 files, ~2,350 lines)
-- `internal/auth/kiro/` - Authentication package (6 files, ~950 lines)
-- `internal/translator/kiro/` - Translation package (7 files, ~1,100 lines)
-- `internal/runtime/executor/kiro_executor.go` - Executor (~305 lines)
-- `internal/cmd/kiro_login.go` - Login command (~70 lines)
-- `tests/integration/kiro/` - Integration tests (2 files, ~280 lines)
+#### New Files (Production: 15 files, ~3,500 lines | Tests: 24 files, ~3,500 lines)
+
+**Production Code:**
+- `internal/auth/kiro/` - Authentication package (6 files, ~1,000 lines)
+  - auth.go, oauth.go, token_store.go, token_manager.go, errors.go, default_path.go
+- `internal/translator/kiro/` - Translation package (8 files, ~2,100 lines)
+  - OpenAI, Claude, Gemini format support
+  - Defensive helpers and stream decoder
+- `internal/runtime/executor/kiro_executor.go` - Executor with fallback (480 lines)
+- `internal/cmd/kiro_login.go` - Login command (70 lines)
+
+**Test Suite:**
+- `tests/unit/kiro/` - Unit tests (16 files, ~2,300 lines)
+- `tests/integration/kiro/` - Integration tests (5 files, ~800 lines)
+- `tests/regression/kiro/` - Regression tests (2 files, ~400 lines)
+- `tests/benchmarks/kiro/` - Performance benchmarks (1 file, ~200 lines)
 
 #### Configuration
 - Added `KiroConfig` with `AutoDiscover` support
@@ -555,6 +576,8 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 - Tool call ID sanitization with UUID fallback
 - Multimodal content support
 - SSE streaming chunk conversion
+- Amazon event-stream binary format decoding
+- 3-level fallback mechanism for error recovery
 
 **Auto-Discovery**:
 - Scans `~/.kiro/` for `kiro-*.json` files
@@ -580,7 +603,7 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 **Zero-Config Mode (Recommended)**:
 ```bash
 # Just authenticate - no config needed
-./server --kiro-login
+./cli-proxy-api --kiro-login
 ```
 
 **Explicit Mode**:
@@ -594,9 +617,18 @@ kiro:
 ```
 
 #### Testing
-- 9/9 integration tests passing
-- All packages compile successfully
-- Smoke tests verify executor, models, token storage
+- **Unit Tests**: 16 files, 100+ tests
+  - Authentication, translation, execution, helpers
+  - 3-level fallback mechanism (11 tests)
+  - Amazon event-stream decoder
+  - Network errors and concurrency
+- **Integration Tests**: 5 files, 9+ tests
+  - End-to-end flows, SSE streaming, translation
+- **Regression Tests**: 2 files, 9+ tests
+  - Thinking tag removal, SSE buffer limits
+- **Benchmarks**: 1 file, 5+ benchmarks
+  - Performance validation for critical paths
+- **All tests passing**: 100% pass rate with race detector clean
 
 #### Performance
 - Minimal overhead (~1ms token validation per request)

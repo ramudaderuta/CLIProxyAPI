@@ -14,36 +14,70 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// OAuth endpoints for Kiro device code flow
+// OAuth endpoints for Kiro device code flow via AWS SSO OIDC
 const (
-	// DeviceAuthEndpoint is the endpoint for requesting device codes
-	DeviceAuthEndpoint = "https://codewhisperer.us-east-1.amazonaws.com/device_authorization"
+	// RegisterClientEndpoint is the AWS SSO OIDC endpoint for registering public clients
+	RegisterClientEndpoint = "https://oidc.us-east-1.amazonaws.com/client/register"
 
-	// TokenEndpoint is the endpoint for exchanging device codes for tokens or refreshing tokens
-	TokenEndpoint = "https://codewhisperer.us-east-1.amazonaws.com/token"
+	// DeviceAuthEndpoint is the AWS SSO OIDC endpoint for requesting device codes
+	// Kiro uses AWS IAM Identity Center (SSO) for authentication
+	DeviceAuthEndpoint = "https://oidc.us-east-1.amazonaws.com/device_authorization"
+
+	// TokenEndpoint is the AWS SSO OIDC endpoint for exchanging device codes for tokens or refreshing tokens
+	TokenEndpoint = "https://oidc.us-east-1.amazonaws.com/token"
+
+	// DefaultStartURL is the default AWS access portal URL for Builder ID
+	DefaultStartURL = "https://view.awsapps.com/start"
 
 	// DefaultPollInterval is the default interval between polling attempts (in seconds)
 	DefaultPollInterval = 5
 
 	// MaxPollAttempts is the maximum number of polling attempts before giving up
 	MaxPollAttempts = 120 // 10 minutes with 5-second interval
+
+	// ClientCacheDuration is how long we consider a registered client valid (80 days, before 90-day expiry)
+	ClientCacheDuration = 80 * 24 * time.Hour
 )
+
+// RegisteredClient represents a registered OIDC client.
+type RegisteredClient struct {
+	ClientID              string    `json:"clientId"`
+	ClientSecret          string    `json:"clientSecret"`
+	ClientIDIssuedAt      int64     `json:"clientIdIssuedAt"`
+	ClientSecretExpiresAt int64     `json:"clientSecretExpiresAt"`
+	AuthorizationEndpoint string    `json:"authorizationEndpoint,omitempty"`
+	TokenEndpoint         string    `json:"tokenEndpoint,omitempty"`
+	RegisteredAt          time.Time `json:"registeredAt"`
+}
+
+// IsExpired checks if the client registration has expired or will expire soon.
+func (c *RegisteredClient) IsExpired() bool {
+	if c.ClientSecretExpiresAt == 0 {
+		// If no expiration set, check against our cache duration
+		return time.Since(c.RegisteredAt) > ClientCacheDuration
+	}
+	// Check if expires within next 10 days
+	expiryTime := time.Unix(c.ClientSecretExpiresAt, 0)
+	return time.Until(expiryTime) < 10*24*time.Hour
+}
 
 // DeviceCodeFlow handles the OAuth device code flow for Kiro authentication.
 type DeviceCodeFlow struct {
 	client       *http.Client
 	clientID     string
+	clientSecret string
+	startURL     string
 	scopes       []string
 	pollInterval time.Duration
 }
 
 // DeviceCodeResponse represents the response from the device authorization endpoint.
 type DeviceCodeResponse struct {
-	DeviceCode              string `json:"device_code"`
-	UserCode                string `json:"user_code"`
-	VerificationURI         string `json:"verification_uri"`
-	VerificationURIComplete string `json:"verification_uri_complete"`
-	ExpiresIn               int    `json:"expires_in"`
+	DeviceCode              string `json:"deviceCode"`
+	UserCode                string `json:"userCode"`
+	VerificationURI         string `json:"verificationUri"`
+	VerificationURIComplete string `json:"verificationUriComplete"`
+	ExpiresIn               int    `json:"expiresIn"`
 	Interval                int    `json:"interval"`
 }
 
@@ -62,13 +96,12 @@ type TokenResponse struct {
 //
 // Parameters:
 //   - cfg: Configuration for proxy settings
-//   - clientID: OAuth client ID for Kiro
-//   - scopes: OAuth scopes to request
+//   - client: Registered OIDC client information
 //
 // Returns:
 //   - *DeviceCodeFlow: The device code flow handler
-func NewDeviceCodeFlow(cfg *config.Config, clientID string, scopes []string) *DeviceCodeFlow {
-	client := &http.Client{
+func NewDeviceCodeFlow(cfg *config.Config, client *RegisteredClient) *DeviceCodeFlow {
+	httpClient := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
@@ -79,11 +112,81 @@ func NewDeviceCodeFlow(cfg *config.Config, clientID string, scopes []string) *De
 	}
 
 	return &DeviceCodeFlow{
-		client:       client,
-		clientID:     clientID,
-		scopes:       scopes,
+		client:       httpClient,
+		clientID:     client.ClientID,
+		clientSecret: client.ClientSecret,
+		startURL:     DefaultStartURL,
+		scopes:       []string{}, // Scopes are handled by StartDeviceAuthorization
 		pollInterval: DefaultPollInterval * time.Second,
 	}
+}
+
+// RegisterClient registers a new public OIDC client with AWS SSO.
+//
+// Parameters:
+//   - ctx: Context for the request
+//   - httpClient: HTTP client to use for the request
+//
+// Returns:
+//   - *RegisteredClient: The registered client information
+//   - error: An error if registration fails, nil otherwise
+func RegisterClient(ctx context.Context, httpClient *http.Client) (*RegisteredClient, error) {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
+
+	// Build request payload
+	payload := map[string]interface{}{
+		"clientName": "CLIProxyAPI-Kiro",
+		"clientType": "public",
+		"grantTypes": []string{
+			"urn:ietf:params:oauth:grant-type:device_code",
+			"refresh_token",
+		},
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, NewAuthError("RegisterClient", err, "failed to marshal request")
+	}
+
+	// Create HTTP request
+	req, err := http.NewRequestWithContext(ctx, "POST", RegisterClientEndpoint, bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, NewAuthError("RegisterClient", err, "failed to create request")
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+
+	// Execute request
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, NewAuthError("RegisterClient", err, "failed to send request")
+	}
+	defer resp.Body.Close()
+
+	// Read response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, NewAuthError("RegisterClient", err, "failed to read response")
+	}
+
+	// Check status code
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return nil, NewAuthError("RegisterClient", fmt.Errorf("status %d: %s", resp.StatusCode, string(body)), "request failed")
+	}
+
+	// Parse response
+	var clientResp RegisteredClient
+	if err = json.Unmarshal(body, &clientResp); err != nil {
+		return nil, NewAuthError("RegisterClient", err, "failed to parse response")
+	}
+
+	clientResp.RegisteredAt = time.Now()
+
+	log.Infof("Successfully registered OIDC client: %s", clientResp.ClientID)
+	return &clientResp, nil
 }
 
 // StartDeviceFlow initiates the device code flow by requesting a device code.
@@ -95,10 +198,11 @@ func NewDeviceCodeFlow(cfg *config.Config, clientID string, scopes []string) *De
 //   - *DeviceCodeResponse: The device code response with user code and verification URI
 //   - error: An error if the request fails, nil otherwise
 func (f *DeviceCodeFlow) StartDeviceFlow(ctx context.Context) (*DeviceCodeResponse, error) {
-	// Build request payload
+	// Build request payload for AWS SSO OIDC StartDeviceAuthorization
 	payload := map[string]interface{}{
-		"client_id": f.clientID,
-		"scope":     "https://cloudcode.aws/builderid/authorization",
+		"clientId":     f.clientID,
+		"clientSecret": f.clientSecret,
+		"startUrl":     f.startURL,
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -204,9 +308,10 @@ func (f *DeviceCodeFlow) PollForToken(ctx context.Context, deviceCode string) (*
 // requestToken attempts to exchange the device code for tokens.
 func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*KiroTokenStorage, error) {
 	payload := map[string]interface{}{
-		"client_id":   f.clientID,
-		"device_code": deviceCode,
-		"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
+		"clientId":     f.clientID,
+		"clientSecret": f.clientSecret,
+		"deviceCode":   deviceCode,
+		"grantType":    "urn:ietf:params:oauth:grant-type:device_code",
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -284,9 +389,10 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 //   - error: An error if refresh fails, nil otherwise
 func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) (*KiroTokenStorage, error) {
 	payload := map[string]interface{}{
-		"client_id":     f.clientID,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
+		"clientId":     f.clientID,
+		"clientSecret": f.clientSecret,
+		"grantType":    "refresh_token",
+		"refreshToken": refreshToken,
 	}
 
 	jsonData, err := json.Marshal(payload)

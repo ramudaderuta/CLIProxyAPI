@@ -24,7 +24,7 @@ const (
 
 // KiroAuthenticator provides methods for handling Kiro OAuth2 authentication flow.
 // It encapsulates the logic for obtaining, storing, and refreshing authentication tokens
-// for Amazon Q Developer (Kiro) CLI.
+// for Kiro CLI.
 type KiroAuthenticator struct {
 	cfg    *config.Config
 	oauth  *DeviceCodeFlow
@@ -39,15 +39,13 @@ type KiroAuthenticator struct {
 // Returns:
 //   - *KiroAuthenticator: The authenticator instance
 func NewKiroAuthenticator(cfg *config.Config) *KiroAuthenticator {
-	oauth := NewDeviceCodeFlow(cfg, DefaultClientID, []string{DefaultScopes})
-
 	client := &http.Client{
 		Timeout: 30 * time.Second,
 	}
 
 	return &KiroAuthenticator{
 		cfg:    cfg,
-		oauth:  oauth,
+		oauth:  nil, // Will be initialized during Authenticate
 		client: client,
 	}
 }
@@ -64,24 +62,93 @@ func NewKiroAuthenticator(cfg *config.Config) *KiroAuthenticator {
 //   - error: An error if authentication fails, nil otherwise
 func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage, *DeviceCodeResponse, error) {
 	log.Info("Starting Kiro device code authentication flow")
+	fmt.Println("[DEBUG] Authenticate: Starting")
+
+	// Get or create OIDC client registration
+	var registeredClient *RegisteredClient
+	var err error
+
+	// Try to load from cache first
+	fmt.Println("[DEBUG] Authenticate: Loading cached client")
+	registeredClient, err = LoadCachedClient()
+	if err != nil {
+		log.Warnf("Failed to load cached client: %v", err)
+		fmt.Printf("[DEBUG] Authenticate: Cache load error: %v\n", err)
+	}
+
+	// If no cached client or it's expired, register a new one
+	if registeredClient == nil {
+		fmt.Println("[DEBUG] Authenticate: No cached client, registering new one")
+		log.Info("No valid cached client found, registering new OIDC client...")
+		registeredClient, err = RegisterClient(ctx, a.client)
+		if err != nil {
+			fmt.Printf("[DEBUG] Authenticate: RegisterClient failed: %v\n", err)
+			return nil, nil, fmt.Errorf("failed to register OIDC client: %w", err)
+		}
+		fmt.Println("[DEBUG] Authenticate: RegisterClient succeeded")
+
+		// Save to cache for next time
+		if err := SaveCachedClient(registeredClient); err != nil {
+			log.Warnf("Failed to cache client registration: %v", err)
+		}
+	} else {
+		log.Info("Using cached OIDC client")
+		fmt.Println("[DEBUG] Authenticate: Using cached client")
+	}
+
+	// Initialize DeviceCodeFlow with the registered client
+	fmt.Println("[DEBUG] Authenticate: Creating DeviceCodeFlow")
+	a.oauth = NewDeviceCodeFlow(a.cfg, registeredClient)
+	fmt.Println("[DEBUG] Authenticate: DeviceCodeFlow created successfully")
 
 	// Start device code flow
+	fmt.Println("[DEBUG] Authenticate: About to call StartDeviceFlow")
 	deviceResp, err := a.oauth.StartDeviceFlow(ctx)
+	fmt.Printf("[DEBUG] Authenticate: StartDeviceFlow returned, err=%v, deviceResp=%v\n", err, deviceResp)
 	if err != nil {
+		fmt.Printf("[DEBUG] Authenticate: StartDeviceFlow error: %v\n", err)
 		return nil, nil, fmt.Errorf("failed to start device flow: %w", err)
 	}
+	fmt.Println("[DEBUG] Authenticate: StartDeviceFlow succeeded, no error")
 
 	log.Infof("Device code flow initiated. User code: %s", deviceResp.UserCode)
 	log.Infof("Please visit: %s", deviceResp.VerificationURI)
+	fmt.Println("[DEBUG] Authenticate: Returning deviceResp to caller")
 
-	// Poll for token
-	token, err := a.oauth.PollForToken(ctx, deviceResp.DeviceCode)
-	if err != nil {
-		return nil, deviceResp, fmt.Errorf("failed to obtain token: %w", err)
+	// Return the device response WITHOUT polling yet
+	// The caller (DoKiroLogin) will display the code to the user and then poll
+	return nil, deviceResp, nil
+}
+
+// ensureOAuthInitialized ensures that the OAuth client is initialized.
+// It loads the client registration from cache or registers a new client if needed.
+func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context) error {
+	if a.oauth != nil {
+		return nil
 	}
 
-	log.Info("Authentication successful")
-	return token, deviceResp, nil
+	// Try to load from cache first
+	registeredClient, err := LoadCachedClient()
+	if err != nil {
+		log.Warnf("Failed to load cached client: %v", err)
+	}
+
+	// If no cached client or it's expired, register a new one
+	if registeredClient == nil {
+		log.Info("No valid cached client found, registering new OIDC client...")
+		registeredClient, err = RegisterClient(ctx, a.client)
+		if err != nil {
+			return fmt.Errorf("failed to register OIDC client: %w", err)
+		}
+
+		// Save to cache
+		if err := SaveCachedClient(registeredClient); err != nil {
+			log.Warnf("Failed to cache client registration: %v", err)
+		}
+	}
+
+	a.oauth = NewDeviceCodeFlow(a.cfg, registeredClient)
+	return nil
 }
 
 // RefreshToken refreshes an expired access token using the refresh token.
@@ -96,6 +163,11 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage
 func (a *KiroAuthenticator) RefreshToken(ctx context.Context, storage *KiroTokenStorage) (*KiroTokenStorage, error) {
 	if storage == nil || storage.RefreshToken == "" {
 		return nil, fmt.Errorf("no refresh token available")
+	}
+
+	// Ensure OAuth client is initialized
+	if err := a.ensureOAuthInitialized(ctx); err != nil {
+		return nil, fmt.Errorf("failed to initialize oauth client: %w", err)
 	}
 
 	log.Info("Refreshing Kiro access token")
@@ -114,6 +186,30 @@ func (a *KiroAuthenticator) RefreshToken(ctx context.Context, storage *KiroToken
 
 	log.Info("Token refreshed successfully")
 	return newToken, nil
+}
+
+// PollForToken polls the token endpoint until the user authorizes the device.
+//
+// Parameters:
+//   - ctx: Context for the request
+//   - deviceCode: The device code from the StartDeviceFlow response
+//
+// Returns:
+//   - *KiroTokenStorage: The token storage after successful authorization
+//   - error: An error if polling fails, nil otherwise
+func (a *KiroAuthenticator) PollForToken(ctx context.Context, deviceCode string) (*KiroTokenStorage, error) {
+	if a.oauth == nil {
+		return nil, fmt.Errorf("oauth client not initialized")
+	}
+
+	log.Info("Polling for token authorization")
+	token, err := a.oauth.PollForToken(ctx, deviceCode)
+	if err != nil {
+		return nil, fmt.Errorf("failed to poll for token: %w", err)
+	}
+
+	log.Info("Authentication successful")
+	return token, nil
 }
 
 // ValidateToken checks if a token is valid and not expired.

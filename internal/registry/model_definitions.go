@@ -847,7 +847,7 @@ func GetQwenModels() []*ModelInfo {
 	}
 }
 
-// GetKiroModels returns the standard Kiro (Amazon Q Developer) model definitions
+// GetKiroModels returns the standard Kiro model definitions
 func GetKiroModels() []*ModelInfo {
 	return []*ModelInfo{
 		{
@@ -856,7 +856,7 @@ func GetKiroModels() []*ModelInfo {
 			Created:     1732320000, // Nov 23, 2024
 			OwnedBy:     "amazon",
 			Type:        "kiro",
-			DisplayName: "Amazon Q Developer Sonnet",
+			DisplayName: "Kiro Sonnet",
 			Description: "Mid-tier model balancing capability and speed",
 		},
 		{
@@ -865,7 +865,7 @@ func GetKiroModels() []*ModelInfo {
 			Created:     1732320000,
 			OwnedBy:     "amazon",
 			Type:        "kiro",
-			DisplayName: "Amazon Q Developer Opus",
+			DisplayName: "Kiro Opus",
 			Description: "Most capable model for complex tasks",
 		},
 		{
@@ -874,7 +874,7 @@ func GetKiroModels() []*ModelInfo {
 			Created:     1732320000,
 			OwnedBy:     "amazon",
 			Type:        "kiro",
-			DisplayName: "Amazon Q Developer Haiku",
+			DisplayName: "Kiro Haiku",
 			Description: "Fast and efficient model for simple tasks",
 		},
 	}

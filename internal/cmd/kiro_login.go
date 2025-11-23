@@ -11,19 +11,26 @@ import (
 )
 
 // DoKiroLogin triggers the Kiro OAuth device code flow.
-// It initiates the OAuth authentication process for Amazon Q Developer (Kiro) services
+// It initiates the OAuth authentication process for Kiro services
 // and saves the authentication tokens to the configured token file.
 //
 // Parameters:
 //   - cfg: The application configuration
-//   - tokenPath: Path where to save the token file (optional, uses default if empty)
-func DoKiroLogin(cfg *config.Config, tokenPath string) {
+//   - options: Login options including browser behavior and prompts (currently unused for device flow)
+func DoKiroLogin(cfg *config.Config, options *LoginOptions) {
+	if options == nil {
+		options = &LoginOptions{}
+	}
+
+	fmt.Println("[DEBUG] DoKiroLogin: Function called")
 	log.Info("Starting Kiro CLI authentication flow...")
 
 	// Create authenticator
+	fmt.Println("[DEBUG] DoKiroLogin: Creating authenticator")
 	authenticator := kiro.NewKiroAuthenticator(cfg)
 
 	// Start authentication flow
+	fmt.Println("[DEBUG] DoKiroLogin: Starting authentication flow")
 	ctx := context.Background()
 	tokenStorage, deviceResp, err := authenticator.Authenticate(ctx)
 	if err != nil {
@@ -35,7 +42,7 @@ func DoKiroLogin(cfg *config.Config, tokenPath string) {
 	// Display user code and verification URL during device flow
 	if deviceResp != nil {
 		fmt.Println("\n" + strings.Repeat("=", 60))
-		fmt.Println("  Amazon Q Developer (Kiro) CLI - Device Code Authentication")
+		fmt.Println("  Kiro CLI - Device Code Authentication")
 		fmt.Println(strings.Repeat("=", 60))
 		fmt.Printf("\n📱 User Code: %s\n", deviceResp.UserCode)
 		fmt.Printf("🌐 Verification URL: %s\n", deviceResp.VerificationURI)
@@ -45,18 +52,25 @@ func DoKiroLogin(cfg *config.Config, tokenPath string) {
 		fmt.Printf("\n⏱️  Expires in %d seconds\n", deviceResp.ExpiresIn)
 		fmt.Println("\n" + strings.Repeat("=", 60))
 		fmt.Println("\n⏳ Waiting for authorization...")
+
+		// Now poll for the token after user sees the code
+		fmt.Println("[DEBUG] DoKiroLogin: Calling PollForToken")
+		tokenStorage, err = authenticator.PollForToken(ctx, deviceResp.DeviceCode)
+		if err != nil {
+			fmt.Printf("❌ Kiro authentication failed while polling: %v\n", err)
+			log.Errorf("Token polling failed: %v", err)
+			return
+		}
+		fmt.Println("[DEBUG] DoKiroLogin: PollForToken succeeded")
 	}
 
-	// Determine save path
-	savePath := tokenPath
+	// Determine save path from config or use default
+	var savePath string
+	if cfg != nil && len(cfg.KiroConfig.TokenFiles) > 0 {
+		savePath = cfg.KiroConfig.TokenFiles[0].Path
+	}
 	if savePath == "" {
-		// Use default path from config or fallback
-		if cfg != nil && len(cfg.KiroConfig.TokenFiles) > 0 {
-			savePath = cfg.KiroConfig.TokenFiles[0].Path
-		}
-		if savePath == "" {
-			savePath = kiro.DefaultTokenPath()
-		}
+		savePath = kiro.DefaultTokenPath()
 	}
 
 	// Save token to file

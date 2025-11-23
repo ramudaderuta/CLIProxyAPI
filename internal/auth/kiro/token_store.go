@@ -1,5 +1,5 @@
 // Package kiro provides authentication and token management functionality
-// for Amazon Q Developer (Kiro) CLI. It handles OAuth2 device code flow
+// for Kiro CLI. It handles OAuth2 device code flow
 // authentication, token storage, and refresh for both GitHub OAuth and AWS
 // Builder ID authentication methods.
 package kiro

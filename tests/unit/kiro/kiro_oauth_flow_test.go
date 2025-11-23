@@ -36,7 +36,12 @@ func TestDeviceCodeFlow(t *testing.T) {
 
 	t.Run("successful device code request", func(t *testing.T) {
 		cfg := &config.Config{}
-		flow := kiro.NewDeviceCodeFlow(cfg, kiro.DefaultClientID, []string{kiro.DefaultScopes})
+		client := &kiro.RegisteredClient{
+			ClientID:     "mock_client_id",
+			ClientSecret: "mock_client_secret",
+			RegisteredAt: time.Now(),
+		}
+		flow := kiro.NewDeviceCodeFlow(cfg, client)
 
 		// Note: This would need to be modified to accept custom endpoint
 		// For now, we test the structure
@@ -312,30 +317,21 @@ func TestOAuthTimeout(t *testing.T) {
 
 // TestOAuthClientConfiguration tests OAuth client setup
 func TestOAuthClientConfiguration(t *testing.T) {
-	t.Run("default client ID", func(t *testing.T) {
-		expectedClientID := "arn:aws:codewhisperer:us-east-1::client/codewhisperer-cli"
-		if kiro.DefaultClientID != expectedClientID {
-			t.Errorf("Expected client ID %s, got %s", expectedClientID, kiro.DefaultClientID)
-		}
-		t.Log("✓ Default client ID validated")
-	})
-
-	t.Run("default scopes", func(t *testing.T) {
-		expectedScopes := "https://cloudcode.aws/builderid/authorization"
-		if kiro.DefaultScopes != expectedScopes {
-			t.Errorf("Expected scopes %s, got %s", expectedScopes, kiro.DefaultScopes)
-		}
-		t.Log("✓ Default scopes validated")
-	})
-
-	t.Run("client timeout configuration", func(t *testing.T) {
+	t.Run("client configuration", func(t *testing.T) {
 		cfg := &config.Config{}
-		flow := kiro.NewDeviceCodeFlow(cfg, kiro.DefaultClientID, []string{kiro.DefaultScopes})
+		client := &kiro.RegisteredClient{
+			ClientID:     "test_client_id",
+			ClientSecret: "test_client_secret",
+			RegisteredAt: time.Now(),
+		}
+		flow := kiro.NewDeviceCodeFlow(cfg, client)
 
 		if flow == nil {
 			t.Fatal("Failed to create OAuth flow")
 		}
 
+		// We can't easily check private fields, but successful creation implies
+		// the client ID and secret were accepted.
 		t.Log("✓ OAuth client configuration validated")
 	})
 }

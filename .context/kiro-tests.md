@@ -17,7 +17,7 @@ tests/
 │   ├── env.go          # Environment & time utilities
 │   ├── payloads.go     # Request/response builders
 │   └── test_utils.go   # Kiro-specific fixtures
-├── unit/kiro/          # Unit tests (14 files, 90+ tests)
+├── unit/kiro/          # Unit tests (16 files, 100+ tests)
 │   ├── kiro_config_test.go                   # Configuration & auto-discovery
 │   ├── kiro_core_test.go                     # Auth & token management
 │   ├── kiro_translation_test.go              # OpenAI ↔ Kiro translation
@@ -31,7 +31,9 @@ tests/
 │   ├── kiro_oauth_flow_test.go               # OAuth device code flow
 │   ├── kiro_token_manager_rotation_test.go   # Token rotation & failover
 │   ├── kiro_network_errors_test.go           # Network error handling
-│   └── kiro_concurrency_test.go              # Concurrency & edge cases
+│   ├── kiro_concurrency_test.go              # Concurrency & edge cases
+│   ├── kiro_fallback_test.go                 # 3-level fallback mechanism
+│   └── kiro_stream_decoder_test.go           # Amazon event-stream decoder
 ├── integration/kiro/   # Integration tests (5 files, 9+ tests)
 │   ├── kiro_comprehensive_test.go            # End-to-end flows
 │   ├── kiro_smoke_test.go                    # Basic smoke tests
@@ -104,7 +106,7 @@ go test ./tests/unit/kiro/ -golden
 
 ## Test Categories
 
-### Unit Tests (14 files, 90+ tests)
+### Unit Tests (16 files, 100+ tests)
 
 #### kiro_config_test.go
 - Configuration structure validation
@@ -309,6 +311,46 @@ go test ./tests/unit/kiro/ -golden
 - `TestTokenFileCorruption` - File corruption (5 scenarios)
 - `TestDiskErrors` - Disk failures
 - `TestRaceConditions` - Race detection
+
+#### kiro_fallback_test.go
+- 3-level fallback mechanism (Primary → Flattened → Minimal)
+- "Improperly formed request" error detection
+- History flattening logic
+- Minimal request construction
+- Request counting and attempt tracking
+- Edge case handling (invalid JSON, missing fields)
+- Fallback integration scenarios
+
+**Key Tests:**
+- `TestPrimaryRequestSuccess` - Primary succeeds without fallback
+- `TestFlattenedFallbackSuccess` - Level 2 fallback recovery
+- `TestMinimalFallbackSuccess` - Level 3 fallback recovery
+- `TestAllFallbacksFail` - All levels exhausted
+- `TestIsImproperlyFormedError` - Error detection (8 subtests)
+- `TestFlattenHistoryTransformation` - JSON transformation
+- `TestFlattenHistoryEdgeCases` - Edge cases (4 subtests)
+- `TestBuildMinimalRequest` - Minimal request builder
+- `TestBuildMinimalRequestEdgeCases` - Builder edge cases (3 subtests)
+- `TestFallbackRequestCounting` - Attempt counting (4 scenarios)
+- `TestFallbackIntegrationScenario` - End-to-end integration
+
+**Coverage:** 90-100% for all fallback functions (`attemptRequestWithFallback`, `flattenHistory`, `buildMinimalRequest`, `isImproperlFormedError`)
+
+#### kiro_stream_decoder_test.go
+- Amazon event-stream binary format decoding
+- Event frame parsing (prelude, headers, payload, CRC)
+- Multiple event handling
+- CRC validation
+- Non-event-stream passthrough
+- Malformed stream handling
+
+**Key Tests:**
+- `TestStreamDecoder` - Binary format parsing
+- `TestEventFrameStructure` - Frame validation
+- `TestMultipleEvents` - Multiple frame handling
+- `TestCRCValidation` - Checksum verification
+- `TestNonEventStream` - Passthrough for regular SSE
+- `TestMalformedStream` - Error handling
 
 ### Integration Tests (5 files, 9+ tests)
 
