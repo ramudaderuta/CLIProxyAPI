@@ -49,20 +49,17 @@ func (tm *TokenManager) LoadTokens(ctx context.Context) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// Auto-discover is enabled by default unless:
-	// 1. Explicitly disabled in config (auto-discover: false)
-	// 2. Token files are explicitly provided
+	// Check if Kiro is explicitly disabled AND no token files provided
+	if tm.cfg != nil && !tm.cfg.KiroConfig.Enabled && len(tm.cfg.KiroConfig.TokenFiles) == 0 {
+		log.Debugf("Kiro explicitly disabled in configuration")
+		return nil
+	}
+
+	// Auto-discover is enabled by default unless token files are explicitly provided
 	shouldAutoDiscover := true
-	if tm.cfg != nil {
+	if tm.cfg != nil && len(tm.cfg.KiroConfig.TokenFiles) > 0 {
 		// If token files are explicitly provided, don't auto-discover
-		if len(tm.cfg.KiroConfig.TokenFiles) > 0 {
-			shouldAutoDiscover = false
-		}
-		// If enabled is explicitly set to false, skip entirely
-		if tm.cfg.KiroConfig.Enabled == false {
-			log.Debugf("Kiro explicitly disabled in configuration")
-			return nil
-		}
+		shouldAutoDiscover = false
 	}
 
 	tm.tokens = make([]*TokenEntry, 0)

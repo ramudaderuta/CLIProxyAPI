@@ -22,7 +22,6 @@ auths/*
 !auths/.gitkeep
 
 # Documentation
-.context/*
 docs/*
 AGENTS.md
 CLAUDE.md

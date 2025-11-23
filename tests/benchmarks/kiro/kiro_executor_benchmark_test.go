@@ -2,13 +2,13 @@ package kiro
 
 import (
 	"testing"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 )
 
 // TestExecutorBenchmarks benchmarks executor performance
 func BenchmarkExecutorFullCycle(b *testing.B) {
-	fixtures := shared.NewKiroTestFixtures(&testing.T{})
 
 	request := shared.BuildOpenAIRequest(
 		"kiro-sonnet",
@@ -25,13 +25,14 @@ func BenchmarkExecutorFullCycle(b *testing.B) {
 }
 
 func BenchmarkTokenValidation(b *testing.B) {
-	fixtures := shared.NewKiroTestFixtures(&testing.T{})
+	// Create a simple token for benchmarking
+	expiresAt := time.Now().Add(1 * time.Hour)
 
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
 		// Simulate token validation
-		_ = fixtures.TokenStorage.ExpiresAt
+		_ = expiresAt
 	}
 }
 
