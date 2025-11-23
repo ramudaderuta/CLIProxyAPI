@@ -157,64 +157,29 @@ Token saved to: /home/user/.kiro/auth.json
 
 ## Configuration
 
-### Zero-Config Mode (Recommended)
+### Zero-Config Mode
 
-**No configuration required!** Kiro automatically enables when token files are present.
+**No configuration required!** Kiro automatically discovers and loads token files.
 
 **How it works:**
-1. Place `kiro-*.json` files in `~/.kiro/` directory
-2. System automatically discovers all files
-3. Labels extracted from filename (`kiro-primary.json` → label: "primary")
+1. Authenticate with `./server --kiro-login`
+2. Token file saved to `~/.cli-proxy-api/kiro-BuilderId-<timestamp>.json`
+3. System automatically discovers all `kiro-*.json` files on startup
 4. Round-robin rotation enabled automatically
 
-**Example token files:**
+**Multiple tokens:**
+Simply run `--kiro-login` multiple times or manually place multiple `kiro-*.json` files in `~/.cli-proxy-api/`:
 ```bash
-~/.kiro/kiro-primary.json
-~/.kiro/kiro-backup.json
-~/.kiro/kiro-team.json
-```
-
-### Explicit Configuration
-
-If you need to customize token locations or disable auto-discovery:
-
-```yaml
-kiro:
-  token-files:
-    - path: ~/.kiro/kiro-primary.json
-      region: us-east-1  # Optional: defaults to us-east-1
-      label: "primary"   # Optional: extracted from filename
-```
-
-### Multi-Account Configuration
-
-Configure multiple accounts for high availability:
-
-```yaml
-kiro:
-  token-files:
-    # Primary account
-    - path: ~/.kiro/kiro-primary.json
-      region: us-east-1
-      label: "primary-us-east"
-    
-    # Secondary account (failover)
-    - path: ~/.kiro/kiro-backup.json
-      region: us-west-2
-      label: "backup-us-west"
-    
-    # Team account
-    - path: ~/.kiro/kiro-team.json
-      region: eu-west-1
-      label: "team-europe"
+~/.cli-proxy-api/kiro-BuilderId-1700000001.json
+~/.cli-proxy-api/kiro-BuilderId-1700000002.json
+~/.cli-proxy-api/kiro-BuilderId-1700000003.json
 ```
 
 **Multi-Account Features:**
-- **Round-Robin Rotation**: Tokens tried in order from configuration
-- **Automatic Failover**: Next available token automatically used on failure
+- **Round-Robin Rotation**: Tokens tried in order
+- **Automatic Failover**: Next available token used on failure
 - **Failure Tracking**: Failed tokens increment failure counter
 - **Auto-Disable**: After 3 consecutive failures, token temporarily disabled
-- **Periodic Reset**: Disabled tokens re-enabled periodically
 
 ### Token File Format
 
@@ -237,24 +202,6 @@ Compatible with official kiro-cli:
 ---
 
 ## Advanced Configuration
-
-### Custom Region Override
-
-Override the region extracted from token files:
-
-```yaml
-kiro:
-  region: us-west-2  # Global region override
-```
-
-### Disable Auto-Discovery
-
-To explicitly disable auto-discovery:
-
-```yaml
-kiro:
-  enabled: false  # Disables even if token files exist
-```
 
 ### Authentication Methods
 
@@ -356,7 +303,7 @@ Error: token expired and refresh failed
 Error: model not found: kiro-sonnet
 ```
 **Solutions:**
-- Ensure you have authenticated and the token file exists in `~/.kiro/`
+- Ensure you have authenticated and the token file exists in `~/.cli-proxy-api/`
 - Verify Kiro is enabled (auto-enabled when tokens present)
 - Restart CLIProxyAPI after adding tokens
 
@@ -366,7 +313,7 @@ Error: failed to read token file: permission denied
 ```
 **Solutions:**
 - Token files must have `0600` permissions (read/write only by owner)
-- Run: `chmod 600 ~/.kiro/*.json`
+- Run: `chmod 600 ~/.cli-proxy-api/*.json`
 
 **All Tokens Failed**
 ```
@@ -374,7 +321,7 @@ Error: all tokens failed validation
 ```
 **Solutions:**
 - Check token file permissions (should be 0600)
-- Verify token expiration dates with: `jq '.expiresAt' ~/.kiro/*.json`
+- Verify token expiration dates with: `jq '.expiresAt' ~/.cli-proxy-api/*.json`
 - Re-authenticate with `--kiro-login`
 - Check AWS service status
 
@@ -412,7 +359,7 @@ grep "kiro" /var/log/cliproxy.log
 curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro"))'
 
 # Check token status
-jq '.expiresAt' ~/.kiro/kiro-primary.json
+jq '.expiresAt' ~/.cli-proxy-api/kiro-primary.json
 ```
 
 ---

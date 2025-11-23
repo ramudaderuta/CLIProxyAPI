@@ -82,14 +82,26 @@ type DeviceCodeResponse struct {
 }
 
 // TokenResponse represents the response from the token endpoint.
+// AWS SSO OIDC uses camelCase for field names, not snake_case.
 type TokenResponse struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	TokenType    string `json:"token_type"`
-	ExpiresIn    int    `json:"expires_in"`
-	Scope        string `json:"scope"`
+	AccessToken  string `json:"accessToken"`
+	RefreshToken string `json:"refreshToken"`
+	TokenType    string `json:"tokenType"`
+	ExpiresIn    int    `json:"expiresIn"`
+	Scope        string `json:"scope,omitempty"`
 	Error        string `json:"error,omitempty"`
 	ErrorDesc    string `json:"error_description,omitempty"`
+}
+
+// maskToken masks a token for safe logging.
+func maskToken(token string) string {
+	if token == "" {
+		return "<empty>"
+	}
+	if len(token) < 8 {
+		return "***"
+	}
+	return token[:4] + "..." + token[len(token)-4:]
 }
 
 // NewDeviceCodeFlow creates a new device code flow handler.
@@ -136,9 +148,11 @@ func RegisterClient(ctx context.Context, httpClient *http.Client) (*RegisteredCl
 	}
 
 	// Build request payload
+	// issuerUrl is required for proper consent screen display
 	payload := map[string]interface{}{
-		"clientName": "CLIProxyAPI-Kiro",
+		"clientName": "Kiro CLI",
 		"clientType": "public",
+		"issuerUrl":  "https://codewhisperer.aws",
 		"grantTypes": []string{
 			"urn:ietf:params:oauth:grant-type:device_code",
 			"refresh_token",
@@ -158,6 +172,8 @@ func RegisterClient(ctx context.Context, httpClient *http.Client) (*RegisteredCl
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Kiro-CLI")
+	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
 
 	// Execute request
 	resp, err := httpClient.Do(req)
@@ -210,6 +226,8 @@ func (f *DeviceCodeFlow) StartDeviceFlow(ctx context.Context) (*DeviceCodeRespon
 		return nil, NewAuthError("StartDeviceFlow", err, "failed to marshal request")
 	}
 
+	log.Debugf("StartDeviceFlow: Endpoint=%s, RequestBody=%s", DeviceAuthEndpoint, string(jsonData))
+
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", DeviceAuthEndpoint, bytes.NewReader(jsonData))
 	if err != nil {
@@ -218,6 +236,8 @@ func (f *DeviceCodeFlow) StartDeviceFlow(ctx context.Context) (*DeviceCodeRespon
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Kiro-CLI")
+	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
 
 	// Execute request
 	resp, err := f.client.Do(req)
@@ -326,6 +346,8 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Kiro-CLI")
+	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
 
 	resp, err := f.client.Do(req)
 	if err != nil {
@@ -338,10 +360,18 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 		return nil, NewAuthError("requestToken", err, "failed to read response")
 	}
 
+	// Log response for debugging (only at DEBUG level)
+	log.Debugf("requestToken: HTTP Status=%d, Response body: %s", resp.StatusCode, string(body))
+
 	var tokenResp TokenResponse
 	if err = json.Unmarshal(body, &tokenResp); err != nil {
+		log.Errorf("requestToken: Failed to parse JSON: %v", err)
 		return nil, NewAuthError("requestToken", err, "failed to parse response")
 	}
+
+	log.Debugf("requestToken: Parsed - AccessToken=%s, RefreshToken=%s, TokenType=%s, ExpiresIn=%d, Error=%s",
+		maskToken(tokenResp.AccessToken), maskToken(tokenResp.RefreshToken),
+		tokenResp.TokenType, tokenResp.ExpiresIn, tokenResp.Error)
 
 	// Check for OAuth errors
 	if tokenResp.Error != "" {
@@ -360,15 +390,16 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 	}
 
 	// Validate token response
-	if tokenResp.AccessToken == "" || tokenResp.RefreshToken == "" {
-		return nil, NewAuthError("requestToken", fmt.Errorf("missing tokens in response"), "invalid response")
+	// Note: refreshToken may be null/empty on initial device code authorization
+	if tokenResp.AccessToken == "" {
+		return nil, NewAuthError("requestToken", fmt.Errorf("missing access token in response"), "invalid response")
 	}
 
 	// Build token storage
 	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	storage := &KiroTokenStorage{
 		AccessToken:  tokenResp.AccessToken,
-		RefreshToken: tokenResp.RefreshToken,
+		RefreshToken: tokenResp.RefreshToken, // May be empty
 		ExpiresAt:    expiresAt,
 		AuthMethod:   "IdC", // Device code flow uses IdC method
 		Provider:     "BuilderId",
@@ -407,6 +438,8 @@ func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) 
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "Kiro-CLI")
+	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
 
 	resp, err := f.client.Do(req)
 	if err != nil {

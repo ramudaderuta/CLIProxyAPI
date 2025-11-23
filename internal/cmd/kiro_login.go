@@ -3,7 +3,10 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -65,13 +68,27 @@ func DoKiroLogin(cfg *config.Config, options *LoginOptions) {
 	}
 
 	// Determine save path from config or use default
-	var savePath string
-	if cfg != nil && len(cfg.KiroConfig.TokenFiles) > 0 {
-		savePath = cfg.KiroConfig.TokenFiles[0].Path
+	// Determine save path
+	authDir := cfg.AuthDir
+	if authDir == "" {
+		// Fallback to default directory if not configured
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Errorf("Failed to get user home directory: %v", err)
+			return
+		}
+		authDir = filepath.Join(home, ".cli-proxy-api")
 	}
-	if savePath == "" {
-		savePath = kiro.DefaultTokenPath()
+
+	// Ensure directory exists
+	if err := os.MkdirAll(authDir, 0700); err != nil {
+		log.Errorf("Failed to create auth directory: %v", err)
+		return
 	}
+
+	// Generate dynamic filename: kiro-BuilderId-<timestamp>.json
+	filename := fmt.Sprintf("kiro-BuilderId-%d.json", time.Now().Unix())
+	var savePath = filepath.Join(authDir, filename)
 
 	// Save token to file
 	if err := tokenStorage.SaveTokenToFile(savePath); err != nil {

@@ -115,7 +115,8 @@ func TestTokenFilePermissions(t *testing.T) {
 	fixtures.SaveToken()
 
 	// Check file permissions
-	tokenPath := fixtures.Cfg.KiroConfig.TokenFiles[0].Path
+	// Check file permissions
+	tokenPath := filepath.Join(fixtures.Cfg.AuthDir, "kiro-test.json")
 	info, err := os.Stat(tokenPath)
 	if err != nil {
 		t.Fatalf("Failed to stat token file: %v", err)

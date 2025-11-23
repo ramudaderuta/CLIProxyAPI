@@ -3,6 +3,7 @@ package shared
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -23,17 +24,10 @@ type KiroTestFixtures struct {
 func NewKiroTestFixtures(t *testing.T) *KiroTestFixtures {
 	t.Helper()
 
+	authDir := TempDir(t, "kiro-test-auth-*")
 	cfg := &config.Config{
-		AuthDir: TempDir(t, "kiro-test-auth-*"),
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{
-					Path:   TempFile(t, "kiro-token-*.json").Name(),
-					Region: "us-east-1",
-					Label:  "test",
-				},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	tokenStorage := &kiro.KiroTokenStorage{
@@ -82,11 +76,8 @@ func (ktf *KiroTestFixtures) WithCustomConfig(cfg *config.Config) *KiroTestFixtu
 func (ktf *KiroTestFixtures) SaveToken() {
 	ktf.T.Helper()
 
-	if len(ktf.Cfg.KiroConfig.TokenFiles) == 0 {
-		ktf.T.Fatal("No token file configured")
-	}
-
-	path := ktf.Cfg.KiroConfig.TokenFiles[0].Path
+	// Create a default token file path in AuthDir
+	path := filepath.Join(ktf.Cfg.AuthDir, "kiro-test.json")
 	if err := ktf.TokenStorage.SaveTokenToFile(path); err != nil {
 		ktf.T.Fatalf("Failed to save token: %v", err)
 	}
@@ -96,11 +87,7 @@ func (ktf *KiroTestFixtures) SaveToken() {
 func (ktf *KiroTestFixtures) LoadToken() *kiro.KiroTokenStorage {
 	ktf.T.Helper()
 
-	if len(ktf.Cfg.KiroConfig.TokenFiles) == 0 {
-		ktf.T.Fatal("No token file configured")
-	}
-
-	path := ktf.Cfg.KiroConfig.TokenFiles[0].Path
+	path := filepath.Join(ktf.Cfg.AuthDir, "kiro-test.json")
 	storage, err := kiro.LoadTokenFromFile(path)
 	if err != nil {
 		ktf.T.Fatalf("Failed to load token: %v", err)

@@ -26,7 +26,9 @@ type TokenManager struct {
 // TokenEntry represents a single token with its configuration and status.
 type TokenEntry struct {
 	Storage   *KiroTokenStorage
-	Config    config.KiroTokenFile
+	Path      string
+	Region    string
+	Label     string
 	LastUsed  time.Time
 	FailCount int
 	Disabled  bool
@@ -42,87 +44,50 @@ func NewTokenManager(cfg *config.Config) *TokenManager {
 	}
 }
 
-// LoadTokens loads all configured token files.
-// If auto-discover is enabled (default) or token-files is empty, it will scan auth-dir for kiro-*.json files.
-// If tokens are found, Kiro will be automatically enabled even if not explicitly configured.
+// LoadTokens loads all token files using auto-discovery from auth-dir.
+// It scans auth-dir for kiro-*.json files and loads them automatically.
 func (tm *TokenManager) LoadTokens(ctx context.Context) error {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
-	// Check if Kiro is explicitly disabled AND no token files provided
-	if tm.cfg != nil && !tm.cfg.KiroConfig.Enabled && len(tm.cfg.KiroConfig.TokenFiles) == 0 {
-		log.Debugf("Kiro explicitly disabled in configuration")
+	tm.tokens = make([]*TokenEntry, 0)
+
+	// Auto-discover kiro-*.json files from auth-dir
+	discoveredFiles, err := tm.discoverTokenFiles()
+	if err != nil {
+		log.Debugf("Failed to auto-discover Kiro token files: %v", err)
+		// Not an error if no tokens found - Kiro is optional
 		return nil
 	}
 
-	// Auto-discover is enabled by default unless token files are explicitly provided
-	shouldAutoDiscover := true
-	if tm.cfg != nil && len(tm.cfg.KiroConfig.TokenFiles) > 0 {
-		// If token files are explicitly provided, don't auto-discover
-		shouldAutoDiscover = false
-	}
-
-	tm.tokens = make([]*TokenEntry, 0)
-
-	if shouldAutoDiscover {
-		// Auto-discover kiro-*.json files from auth-dir
-		discoveredFiles, err := tm.discoverTokenFiles()
+	// Load discovered files
+	for _, filePath := range discoveredFiles {
+		storage, err := LoadTokenFromFile(filePath)
 		if err != nil {
-			log.Debugf("Failed to auto-discover Kiro token files: %v", err)
-			// Don't return error, just skip auto-discovery
+			log.Warnf("Failed to load token from %s: %v", filePath, err)
+			continue
 		}
 
-		// Load discovered files
-		for _, filePath := range discoveredFiles {
-			storage, err := LoadTokenFromFile(filePath)
-			if err != nil {
-				log.Warnf("Failed to load token from %s: %v", filePath, err)
-				continue
-			}
+		// Extract label from filename (kiro-xxx.json -> xxx)
+		label := extractLabelFromPath(filePath)
 
-			// Extract label from filename (kiro-xxx.json -> xxx)
-			label := extractLabelFromPath(filePath)
-
-			entry := &TokenEntry{
-				Storage: storage,
-				Config: config.KiroTokenFile{
-					Path:   filePath,
-					Region: storage.Region,
-					Label:  label,
-				},
-				LastUsed:  time.Time{},
-				FailCount: 0,
-				Disabled:  false,
-			}
-
-			tm.tokens = append(tm.tokens, entry)
-			log.Infof("Auto-discovered Kiro token from %s (label: %s)", filePath, label)
+		entry := &TokenEntry{
+			Storage:   storage,
+			Path:      filePath,
+			Region:    storage.Region,
+			Label:     label,
+			LastUsed:  time.Time{},
+			FailCount: 0,
+			Disabled:  false,
 		}
-	} else if tm.cfg != nil && len(tm.cfg.KiroConfig.TokenFiles) > 0 {
-		// Load explicitly configured token files
-		for _, tokenFileCfg := range tm.cfg.KiroConfig.TokenFiles {
-			storage, err := LoadTokenFromFile(tokenFileCfg.Path)
-			if err != nil {
-				log.Warnf("Failed to load token from %s: %v", tokenFileCfg.Path, err)
-				continue
-			}
 
-			entry := &TokenEntry{
-				Storage:   storage,
-				Config:    tokenFileCfg,
-				LastUsed:  time.Time{},
-				FailCount: 0,
-				Disabled:  false,
-			}
-
-			tm.tokens = append(tm.tokens, entry)
-			log.Infof("Loaded Kiro token from %s (label: %s)", tokenFileCfg.Path, tokenFileCfg.Label)
-		}
+		tm.tokens = append(tm.tokens, entry)
+		log.Infof("Auto-discovered Kiro token from %s (label: %s)", filePath, label)
 	}
 
 	if len(tm.tokens) == 0 {
 		// Not an error if no tokens found - Kiro is optional
-		log.Debugf("No Kiro tokens loaded (auto-discover: %v)", shouldAutoDiscover)
+		log.Debugf("No Kiro tokens loaded from auto-discovery")
 		return nil
 	}
 
@@ -154,12 +119,12 @@ func (tm *TokenManager) GetNextToken(ctx context.Context) (*KiroTokenStorage, er
 		// Validate and refresh if needed
 		validToken, refreshed, err := tm.authenticator.ValidateToken(ctx, entry.Storage)
 		if err != nil {
-			log.Warnf("Token validation failed for %s: %v", entry.Config.Label, err)
+			log.Warnf("Token validation failed for %s: %v", entry.Label, err)
 			entry.FailCount++
 
 			// Disable token after 3 consecutive failures
 			if entry.FailCount >= 3 {
-				log.Errorf("Disabling token %s after %d failures", entry.Config.Label, entry.FailCount)
+				log.Errorf("Disabling token %s after %d failures", entry.Label, entry.FailCount)
 				entry.Disabled = true
 			}
 
@@ -171,10 +136,10 @@ func (tm *TokenManager) GetNextToken(ctx context.Context) (*KiroTokenStorage, er
 		if refreshed {
 			entry.Storage = validToken
 			// Save refreshed token back to file
-			if err := validToken.SaveTokenToFile(entry.Config.Path); err != nil {
-				log.Warnf("Failed to save refreshed token to %s: %v", entry.Config.Path, err)
+			if err := validToken.SaveTokenToFile(entry.Path); err != nil {
+				log.Warnf("Failed to save refreshed token to %s: %v", entry.Path, err)
 			} else {
-				log.Infof("Refreshed and saved token for %s", entry.Config.Label)
+				log.Infof("Refreshed and saved token for %s", entry.Label)
 			}
 		}
 
@@ -220,7 +185,7 @@ func (tm *TokenManager) ResetFailures() {
 
 	for _, entry := range tm.tokens {
 		if entry.Disabled && entry.FailCount >= 3 {
-			log.Infof("Re-enabling token %s after failure reset", entry.Config.Label)
+			log.Infof("Re-enabling token %s after failure reset", entry.Label)
 			entry.Disabled = false
 			entry.FailCount = 0
 		}
@@ -246,9 +211,9 @@ func (tm *TokenManager) GetTokenStats() map[string]interface{} {
 		}
 
 		detail := map[string]interface{}{
-			"label":       entry.Config.Label,
-			"path":        entry.Config.Path,
-			"region":      entry.Config.Region,
+			"label":       entry.Label,
+			"path":        entry.Path,
+			"region":      entry.Region,
 			"last_used":   entry.LastUsed,
 			"fail_count":  entry.FailCount,
 			"disabled":    entry.Disabled,
@@ -270,7 +235,7 @@ func (tm *TokenManager) discoverTokenFiles() ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("failed to get home directory: %w", err)
 		}
-		authDir = filepath.Join(home, ".kiro")
+		authDir = filepath.Join(home, ".cli-proxy-api")
 	}
 
 	// Expand ~ if present

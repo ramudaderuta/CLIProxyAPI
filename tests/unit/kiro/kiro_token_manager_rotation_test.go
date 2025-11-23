@@ -59,13 +59,8 @@ func TestRoundRobinSelection(t *testing.T) {
 
 	// Create config
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: filepath.Join(authDir, "kiro-token1.json"), Region: "us-east-1", Label: "token1"},
-				{Path: filepath.Join(authDir, "kiro-token2.json"), Region: "us-west-2", Label: "token2"},
-				{Path: filepath.Join(authDir, "kiro-token3.json"), Region: "eu-west-1", Label: "token3"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)
@@ -153,12 +148,8 @@ func TestAutomaticFailover(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: expiredPath, Region: "us-east-1", Label: "expired"},
-				{Path: validPath, Region: "us-west-2", Label: "valid"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)
@@ -304,13 +295,8 @@ func TestTokenManagerStats(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: filepath.Join(authDir, "kiro-token1.json"), Region: "us-east-1", Label: "token1"},
-				{Path: filepath.Join(authDir, "kiro-token2.json"), Region: "us-east-1", Label: "token2"},
-				{Path: filepath.Join(authDir, "kiro-token3.json"), Region: "us-east-1", Label: "token3"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)
@@ -438,11 +424,8 @@ func TestTokenManagerConcurrency(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: path, Region: "us-east-1", Label: "test"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)
@@ -508,13 +491,8 @@ func BenchmarkTokenRotation(b *testing.B) {
 	}
 
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: filepath.Join(authDir, "kiro-token1.json"), Region: "us-east-1", Label: "token1"},
-				{Path: filepath.Join(authDir, "kiro-token2.json"), Region: "us-east-1", Label: "token2"},
-				{Path: filepath.Join(authDir, "kiro-token3.json"), Region: "us-east-1", Label: "token3"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)

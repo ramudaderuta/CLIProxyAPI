@@ -473,11 +473,8 @@ func TestRaceConditions(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			TokenFiles: []config.KiroTokenFile{
-				{Path: path, Region: "us-east-1", Label: "test"},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	manager := kiro.NewTokenManager(cfg)

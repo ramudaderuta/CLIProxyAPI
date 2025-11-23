@@ -286,17 +286,11 @@ func TestTokenManager(t *testing.T) {
 	// This is a unit test for token manager logic
 	// In practice, it would need valid token files
 
+	// Create a temporary directory for auth files
+	authDir := t.TempDir()
 	cfg := &config.Config{
-		KiroConfig: config.KiroConfig{
-			Enabled: true,
-			TokenFiles: []config.KiroTokenFile{
-				{
-					Path:   "/tmp/kiro-test-token.json",
-					Region: "us-east-1",
-					Label:  "test",
-				},
-			},
-		},
+		AuthDir:    authDir,
+		KiroConfig: config.KiroConfig{},
 	}
 
 	tm := kiro.NewTokenManager(cfg)

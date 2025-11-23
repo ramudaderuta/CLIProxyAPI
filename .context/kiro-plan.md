@@ -36,12 +36,12 @@ The Kiro CLI Provider enables CLIProxyAPI to interact with Kiro (formerly CodeWh
 # 1. Browser opens to verification URL
 # 2. Enter displayed device code
 # 3. Authorize with GitHub or AWS Builder ID
-# 4. Token saved to ~/.kiro/auth.json
+# 4. Token saved to ~/.cli-proxy-api/kiro-BuilderId-<timestamp>.json
 ```
 
 ### 2. Configure (Optional - Zero Config Mode Available!)
 
-**Option 1: Zero Configuration (Recommended)**
+**Zero Configuration (Recommended)**
 
 No configuration needed! Just create token files with `kiro-` prefix:
 ```bash
@@ -50,18 +50,8 @@ No configuration needed! Just create token files with `kiro-` prefix:
 # Token automatically discovered and loaded
 ```
 
-**Option 2: Explicit Configuration**
-
-```yaml
-kiro:
-  token-files:
-    - path: ~/.kiro/kiro-primary.json
-      region: us-east-1  # Optional, defaults to us-east-1
-      label: "primary"
-```
-
 **Key Features:**
-- Auto-discovery: Scans `~/.kiro/` for `kiro-*.json` files
+- Auto-discovery: Scans `~/.cli-proxy-api/` for `kiro-*.json` files
 - Default region: `us-east-1` if not specified in token file
 - Auto-enable: Kiro enabled automatically when tokens found
 
@@ -143,63 +133,22 @@ curl http://localhost:8080/v1/chat/completions \
 
 ## Setup & Configuration
 
-### Zero-Config Mode (Recommended)
+### Zero-Config Mode
 
-**No configuration required!** Kiro automatically enables when token files are present.
+**No configuration required!** Kiro automatically discovers and loads token files.
 
 **How it works:**
-1. Place `kiro-*.json` files in `~/.kiro/` directory
-2. System automatically discovers all files
-3. Labels extracted from filename (`kiro-primary.json` → label: "primary")
+1. Authenticate with `./cli-proxy-api --kiro-login`
+2. Token file saved to `~/.cli-proxy-api/kiro-BuilderId-<timestamp>.json`
+3. System automatically discovers all `kiro-*.json` files on startup
 4. Round-robin rotation enabled automatically
 
-**Example token files:**
+**Multiple tokens:**
+Simply run `--kiro-login` multiple times or manually place multiple `kiro-*.json` files:
 ```bash
-~/.kiro/kiro-primary.json
-~/.kiro/kiro-backup.json
-~/.kiro/kiro-team.json
-```
-
-### Basic Configuration (Explicit)
-
-If you need to customize token locations or disable auto-discovery:
-
-```yaml
-kiro:
-  token-files:
-    - path: ~/.kiro/kiro-primary.json
-      region: us-east-1  # Optional: defaults to us-east-1
-      label: "primary"   # Optional: extracted from filename
-```
-
-### Multi-Account Configuration
-
-```yaml
-kiro:
-  token-files:
-    # Primary account
-    - path: ~/.kiro/kiro-primary.json
-      region: us-east-1
-      label: "primary-us-east"
-    
-    # Secondary account (failover)
-    - path: ~/.kiro/kiro-backup.json
-      region: us-west-2
-      label: "backup-us-west"
-    
-    # Team account
-    - path: ~/.kiro/kiro-team.json
-      region: eu-west-1
-      label: "team-europe"
-```
-
-### Disable Auto-Discovery
-
-To explicitly disable auto-discovery:
-
-```yaml
-kiro:
-  enabled: false  # Disables even if token files exist
+~/.cli-proxy-api/kiro-BuilderId-1700000001.json
+~/.cli-proxy-api/kiro-BuilderId-1700000002.json
+~/.cli-proxy-api/kiro-BuilderId-1700000003.json
 ```
 
 ### Token File Format
@@ -251,7 +200,7 @@ Verification URL: https://codewhisperer.us-east-1.amazonaws.com/device
 **Step 4**: Token saved automatically
 ```
 Authentication successful!
-Token saved to: /home/user/.kiro/auth.json
+Token saved to: /home/user/.cli-proxy-api/kiro-BuilderId-1732393826.json
 Profile ARN: arn:aws:codewhisperer:us-east-1:123456789:profile/...
 ```
 
@@ -266,10 +215,10 @@ Profile ARN: arn:aws:codewhisperer:us-east-1:123456789:profile/...
 
 ```bash
 # View token location
-ls -la ~/.kiro/
+ls -la ~/.cli-proxy-api/
 
 # Check token expiration
-jq '.expiresAt' ~/.kiro/auth.json
+jq '.expiresAt' ~/.cli-proxy-api/kiro-*.json
 
 # Re-authenticate
 ./cli-proxy-api --kiro-login
@@ -475,7 +424,7 @@ Error: token expired and refresh failed
 Error: model not found: kiro-sonnet
 ```
 **Solutions**:
-- Verify `kiro.enabled: true` in config.yaml
+- Ensure you have authenticated and the token file exists in `~/.cli-proxy-api/`
 - Restart CLIProxyAPI after configuration changes
 - Check model ID spelling (kiro-sonnet, kiro-opus, kiro-haiku)
 
@@ -552,7 +501,7 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 #### Configuration
 - Added `KiroConfig` with `AutoDiscover` support
 - Auto-discovery enabled by default
-- Token files auto-detected from `~/.kiro/kiro-*.json`
+- Token files auto-detected from `~/.cli-proxy-api/kiro-*.json`
 - Region defaults to `us-east-1` if not specified
 
 #### API Changes
@@ -580,7 +529,7 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 - 3-level fallback mechanism for error recovery
 
 **Auto-Discovery**:
-- Scans `~/.kiro/` for `kiro-*.json` files
+- Scans `~/.cli-proxy-api/` for `kiro-*.json` files
 - Extracts label from filename (kiro-xxx.json → "xxx")
 - Defaults region to `us-east-1`
 - Round-robin rotation across all discovered tokens
@@ -606,16 +555,6 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 ./cli-proxy-api --kiro-login
 ```
 
-**Explicit Mode**:
-```yaml
-# Add to config.yaml if you need custom paths
-kiro:
-  token-files:
-    - path: /custom/path/kiro-token.json
-      region: us-east-1
-      label: "primary"
-```
-
 #### Testing
 - **Unit Tests**: 16 files, 100+ tests
   - Authentication, translation, execution, helpers
@@ -635,10 +574,4 @@ kiro:
 - Token refresh only when needed
 - Follows existing executor patterns
 
-#### Rollback
 
-To disable:
-```yaml
-kiro:
-  enabled: false
-```

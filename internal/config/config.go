@@ -231,18 +231,10 @@ type OpenAICompatibilityModel struct {
 	Alias string `yaml:"alias" json:"alias"`
 }
 
-// KiroConfig holds the configuration for Kiro provider
+// KiroConfig holds the configuration for Kiro provider.
+// Kiro operates in zero-config mode with automatic token discovery from auth-dir.
 type KiroConfig struct {
-	Enabled      bool            `yaml:"enabled" json:"enabled"`
-	TokenFiles   []KiroTokenFile `yaml:"token-files,omitempty" json:"token-files,omitempty"`     // Optional: explicit token files
-	AutoDiscover bool            `yaml:"auto-discover,omitempty" json:"auto-discover,omitempty"` // Auto-discover kiro-*.json in auth-dir
-}
-
-// KiroTokenFile represents a single Kiro token file configuration
-type KiroTokenFile struct {
-	Path   string `yaml:"path" json:"path"`
-	Region string `yaml:"region,omitempty" json:"region,omitempty"`
-	Label  string `yaml:"label,omitempty" json:"label,omitempty"`
+	// Reserved for future configuration options
 }
 
 // LoadConfig reads a YAML configuration file from the given path,
