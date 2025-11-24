@@ -81,18 +81,19 @@ func (e *KiroExecutor) Execute(
 		return resp, fmt.Errorf("failed to load token: %w", err)
 	}
 
-	// Validate and refresh token if needed
+	// Try to validate and refresh token (best-effort, non-blocking)
+	// Even if this fails, we'll proceed with the request and let the API be the source of truth
 	authenticator := kiro.NewKiroAuthenticator(e.cfg)
-	validToken, refreshed, err := authenticator.ValidateToken(ctx, tokenStorage)
-	if err != nil {
-		return resp, fmt.Errorf("token validation failed: %w", err)
+	validToken, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+	if validToken == nil {
+		// TryValidateToken returned nil, fall back to original
+		validToken = tokenStorage
 	}
 
 	if refreshed {
-		log.Info("Token was refreshed, updating auth metadata")
-		// Update auth metadata with refreshed token
+		log.Info("Token was proactively refreshed, updating auth metadata")
 		if err := e.saveToken(auth, validToken); err != nil {
-			log.Warnf("Failed to save refreshed token: %v", err)
+			log.Warnf("Failed to save proactively refreshed token: %v", err)
 		}
 	}
 
@@ -108,7 +109,37 @@ func (e *KiroExecutor) Execute(
 
 	// Try request with 3-level fallback mechanism
 	httpResp, finalRequestBody, err := e.attemptRequestWithFallback(ctx, validToken, kiroRequest)
-	if err != nil {
+
+	// Handle 401 Unauthorized - attempt token refresh and retry once
+	if httpResp != nil && httpResp.StatusCode == http.StatusUnauthorized {
+		log.Info("Received 401 Unauthorized, attempting token refresh and retry")
+		httpResp.Body.Close()
+
+		// Attempt to refresh the token
+		newToken, refreshErr := authenticator.RefreshToken(ctx, validToken)
+		if refreshErr != nil {
+			return resp, fmt.Errorf("401 unauthorized and token refresh failed: %w", refreshErr)
+		}
+
+		log.Info("Token refreshed after 401, saving and retrying request")
+		// Save the refreshed token
+		if err := e.saveToken(auth, newToken); err != nil {
+			log.Warnf("Failed to save refreshed token after 401: %v", err)
+		}
+
+		// Retry the request with the new token
+		// Need to rebuild request with new token
+		kiroRequest, err = chat_completions.ConvertOpenAIRequestToKiro(kiroModel, req.Payload, newToken, opts.Metadata)
+		if err != nil {
+			return resp, fmt.Errorf("failed to rebuild Kiro request after refresh: %w", err)
+		}
+
+		httpResp, finalRequestBody, err = e.attemptRequestWithFallback(ctx, newToken, kiroRequest)
+		if err != nil {
+			return resp, fmt.Errorf("retry after token refresh failed: %w", err)
+		}
+	} else if err != nil {
+		// Non-401 error from initial request
 		return resp, err
 	}
 	defer httpResp.Body.Close()
@@ -130,7 +161,7 @@ func (e *KiroExecutor) Execute(
 	// Build a conversationState-like response for the converter
 	kiroResponse := fmt.Sprintf(`{"conversationState":{"currentMessage":{"content":"%s"}}}`, strings.ReplaceAll(aggregatedContent, `"`, `\"`))
 
-	// Check for HTTP errors
+	// Check for HTTP errors (after potential retry)
 	if httpResp.StatusCode != http.StatusOK {
 		return resp, fmt.Errorf("kiro API error: status %d: %s", httpResp.StatusCode, string(body))
 	}
@@ -197,10 +228,18 @@ func (e *KiroExecutor) ExecuteStream(
 		return nil, fmt.Errorf("failed to load token: %w", err)
 	}
 
+	// Try to validate and refresh token (best-effort, non-blocking)
 	authenticator := kiro.NewKiroAuthenticator(e.cfg)
-	validToken, _, err := authenticator.ValidateToken(ctx, tokenStorage)
-	if err != nil {
-		return nil, fmt.Errorf("token validation failed: %w", err)
+	validToken, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+	if validToken == nil {
+		validToken = tokenStorage
+	}
+
+	if refreshed {
+		log.Info("Token was proactively refreshed in stream, updating auth metadata")
+		if err := e.saveToken(auth, validToken); err != nil {
+			log.Warnf("Failed to save proactively refreshed token in stream: %v", err)
+		}
 	}
 
 	// Map model to Kiro ID
@@ -219,8 +258,44 @@ func (e *KiroExecutor) ExecuteStream(
 		return nil, fmt.Errorf("failed to send request: %w", err)
 	}
 
-	// Check status code
-	if httpResp.StatusCode != http.StatusOK {
+	// Handle 401 Unauthorized - attempt token refresh and retry once
+	if httpResp.StatusCode == http.StatusUnauthorized {
+		log.Info("Stream received 401 Unauthorized, attempting token refresh and retry")
+		body, _ := io.ReadAll(httpResp.Body)
+		httpResp.Body.Close()
+		log.Debugf("401 response body: %s", string(body))
+
+		// Attempt to refresh the token
+		newToken, refreshErr := authenticator.RefreshToken(ctx, validToken)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("stream 401 unauthorized and token refresh failed: %w", refreshErr)
+		}
+
+		log.Info("Stream token refreshed after 401, saving and retrying request")
+		// Save the refreshed token
+		if err := e.saveToken(auth, newToken); err != nil {
+			log.Warnf("Failed to save refreshed token after stream 401: %v", err)
+		}
+
+		// Retry with new token - rebuild request
+		kiroRequest, err = chat_completions.ConvertOpenAIRequestToKiro(kiroModel, req.Payload, newToken, opts.Metadata)
+		if err != nil {
+			return nil, fmt.Errorf("failed to rebuild Kiro stream request after refresh: %w", err)
+		}
+
+		httpResp, err = e.sendRequest(ctx, newToken, kiroRequest)
+		if err != nil {
+			return nil, fmt.Errorf("stream retry after token refresh failed: %w", err)
+		}
+
+		// Check status code again after retry
+		if httpResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(httpResp.Body)
+			httpResp.Body.Close()
+			return nil, fmt.Errorf("Kiro stream API error after retry: status %d: %s", httpResp.StatusCode, string(body))
+		}
+	} else if httpResp.StatusCode != http.StatusOK {
+		// Non-401 error
 		body, _ := io.ReadAll(httpResp.Body)
 		httpResp.Body.Close()
 		return nil, fmt.Errorf("Kiro API error: status %d: %s", httpResp.StatusCode, string(body))

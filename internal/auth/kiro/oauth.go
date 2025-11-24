@@ -328,10 +328,9 @@ func (f *DeviceCodeFlow) PollForToken(ctx context.Context, deviceCode string) (*
 // requestToken attempts to exchange the device code for tokens.
 func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*KiroTokenStorage, error) {
 	payload := map[string]interface{}{
-		"clientId":     f.clientID,
-		"clientSecret": f.clientSecret,
-		"deviceCode":   deviceCode,
-		"grantType":    "urn:ietf:params:oauth:grant-type:device_code",
+		"client_id":   f.clientID,
+		"device_code": deviceCode,
+		"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -395,8 +394,29 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 		return nil, NewAuthError("requestToken", fmt.Errorf("missing access token in response"), "invalid response")
 	}
 
+	// Validate ExpiresIn value to catch potential API errors
+	if tokenResp.ExpiresIn <= 0 {
+		return nil, NewAuthError("requestToken",
+			fmt.Errorf("invalid expiresIn: %d", tokenResp.ExpiresIn),
+			"invalid expiration time from server")
+	}
+
+	if tokenResp.ExpiresIn < 60 {
+		log.Warnf("Token expiration time is very short: %d seconds", tokenResp.ExpiresIn)
+	}
+
+	// Calculate expiration time using UTC for consistency
+	// Subtract a small amount (2 seconds) to account for network latency
+	// between receiving the response and saving the token
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Add(-2 * time.Second)
+
+	log.Infof("Token expiration calculated: now=%s, expiresIn=%ds, expiresAt=%s",
+		now.Format(time.RFC3339),
+		tokenResp.ExpiresIn,
+		expiresAt.Format(time.RFC3339))
+
 	// Build token storage
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 	storage := &KiroTokenStorage{
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken, // May be empty
@@ -420,10 +440,9 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 //   - error: An error if refresh fails, nil otherwise
 func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) (*KiroTokenStorage, error) {
 	payload := map[string]interface{}{
-		"clientId":     f.clientID,
-		"clientSecret": f.clientSecret,
-		"grantType":    "refresh_token",
-		"refreshToken": refreshToken,
+		"client_id":     f.clientID,
+		"grant_type":    "refresh_token",
+		"refresh_token": refreshToken,
 	}
 
 	jsonData, err := json.Marshal(payload)
@@ -469,7 +488,27 @@ func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) 
 		return nil, NewAuthError("RefreshToken", ErrInvalidRefreshToken, "no access token in response")
 	}
 
-	expiresAt := time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
+	// Validate ExpiresIn value
+	if tokenResp.ExpiresIn <= 0 {
+		return nil, NewAuthError("RefreshToken",
+			fmt.Errorf("invalid expiresIn: %d", tokenResp.ExpiresIn),
+			"invalid expiration time from server")
+	}
+
+	if tokenResp.ExpiresIn < 60 {
+		log.Warnf("Refreshed token expiration time is very short: %d seconds", tokenResp.ExpiresIn)
+	}
+
+	// Calculate expiration time using UTC for consistency
+	// Subtract 2 seconds to account for network latency
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Add(-2 * time.Second)
+
+	log.Infof("Refreshed token expiration calculated: now=%s, expiresIn=%ds, expiresAt=%s",
+		now.Format(time.RFC3339),
+		tokenResp.ExpiresIn,
+		expiresAt.Format(time.RFC3339))
+
 	storage := &KiroTokenStorage{
 		AccessToken: tokenResp.AccessToken,
 		ExpiresAt:   expiresAt,

@@ -42,8 +42,12 @@ func ConvertOpenAIRequestToKiro(modelName string, inputRawJSON []byte, token *au
 	// Initialize conversation state
 	convState := `{}`
 
-	// Extract system prompt from messages
-	systemPrompt := extractSystemPrompt(inputJSON.Get("messages"))
+	// Extract system prompt - check both Anthropic format (top-level array) and OpenAI format (in messages)
+	systemPrompt := extractAnthropicSystemPrompt(inputJSON.Get("system"))
+	if systemPrompt == "" {
+		// Fallback to OpenAI format (system message in messages array)
+		systemPrompt = extractSystemPrompt(inputJSON.Get("messages"))
+	}
 	if systemPrompt != "" {
 		convState, _ = sjson.Set(convState, "systemPrompt", systemPrompt)
 	}
@@ -123,6 +127,34 @@ func extractSystemPrompt(messages gjson.Result) string {
 			return content.String()
 		}
 	}
+	return ""
+}
+
+// extractAnthropicSystemPrompt extracts the system prompt from Anthropic format (top-level system array)
+func extractAnthropicSystemPrompt(system gjson.Result) string {
+	if !system.Exists() {
+		return ""
+	}
+
+	// Handle Anthropic format: system is an array of objects with type="text" and text field
+	if system.IsArray() {
+		var textParts []string
+		for _, part := range system.Array() {
+			if part.Get("type").String() == "text" {
+				text := part.Get("text").String()
+				if text != "" {
+					textParts = append(textParts, text)
+				}
+			}
+		}
+		return strings.Join(textParts, "\n")
+	}
+
+	// Handle simple string format (fallback)
+	if system.Type == gjson.String {
+		return system.String()
+	}
+
 	return ""
 }
 

@@ -16,16 +16,13 @@ go build -o cli-proxy-api ./cmd/server
 go build -ldflags "-X main.Version=1.0.0" -o cli-proxy-api ./cmd/server
 
 # Start server with default config
-./cli-proxy-api
-
-# Start with custom config
-./cli-proxy-api --config config.yaml
-
-# Start with debug logging
-./cli-proxy-api --config config.yaml --debug
+go run ./cmd/server/main.go
 
 # Check configuration
-./cli-proxy-api --config config.yaml --check
+go run ./cmd/server/main.go --config config.yaml --check
+
+# Start with debug logging
+go run ./cmd/server/main.go --config config.yaml --debug
 ```
 
 ### Testing

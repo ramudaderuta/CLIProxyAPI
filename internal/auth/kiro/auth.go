@@ -18,8 +18,16 @@ const (
 	// DefaultScopes are the default OAuth scopes for Kiro authentication
 	DefaultScopes = "https://cloudcode.aws/builderid/authorization"
 
-	// TokenExpirationBuffer is the time buffer before token expiration to treat as expired (in minutes)
+	// TokenExpirationBuffer is the time buffer before a token is considered expired (in minutes)
+	// This is used to account for network latency and clock drift.
+	// If a token will expire within this many minutes, it is considered expired.
 	TokenExpirationBuffer = 5
+
+	// TokenEarlyRefreshBuffer is the time buffer for proactive token refresh (in minutes)
+	// If a token will expire within this many minutes and has a refresh token,
+	// we will proactively refresh it to avoid potential race conditions where the
+	// token expires between validation and API request.
+	TokenEarlyRefreshBuffer = 10
 )
 
 // KiroAuthenticator provides methods for handling Kiro OAuth2 authentication flow.
@@ -232,9 +240,14 @@ func (a *KiroAuthenticator) ValidateToken(ctx context.Context, storage *KiroToke
 		return nil, false, fmt.Errorf("access token is empty")
 	}
 
-	// Check if token is expired
+	// Log token status for debugging
+	timeUntilExpiration := storage.TimeUntilExpiration()
+	log.Debugf("Token validation: timeUntilExpiration=%s, expirationBuffer=%dm, earlyRefreshBuffer=%dm",
+		timeUntilExpiration, TokenExpirationBuffer, TokenEarlyRefreshBuffer)
+
+	// Check if token is expired or will expire within the required buffer
 	if storage.IsExpired(TokenExpirationBuffer) {
-		log.Info("Access token is expired, attempting to refresh")
+		log.Info("Access token is expired or expiring soon, attempting to refresh")
 
 		// Try to refresh
 		newToken, err := a.RefreshToken(ctx, storage)
@@ -242,11 +255,65 @@ func (a *KiroAuthenticator) ValidateToken(ctx context.Context, storage *KiroToke
 			return nil, false, fmt.Errorf("token expired and refresh failed: %w", err)
 		}
 
+		log.Info("Token refreshed successfully")
 		return newToken, true, nil
 	}
 
-	// Token is valid
+	// Proactive refresh: if token will expire soon and we have a refresh token,
+	// refresh it proactively to avoid potential race conditions where the token
+	// expires between validation and API request
+	if storage.RefreshToken != "" && storage.IsExpired(TokenEarlyRefreshBuffer) {
+		log.Infof("Token will expire in less than %d minutes, proactively refreshing (timeUntil=%s)",
+			TokenEarlyRefreshBuffer, timeUntilExpiration)
+
+		newToken, err := a.RefreshToken(ctx, storage)
+		if err != nil {
+			// Proactive refresh failed, but token is still valid for now
+			log.Warnf("Proactive token refresh failed (but token still valid): %v", err)
+			return storage, false, nil
+		}
+
+		log.Info("Token proactively refreshed successfully")
+		return newToken, true, nil
+	}
+
+	// Token is valid and not near expiration
+	log.Debugf("Token is valid, no refresh needed (timeUntil=%s)", timeUntilExpiration)
 	return storage, false, nil
+}
+
+// TryValidateToken attempts to validate and refresh the token, but returns the
+// original token if validation or refresh fails. This is a best-effort approach
+// that allows the caller to proceed with the original token and rely on API
+// responses (e.g., 401) to determine if the token is truly invalid.
+//
+// This is useful for scenarios where:
+//   - Local clock may be incorrect (clock skew)
+//   - Token appears expired locally but might still be accepted by API
+//   - You want to try the API request anyway and handle 401 reactively
+//
+// Parameters:
+//   - ctx: Context for the validation request
+//   - storage: The token storage to validate
+//
+// Returns:
+//   - *KiroTokenStorage: The validated token (refreshed if possible), or original if refresh failed
+//   - bool: true if token was successfully refreshed, false otherwise
+func (a *KiroAuthenticator) TryValidateToken(ctx context.Context, storage *KiroTokenStorage) (*KiroTokenStorage, bool) {
+	if storage == nil {
+		log.Warn("TryValidateToken: storage is nil, returning nil")
+		return nil, false
+	}
+
+	// Attempt validation
+	validToken, refreshed, err := a.ValidateToken(ctx, storage)
+	if err != nil {
+		// Validation/refresh failed, but return original token to allow retry
+		log.Warnf("Token validation failed, returning original token for API retry: %v", err)
+		return storage, false
+	}
+
+	return validToken, refreshed
 }
 
 // GetAuthenticatedClient creates an HTTP client configured with the token for authentication.

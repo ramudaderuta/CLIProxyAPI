@@ -56,10 +56,57 @@ type KiroTokenStorage struct {
 func (ts *KiroTokenStorage) IsExpired(bufferMinutes int) bool {
 	if ts.ExpiresAt.IsZero() {
 		// If no expiration is set, assume the token is valid.
+		log.Debug("Token expiration time is zero, treating as not expired")
 		return false
 	}
+
 	buffer := time.Duration(bufferMinutes) * time.Minute
-	return time.Now().Add(buffer).After(ts.ExpiresAt)
+	now := time.Now()
+	expirationThreshold := now.Add(buffer)
+	isExpired := expirationThreshold.After(ts.ExpiresAt)
+
+	// Add diagnostic logging to help troubleshoot timing issues
+	if isExpired {
+		timeUntilExpiration := time.Until(ts.ExpiresAt)
+		log.Infof("Token is expired or will expire soon: now=%s, expiresAt=%s, buffer=%dm, timeUntil=%s",
+			now.Format(time.RFC3339),
+			ts.ExpiresAt.Format(time.RFC3339),
+			bufferMinutes,
+			timeUntilExpiration)
+	} else {
+		// Log at debug level when token is still valid
+		timeUntilExpiration := time.Until(ts.ExpiresAt)
+		log.Debugf("Token is valid: timeUntilExpiration=%s, buffer=%dm", timeUntilExpiration, bufferMinutes)
+	}
+
+	return isExpired
+}
+
+// TimeUntilExpiration returns the duration until the token expires.
+// If the token has no expiration set, returns a very large duration.
+// If the token is already expired, returns a negative duration.
+//
+// Returns:
+//   - time.Duration: Time until expiration (negative if already expired)
+func (ts *KiroTokenStorage) TimeUntilExpiration() time.Duration {
+	if ts.ExpiresAt.IsZero() {
+		// Return a large duration to indicate "no expiration"
+		return time.Hour * 24 * 365 // 1 year
+	}
+	return time.Until(ts.ExpiresAt)
+}
+
+// IsActuallyExpired checks if the token is truly expired without any buffer time.
+// This is useful for debugging to distinguish between buffer-based expiration
+// and actual expiration.
+//
+// Returns:
+//   - bool: true if the token is actually expired (past expiration time)
+func (ts *KiroTokenStorage) IsActuallyExpired() bool {
+	if ts.ExpiresAt.IsZero() {
+		return false
+	}
+	return time.Now().After(ts.ExpiresAt)
 }
 
 // SaveTokenToFile serializes the Kiro token storage to a JSON file.
