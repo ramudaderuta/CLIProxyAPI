@@ -994,6 +994,19 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			continue
 		}
 		t, _ := metadata["type"].(string)
+
+		// Auto-detect Kiro tokens if type field is missing
+		if t == "" {
+			// Check if filename starts with "kiro-" or provider is "BuilderId"
+			if strings.HasPrefix(strings.ToLower(name), "kiro-") {
+				t = "kiro"
+				metadata["type"] = "kiro"
+			} else if provider, ok := metadata["provider"].(string); ok && provider == "BuilderId" {
+				t = "kiro"
+				metadata["type"] = "kiro"
+			}
+		}
+
 		if t == "" {
 			continue
 		}

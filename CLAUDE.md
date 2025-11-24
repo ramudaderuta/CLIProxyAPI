@@ -109,52 +109,6 @@ The Kiro provider translates between CLIProxyAPI model names and Kiro model IDs:
 - `kiro-opus` → More capable variants
 - `kiro-haiku` → Lighter, faster variants
 
----
-
-## Authentication
-
-The Kiro provider uses the OAuth 2.0 Device Code Flow. You can authenticate using either an AWS Builder ID (free) or AWS IAM Identity Center.
-
-### 1. Run Login Command
-
-Start the login process using the CLI:
-
-```bash
-./server --kiro-login
-```
-
-### 2. Authorize Device
-
-The CLI will display a user code and a verification URL:
-
-```
-============================================================
-  Kiro CLI - Device Code Authentication
-============================================================
-
-User Code: ABCD-1234
-Verification URL: https://codewhisperer.us-east-1.amazonaws.com/device
- Expires in 300 seconds
-
-⏳ Waiting for authorization...
-```
-
-1. Open the Verification URL in your browser.
-2. Enter the User Code displayed in the terminal.
-3. Log in with your AWS Builder ID or AWS account.
-4. Allow the application to access your data.
-
-### 3. Verification
-
-Once authorized, the CLI will confirm success and save the token:
-
-```
-Authentication successful!
-Token saved to: /home/user/.kiro/auth.json
-```
-
----
-
 ## Configuration
 
 ### Zero-Config Mode
@@ -162,7 +116,7 @@ Token saved to: /home/user/.kiro/auth.json
 **No configuration required!** Kiro automatically discovers and loads token files.
 
 **How it works:**
-1. Authenticate with `./server --kiro-login`
+1. Authenticate with `./cli-proxy-api --kiro-login`
 2. Token file saved to `~/.cli-proxy-api/kiro-BuilderId-<timestamp>.json`
 3. System automatically discovers all `kiro-*.json` files on startup
 4. Round-robin rotation enabled automatically
@@ -282,104 +236,6 @@ curl http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
-
----
-
-## 4. Troubleshooting
-
-### Common Issues
-
-**Token Expired**
-```
-Error: token expired and refresh failed
-```
-**Solutions:**
-- Tokens are automatically refreshed (5-minute expiration buffer)
-- If refresh fails, run `--kiro-login` again
-- Verify refresh token hasn't been revoked
-
-**Model Not Found**
-```
-Error: model not found: kiro-sonnet
-```
-**Solutions:**
-- Ensure you have authenticated and the token file exists in `~/.cli-proxy-api/`
-- Verify Kiro is enabled (auto-enabled when tokens present)
-- Restart CLIProxyAPI after adding tokens
-
-**Permission Denied**
-```
-Error: failed to read token file: permission denied
-```
-**Solutions:**
-- Token files must have `0600` permissions (read/write only by owner)
-- Run: `chmod 600 ~/.cli-proxy-api/*.json`
-
-**All Tokens Failed**
-```
-Error: all tokens failed validation
-```
-**Solutions:**
-- Check token file permissions (should be 0600)
-- Verify token expiration dates with: `jq '.expiresAt' ~/.cli-proxy-api/*.json`
-- Re-authenticate with `--kiro-login`
-- Check AWS service status
-
-**Authentication Failed**
-```
-Error: failed to obtain token
-```
-**Solutions:**
-- Ensure AWS account has Q Developer access
-- Check network connectivity to `codewhisperer.us-east-1.amazonaws.com`
-- Verify you entered the device code correctly
-- Try using a different region if available
-
-### Debug Mode
-
-Enable debug logging to troubleshoot issues:
-
-```yaml
-log:
-  level: debug
-```
-
-View Kiro-specific logs:
-```bash
-grep "kiro" /var/log/cliproxy.log
-```
-
-### Testing Configuration
-
-```bash
-# Validate config
-./server validate-config
-
-# List available models
-curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro"))'
-
-# Check token status
-jq '.expiresAt' ~/.cli-proxy-api/kiro-primary.json
-```
-
----
-
-## Performance Characteristics
-
-- **Token Validation**: ~1ms overhead per request
-- **Token Refresh**: Only when needed (5-minute buffer)
-- **Auto-Discovery**: Scanned once at startup
-- **Token Rotation**: Round-robin with minimal overhead
-
----
-
-## Security
-
-- **Token Files**: 0600 permissions (read/write only by owner)
-- **OAuth Device Code Flow**: No redirect vulnerabilities
-- **Bearer Token Authentication**: Secure token-based auth
-- **Automatic Token Refresh**: Prevents token exposure
-- **Multi-Account Isolation**: Separate tokens per account
 
 
 ## Development Guidance

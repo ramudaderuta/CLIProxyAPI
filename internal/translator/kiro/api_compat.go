@@ -38,8 +38,9 @@ func BuildRequest(
 ) ([]byte, error) {
 	// Delegate to actual implementation
 	// Note: stream parameter set to false for non-streaming requests
-	result := chat_completions.ConvertOpenAIRequestToKiro(model, payload, false)
-	return result, nil
+	// The updated signature requires token and metadata
+	result, err := chat_completions.ConvertOpenAIRequestToKiro(model, payload, token, metadata)
+	return result, err
 }
 
 // ParseResponse extracts assistant text and tool calls from a Kiro upstream payload.

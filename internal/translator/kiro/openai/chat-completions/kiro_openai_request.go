@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -28,11 +29,13 @@ const (
 // Parameters:
 //   - modelName: The name of the model to use for the request
 //   - inputRawJSON: The raw JSON request data from the OpenAI API
-//   - stream: A boolean indicating if the request is for a streaming response
+//   - token: The Kiro token storage (unused in minimal version)
+//   - metadata: Additional metadata (unused in minimal version)
 //
 // Returns:
 //   - []byte: The transformed request data in Kiro conversationState format
-func ConvertOpenAIRequestToKiro(modelName string, inputRawJSON []byte, stream bool) []byte {
+//   - error: An error if the conversion fails
+func ConvertOpenAIRequestToKiro(modelName string, inputRawJSON []byte, token *authkiro.KiroTokenStorage, metadata map[string]any) ([]byte, error) {
 	// Parse input JSON
 	inputJSON := gjson.ParseBytes(inputRawJSON)
 
@@ -73,8 +76,6 @@ func ConvertOpenAIRequestToKiro(modelName string, inputRawJSON []byte, stream bo
 	convState, _ = sjson.Set(convState, "model", modelName)
 
 	// Set streaming flag
-	convState, _ = sjson.Set(convState, "stream", stream)
-
 	// Add additional parameters
 	if temp := inputJSON.Get("temperature"); temp.Exists() {
 		convState, _ = sjson.Set(convState, "temperature", temp.Float())
@@ -86,8 +87,17 @@ func ConvertOpenAIRequestToKiro(modelName string, inputRawJSON []byte, stream bo
 		convState, _ = sjson.Set(convState, "topP", topP.Float())
 	}
 
-	log.Debugf("Converted OpenAI request to Kiro conversationState")
-	return []byte(convState)
+	// Build the final Kiro request
+	result, err := json.Marshal(map[string]interface{}{
+		"conversationState": json.RawMessage(convState),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	log.Debugf("Converted OpenAI request to Kiro format")
+
+	return result, nil
 }
 
 // extractSystemPrompt extracts the system prompt from messages array

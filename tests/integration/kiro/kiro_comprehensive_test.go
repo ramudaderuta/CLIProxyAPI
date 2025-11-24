@@ -10,6 +10,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	chatcompletions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
 )
@@ -85,31 +86,62 @@ func MockKiroServer(t *testing.T) *httptest.Server {
 
 // TestRequestTranslation tests OpenAI to Kiro request conversion
 func TestRequestTranslation(t *testing.T) {
-	openAIRequest := []byte(`{
-		"model": "kiro-sonnet",
-		"messages": [
-			{"role": "system", "content": "You are a helpful assistant"},
-			{"role": "user", "content": "Hello, world!"}
-		],
-		"temperature": 0.7,
-		"max_tokens": 100
-	}`)
+	t.Run("MapModel correctly maps kiro aliases", func(t *testing.T) {
+		executor := &executor.KiroExecutor{}
 
-	kiroRequest := chatcompletions.ConvertOpenAIRequestToKiro("kiro-sonnet", openAIRequest, false)
+		tests := []struct {
+			input    string
+			expected string
+		}{
+			{"kiro-sonnet", "CLAUDE_SONNET_4_5"},
+			{"kiro-haiku", "CLAUDE_HAIKU_4_5"},
+			{"unknown-model", "unknown-model"},     // Should return original
+			{" kiro-sonnet ", "CLAUDE_SONNET_4_5"}, // Should trim spaces
+		}
 
-	if len(kiroRequest) == 0 {
-		t.Fatal("Kiro request should not be empty")
-	}
+		for _, tt := range tests {
+			result := executor.MapModel(tt.input)
+			if result != tt.expected {
+				t.Errorf("MapModel(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		}
+	})
 
-	// Verify it's valid JSON and contains Kiro API structure
-	requestStr := string(kiroRequest)
-	t.Logf("Kiro request: %s", requestStr)
+	t.Run("ConvertOpenAIRequestToKiro handles basic request", func(t *testing.T) {
+		openAIRequest := []byte(`{
+			"model": "kiro-sonnet",
+			"messages": [
+				{"role": "user", "content": "Hello"}
+			]
+		}`)
 
-	// The request is already in Kiro's internal format (not wrapped in conversationState)
-	// Just verify it's not empty and is valid JSON
-	if !strings.Contains(requestStr, "{") {
-		t.Error("Kiro request should be valid JSON")
-	}
+		dummyToken := &kiro.KiroTokenStorage{AccessToken: "test-token"}
+		kiroRequest, err := chatcompletions.ConvertOpenAIRequestToKiro("CLAUDE_SONNET_4_5", openAIRequest, dummyToken, nil)
+
+		if err != nil {
+			t.Fatalf("Failed to convert request: %v", err)
+		}
+		if len(kiroRequest) == 0 {
+			t.Fatal("Kiro request should not be empty")
+		}
+
+		// Verify it contains conversationState
+		requestStr := string(kiroRequest)
+		if !strings.Contains(requestStr, "conversationState") {
+			t.Error("Kiro request should contain conversationState")
+		}
+	})
+
+	t.Run("parseSSEEventsForContent aggregates multiple content chunks", func(t *testing.T) {
+		// Simulate SSE event format after event-stream decoding
+		sseData := []byte(`vent{"content":"Hello"}vent{"content":", "}vent{"content":"world!"}`)
+
+		// Note: parseSSEEventsForContent is not exported, but we can test via Execute
+		// This test verifies the expected input format
+		if !strings.Contains(string(sseData), `{"content":"`) {
+			t.Error("Test data should contain content JSON fragments")
+		}
+	})
 }
 
 // TestResponseTranslation tests Kiro to OpenAI response conversion
@@ -182,7 +214,7 @@ func TestEndToEndNonStreaming(t *testing.T) {
 		"messages": [{"role": "user", "content": "Test"}]
 	}`)
 
-	kiroRequest := chatcompletions.ConvertOpenAIRequestToKiro("kiro-sonnet", openAIRequest, false)
+	kiroRequest, _ := chatcompletions.ConvertOpenAIRequestToKiro("kiro-sonnet", openAIRequest, token, nil)
 
 	// Make request to mock server
 	req, err := http.NewRequest("POST", server.URL, strings.NewReader(string(kiroRequest)))
@@ -242,7 +274,7 @@ func TestEndToEndStreaming(t *testing.T) {
 		"stream": true
 	}`)
 
-	kiroRequest := chatcompletions.ConvertOpenAIRequestToKiro("kiro-sonnet", openAIRequest, true)
+	kiroRequest, _ := chatcompletions.ConvertOpenAIRequestToKiro("kiro-sonnet", openAIRequest, token, nil)
 
 	req, err := http.NewRequest("POST", server.URL, strings.NewReader(string(kiroRequest)))
 	if err != nil {

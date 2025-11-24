@@ -7,20 +7,24 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	kiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/helpers"
 	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
 	log "github.com/sirupsen/logrus"
+	"github.com/tidwall/gjson"
 )
 
 const (
 	// KiroAPIEndpoint is the default AWS CodeWhisperer endpoint
-	KiroAPIEndpoint = "https://codewhisperer.us-east-1.amazonaws.com/v1/conversation"
+	KiroAPIEndpoint = "https://codewhisperer.us-east-1.amazonaws.com/generateAssistantResponse"
 )
 
 // KiroExecutor implements the executor interface for Kiro API.
@@ -45,6 +49,21 @@ func (e *KiroExecutor) PrepareRequest(req *http.Request, auth *cliproxyauth.Auth
 	// This is called before sending the request
 	// Token will be added in Execute method
 	return nil
+}
+
+// MapModel returns the upstream Kiro model identifier for the provided alias.
+func (e *KiroExecutor) MapModel(model string) string {
+	modelMapping := map[string]string{
+		"kiro-sonnet": "CLAUDE_SONNET_4_5",
+		"kiro-haiku":  "CLAUDE_HAIKU_4_5",
+	}
+
+	trimmedModel := strings.TrimSpace(model)
+	if mapped, ok := modelMapping[trimmedModel]; ok {
+		return mapped
+	}
+	// Return original model if not in mapping
+	return trimmedModel
 }
 
 // Execute performs a non-streaming request to Kiro API with 3-level fallback.
@@ -77,8 +96,15 @@ func (e *KiroExecutor) Execute(
 		}
 	}
 
+	// Map model to Kiro ID
+	kiroModel := e.MapModel(req.Model)
+	log.Debugf("Mapped model %s to %s", req.Model, kiroModel)
+
 	// Translate request to Kiro format
-	kiroRequest := chat_completions.ConvertOpenAIRequestToKiro(req.Model, req.Payload, false)
+	kiroRequest, err := chat_completions.ConvertOpenAIRequestToKiro(kiroModel, req.Payload, validToken, opts.Metadata)
+	if err != nil {
+		return resp, fmt.Errorf("failed to build Kiro request: %w", err)
+	}
 
 	// Try request with 3-level fallback mechanism
 	httpResp, finalRequestBody, err := e.attemptRequestWithFallback(ctx, validToken, kiroRequest)
@@ -92,10 +118,21 @@ func (e *KiroExecutor) Execute(
 	if err != nil {
 		return resp, fmt.Errorf("failed to read response: %w", err)
 	}
+	// Decode Amazon event-stream binary format if present
+	body, err = helpers.NormalizeKiroStreamPayload(body)
+	if err != nil {
+		log.Warnf("Failed to normalize event-stream payload: %v", err)
+	}
+
+	// Parse SSE events and aggregate content
+	aggregatedContent := parseSSEEventsForContent(body)
+
+	// Build a conversationState-like response for the converter
+	kiroResponse := fmt.Sprintf(`{"conversationState":{"currentMessage":{"content":"%s"}}}`, strings.ReplaceAll(aggregatedContent, `"`, `\"`))
 
 	// Check for HTTP errors
 	if httpResp.StatusCode != http.StatusOK {
-		return resp, fmt.Errorf("Kiro API error: status %d: %s", httpResp.StatusCode, string(body))
+		return resp, fmt.Errorf("kiro API error: status %d: %s", httpResp.StatusCode, string(body))
 	}
 
 	// Log if fallback was used
@@ -104,12 +141,45 @@ func (e *KiroExecutor) Execute(
 	}
 
 	// Convert response to OpenAI format
-	openAIResp := responses.ConvertKiroResponseToOpenAI(body, req.Model, false)
+	openAIResp := responses.ConvertKiroResponseToOpenAI([]byte(kiroResponse), req.Model, false)
 
 	resp.Payload = openAIResp
 
 	log.Debugf("Kiro Execute completed successfully")
 	return resp, nil
+}
+
+// parseSSEEventsForContent extracts content from SSE events using gjson
+func parseSSEEventsForContent(data []byte) string {
+	// Find all {"content":"..."} JSON objects and extract content
+	var result strings.Builder
+	dataStr := string(data)
+
+	// Search for all occurrences of {"content":"
+	for {
+		start := strings.Index(dataStr, `{"content":"`)
+		if start < 0 {
+			break
+		}
+
+		// Find matching }
+		end := strings.Index(dataStr[start:], `"}`)
+		if end < 0 {
+			break
+		}
+
+		// Extract JSON and parse with gjson
+		jsonStr := dataStr[start : start+end+2]
+		content := gjson.Get(jsonStr, "content").String()
+		if content != "" {
+			result.WriteString(content)
+		}
+
+		// Move past this JSON object
+		dataStr = dataStr[start+end+2:]
+	}
+
+	return result.String()
 }
 
 // ExecuteStream performs a streaming request to Kiro API.
@@ -133,8 +203,15 @@ func (e *KiroExecutor) ExecuteStream(
 		return nil, fmt.Errorf("token validation failed: %w", err)
 	}
 
+	// Map model to Kiro ID
+	kiroModel := e.MapModel(req.Model)
+	log.Debugf("Mapped model %s to %s", req.Model, kiroModel)
+
 	// Translate request to Kiro format with streaming enabled
-	kiroRequest := chat_completions.ConvertOpenAIRequestToKiro(req.Model, req.Payload, true)
+	kiroRequest, err := chat_completions.ConvertOpenAIRequestToKiro(kiroModel, req.Payload, validToken, opts.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build Kiro request: %w", err)
+	}
 
 	// Send request
 	httpResp, err := e.sendRequest(ctx, validToken, kiroRequest)
@@ -260,6 +337,23 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
 
+	// Add Kiro-specific headers with proper hash
+	// SHA256 of "test"
+	macHash := "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	req.Header.Set("x-amz-user-agent", "aws-sdk-js/1.0.7 KiroIDE-0.1.25-"+macHash)
+	req.Header.Set("user-agent", "aws-sdk-js/1.0.7 ua/2.1 os/cli lang/go api/codewhispererstreaming#1.0.7 m/E KiroIDE-0.1.25-"+macHash)
+	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
+	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
+
+	// Log request details to file
+	f, err := os.OpenFile("/home/build/code/CLIProxyAPI/debug_kiro.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		defer f.Close()
+		f.WriteString(fmt.Sprintf("Kiro Request URL: %s\n", KiroAPIEndpoint))
+		f.WriteString(fmt.Sprintf("Kiro Request Headers: %v\n", req.Header))
+		f.WriteString(fmt.Sprintf("Kiro Request Body: %s\n", string(requestBody)))
+	}
+
 	// Create HTTP client
 	client := &http.Client{
 		Timeout: 60 * time.Second,
@@ -269,6 +363,12 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+
+	// Log response details to file
+	if f != nil {
+		f.WriteString(fmt.Sprintf("Kiro Response Status: %s\n", resp.Status))
+		f.WriteString(fmt.Sprintf("Kiro Response Headers: %v\n", resp.Header))
 	}
 
 	return resp, nil

@@ -343,7 +343,7 @@ The `MapModel` function translates friendly model names to Kiro's internal ident
 
 ```go
 var modelMapping = map[string]string{
-    "claude-sonnet-4-5-20250929":         "CLAUDE_SONNET_4_5_20250929_V1_0",
+    "claude-sonnet-4-5": "CLAUDE_SONNET_4_5",
 }
 ```
 
