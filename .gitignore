@@ -17,6 +17,7 @@ gitstore/*
 objectstore/*
 static/*
 .gocache
+debug_kiro.log
 
 # Authentication data
 auths/*

@@ -149,14 +149,33 @@ func (e *KiroExecutor) Execute(
 	if err != nil {
 		return resp, fmt.Errorf("failed to read response: %w", err)
 	}
+
+	// Debug: Log raw response body
+	bodyPreview := string(body)
+	if len(bodyPreview) > 500 {
+		bodyPreview = bodyPreview[:500]
+	}
+	log.Debugf("Raw Kiro response body (first 500 bytes): %s", bodyPreview)
+
 	// Decode Amazon event-stream binary format if present
-	body, err = helpers.NormalizeKiroStreamPayload(body)
+	normalizedBody, err := helpers.NormalizeKiroStreamPayload(body)
 	if err != nil {
 		log.Warnf("Failed to normalize event-stream payload: %v", err)
+		normalizedBody = body // Use raw body if normalization fails
 	}
 
+	// Debug: Log normalized payload
+	normalizedPreview := string(normalizedBody)
+	if len(normalizedPreview) > 500 {
+		normalizedPreview = normalizedPreview[:500]
+	}
+	log.Debugf("Normalized payload (first 500 bytes): %s", normalizedPreview)
+
 	// Parse SSE events and aggregate content
-	aggregatedContent := parseSSEEventsForContent(body)
+	aggregatedContent := parseSSEEventsForContent(normalizedBody)
+
+	// Debug: Log aggregated content
+	log.Debugf("Aggregated content from SSE: %s", aggregatedContent)
 
 	// Build a conversationState-like response for the converter
 	kiroResponse := fmt.Sprintf(`{"conversationState":{"currentMessage":{"content":"%s"}}}`, strings.ReplaceAll(aggregatedContent, `"`, `\"`))
@@ -195,34 +214,90 @@ func (e *KiroExecutor) Execute(
 	return resp, nil
 }
 
-// parseSSEEventsForContent extracts content from SSE events using gjson
+// parseSSEEventsForContent extracts content from SSE events using gjson.
+// Handles both plain JSON format and AWS event-stream decoded format with :message-typeevent prefix.
 func parseSSEEventsForContent(data []byte) string {
-	// Find all {"content":"..."} JSON objects and extract content
 	var result strings.Builder
 	dataStr := string(data)
 
-	// Search for all occurrences of {"content":"
-	for {
-		start := strings.Index(dataStr, `{"content":"`)
-		if start < 0 {
+	// Process the data to find all JSON objects
+	offset := 0
+	for offset < len(dataStr) {
+		// Look for JSON object start
+		// Handle event-stream format: :message-typeevent{"content":"..."}
+		// Or plain format: {"content":"..."}
+
+		jsonStart := -1
+
+		// First try to find event-stream format marker
+		eventMarker := strings.Index(dataStr[offset:], ":message-typeevent{")
+		if eventMarker >= 0 {
+			jsonStart = offset + eventMarker + len(":message-typeevent")
+		} else {
+			// Fall back to plain JSON format
+			plainStart := strings.Index(dataStr[offset:], `{"`)
+			if plainStart >= 0 {
+				jsonStart = offset + plainStart
+			}
+		}
+
+		if jsonStart < 0 {
 			break
 		}
 
-		// Find matching }
-		end := strings.Index(dataStr[start:], `"}`)
-		if end < 0 {
+		// Find the end of this JSON object by counting braces
+		braceCount := 0
+		jsonEnd := -1
+		inString := false
+		escaped := false
+
+		for i := jsonStart; i < len(dataStr); i++ {
+			ch := dataStr[i]
+
+			if escaped {
+				escaped = false
+				continue
+			}
+
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+
+			if ch == '"' {
+				inString = !inString
+				continue
+			}
+
+			if !inString {
+				if ch == '{' {
+					braceCount++
+				} else if ch == '}' {
+					braceCount--
+					if braceCount == 0 {
+						jsonEnd = i + 1
+						break
+					}
+				}
+			}
+		}
+
+		if jsonEnd < 0 {
+			// Incomplete JSON, stop parsing
 			break
 		}
 
-		// Extract JSON and parse with gjson
-		jsonStr := dataStr[start : start+end+2]
+		// Extract and parse the JSON object
+		jsonStr := dataStr[jsonStart:jsonEnd]
+
+		// Use gjson to safely extract the content field
 		content := gjson.Get(jsonStr, "content").String()
 		if content != "" {
 			result.WriteString(content)
 		}
 
 		// Move past this JSON object
-		dataStr = dataStr[start+end+2:]
+		offset = jsonEnd
 	}
 
 	return result.String()
@@ -435,13 +510,32 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 	req.Header.Set("amz-sdk-request", "attempt=1; max=1")
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 
-	// Log request details to file
+	// Log request details to file with pretty formatting
 	f, err := os.OpenFile("/home/build/code/CLIProxyAPI/debug_kiro.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err == nil {
 		defer f.Close()
-		f.WriteString(fmt.Sprintf("Kiro Request URL: %s\n", KiroAPIEndpoint))
-		f.WriteString(fmt.Sprintf("Kiro Request Headers: %v\n", req.Header))
-		f.WriteString(fmt.Sprintf("Kiro Request Body: %s\n", string(requestBody)))
+		f.WriteString("\n" + strings.Repeat("=", 80) + "\n")
+		f.WriteString(fmt.Sprintf("KIRO API REQUEST - %s\n", time.Now().Format("2006-01-02 15:04:05")))
+		f.WriteString(strings.Repeat("=", 80) + "\n")
+		f.WriteString(fmt.Sprintf("URL: %s\n", KiroAPIEndpoint))
+		f.WriteString(fmt.Sprintf("Method: POST\n\n"))
+
+		f.WriteString("Headers:\n")
+		for k, v := range req.Header {
+			if k == "Authorization" {
+				f.WriteString(fmt.Sprintf("  %s: Bearer %s...%s\n", k, token.AccessToken[:10], token.AccessToken[len(token.AccessToken)-10:]))
+			} else {
+				f.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+			}
+		}
+
+		f.WriteString("\nRequest Body (Pretty-Printed):\n")
+		var prettyJSON bytes.Buffer
+		if err := json.Indent(&prettyJSON, requestBody, "", "  "); err == nil {
+			f.WriteString(prettyJSON.String() + "\n")
+		} else {
+			f.WriteString(string(requestBody) + "\n")
+		}
 	}
 
 	// Create HTTP client
@@ -457,8 +551,73 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 
 	// Log response details to file
 	if f != nil {
-		f.WriteString(fmt.Sprintf("Kiro Response Status: %s\n", resp.Status))
-		f.WriteString(fmt.Sprintf("Kiro Response Headers: %v\n", resp.Header))
+		f.WriteString("\n" + strings.Repeat("-", 80) + "\n")
+		f.WriteString(fmt.Sprintf("KIRO API RESPONSE\n"))
+		f.WriteString(strings.Repeat("-", 80) + "\n")
+		f.WriteString(fmt.Sprintf("Status: %s\n", resp.Status))
+		f.WriteString(fmt.Sprintf("Status Code: %d\n\n", resp.StatusCode))
+
+		f.WriteString("Response Headers:\n")
+		for k, v := range resp.Header {
+			f.WriteString(fmt.Sprintf("  %s: %v\n", k, v))
+		}
+		f.WriteString("\n")
+
+		// Read and log response body
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes)) // Restore body for later use
+
+		f.WriteString("Response Body (Pretty-Printed):\n")
+		var prettyResp bytes.Buffer
+		if err := json.Indent(&prettyResp, bodyBytes, "", "  "); err == nil {
+			f.WriteString(prettyResp.String() + "\n")
+		} else {
+			f.WriteString(string(bodyBytes) + "\n")
+		}
+
+		// Validate response structure
+		f.WriteString("\n" + strings.Repeat("-", 80) + "\n")
+		f.WriteString("VALIDATION:\n")
+		f.WriteString(strings.Repeat("-", 80) + "\n")
+
+		if resp.StatusCode == http.StatusOK {
+			f.WriteString("✓ HTTP Status: OK (200)\n")
+
+			// Check for required Kiro response fields
+			var respData map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &respData); err == nil {
+				if _, ok := respData["conversationState"]; ok {
+					f.WriteString("✓ Has conversationState field\n")
+					if convState, ok := respData["conversationState"].(map[string]interface{}); ok {
+						if currentMsg, ok := convState["currentMessage"]; ok {
+							f.WriteString("✓ Has conversationState.currentMessage field\n")
+							if msg, ok := currentMsg.(map[string]interface{}); ok {
+								if content, ok := msg["content"].(string); ok {
+									f.WriteString(fmt.Sprintf("✓ Content length: %d characters\n", len(content)))
+									if len(content) > 0 {
+										f.WriteString("✓ Content is non-empty\n")
+									} else {
+										f.WriteString("⚠ WARNING: Content is empty\n")
+									}
+								} else {
+									f.WriteString("✗ Missing or invalid content field\n")
+								}
+							}
+						} else {
+							f.WriteString("✗ Missing currentMessage field\n")
+						}
+					}
+				} else {
+					f.WriteString("⚠ No conversationState field (might be different format)\n")
+				}
+			} else {
+				f.WriteString(fmt.Sprintf("✗ Failed to parse JSON: %v\n", err))
+			}
+		} else {
+			f.WriteString(fmt.Sprintf("✗ HTTP Status: %s (%d)\n", resp.Status, resp.StatusCode))
+		}
+
+		f.WriteString(strings.Repeat("=", 80) + "\n\n")
 	}
 
 	return resp, nil

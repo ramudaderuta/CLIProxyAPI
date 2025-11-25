@@ -444,6 +444,9 @@ func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) 
 		"grant_type":    "refresh_token",
 		"refresh_token": refreshToken,
 	}
+	if f.clientSecret != "" {
+		payload["client_secret"] = f.clientSecret
+	}
 
 	jsonData, err := json.Marshal(payload)
 	if err != nil {

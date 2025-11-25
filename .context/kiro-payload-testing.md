@@ -1,7 +1,7 @@
 # Kiro Payload Testing and Anthropic Format Support
 
-**Date**: 2025-11-25  
-**Status**: Live formats working ✅ | Server integration fixed ✅ | Env-level IPv4-only httptest noted ⚠️
+**Date**: 2025-11-26  
+**Status**: Live formats working ✅ | Server integration fixed ✅ | Event-stream decoding fixed ✅
 
 ## Overview
 
@@ -66,7 +66,7 @@ if systemPrompt == "" {
    - Parameter preservation checks
    - **Result**: 14/14 PASS ✅
 
-### 4. Current Integration State (Updated)
+### 4. Current Integration State (Updated 2025-11-26)
 
 - Live endpoints verified against real Kiro:
   - `/v1/chat/completions` → OpenAI Chat format (choices[].message, tool_calls supported).
@@ -74,11 +74,39 @@ if systemPrompt == "" {
   - `/v1/responses` → OpenAI Responses format (`object: "response"`, output content parts).
 - Request converter now handles OpenAI/Anthropic/OpenAI Responses inputs, including `input` array fallback and tool specs/manifest.
 - Response converters cover OpenAI Chat, Claude Messages, OpenAI Responses; streaming path emits provider-specific chunks.
-- Environment note: ipv6 listeners are blocked here; all httptest servers use IPv4 or `t.Skip` with the note “Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later.”
+- **Event-stream decoding**: ✅ Fixed (2025-11-26)
+  - AWS event-stream binary format → text via `NormalizeKiroStreamPayload()`
+  - Content extraction via updated `parseSSEEventsForContent()` handles `:message-typeevent` prefix
+  - All unit tests pass (9/9 streaming, 14/14 payload validation)
+  - Parser validation: 3/3 test cases (event-stream, plain JSON, mixed format)
+- Environment note: ipv6 listeners are blocked here; all httptest servers use IPv4 or `t.Skip` with the note "Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later."
 
-## Issues Discovered
+## Issues Discovered and Resolved
 
-### Server Integration Problem
+### Event-Stream Content Extraction (FIXED 2025-11-26)
+
+**Symptom**: All API requests returned HTTP 200 OK but with empty content in responses.
+
+**Root Cause**: 
+- Kiro API returns AWS event-stream binary format
+- `NormalizeKiroStreamPayload()` correctly decoded binary → text format: `:message-typeevent{"content":"..."}`
+- `parseSSEEventsForContent()` was searching for `{"content":""}` pattern, missing the `:message-typeevent` prefix
+
+**Solution**:
+Updated `parseSSEEventsForContent()` in [kiro_executor.go](file:///home/build/code/CLIProxyAPI/internal/runtime/executor/kiro_executor.go#L217-L298) to:
+1. Search for `:message-typeevent{` prefix first (AWS event-stream format)
+2. Fall back to plain `{"` format (backward compatibility)
+3. Extract complete JSON objects with proper brace counting
+4. Use gjson to safely extract `content` field
+5. Aggregate all content chunks into final response
+
+**Verification**:
+- ✅ Unit tests: 9/9 SSE streaming tests pass
+- ✅ Payload tests: 14/14 validation tests pass
+- ✅ Parser tests: 3/3 format handling tests pass
+- See [test_parser_fix.go](file:///home/build/code/CLIProxyAPI/tests/manual/test_parser_fix.go) for validation details
+
+### Server Integration Problem (Historical)
 
 **Symptom (old)**: All API requests returned HTTP 500 Internal Server Error
 
@@ -151,7 +179,14 @@ X-Amzn-Errortype: ValidationException
 - `tests/shared/testdata/nonstream/openai_format_with_tools.json`
 
 ### Scripts
-- `test-all-payloads.sh` - Automated testing script
+- `test-all-payloads.sh` - Automated testing script (optimized 2025-11-26)
+  - **Separates test formats by endpoint**:
+    - OpenAI Chat Completions format (3 files) → `/v1/chat/completions`
+    - Anthropic Messages format (4 files) → `/v1/messages`
+  - **Format-specific validation**:
+    - OpenAI: validates `.id`, `.choices`, `.message`, `.finish_reason`
+    - Anthropic: validates `.id`, `.content`, `.role`, `.stop_reason`
+  - **Enhanced output**: Color-coded results, clear section headers, sample responses
 
 ## References
 

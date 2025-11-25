@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -78,7 +81,14 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage
 
 	// Try to load from cache first
 	fmt.Println("[DEBUG] Authenticate: Loading cached client")
-	registeredClient, err = LoadCachedClient()
+
+	authDir := a.cfg.AuthDir
+	if strings.HasPrefix(authDir, "~/") {
+		home, _ := os.UserHomeDir()
+		authDir = filepath.Join(home, authDir[2:])
+	}
+
+	registeredClient, err = LoadCachedClient(authDir)
 	if err != nil {
 		log.Warnf("Failed to load cached client: %v", err)
 		fmt.Printf("[DEBUG] Authenticate: Cache load error: %v\n", err)
@@ -96,7 +106,7 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage
 		fmt.Println("[DEBUG] Authenticate: RegisterClient succeeded")
 
 		// Save to cache for next time
-		if err := SaveCachedClient(registeredClient); err != nil {
+		if err := SaveCachedClient(authDir, registeredClient); err != nil {
 			log.Warnf("Failed to cache client registration: %v", err)
 		}
 	} else {
@@ -136,7 +146,13 @@ func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context) error {
 	}
 
 	// Try to load from cache first
-	registeredClient, err := LoadCachedClient()
+	authDir := a.cfg.AuthDir
+	if strings.HasPrefix(authDir, "~/") {
+		home, _ := os.UserHomeDir()
+		authDir = filepath.Join(home, authDir[2:])
+	}
+
+	registeredClient, err := LoadCachedClient(authDir)
 	if err != nil {
 		log.Warnf("Failed to load cached client: %v", err)
 	}
@@ -150,7 +166,7 @@ func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context) error {
 		}
 
 		// Save to cache
-		if err := SaveCachedClient(registeredClient); err != nil {
+		if err := SaveCachedClient(authDir, registeredClient); err != nil {
 			log.Warnf("Failed to cache client registration: %v", err)
 		}
 	}

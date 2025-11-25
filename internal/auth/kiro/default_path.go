@@ -6,11 +6,11 @@ import (
 )
 
 // DefaultTokenPath returns the default path for the Kiro token file.
-// It follows the same pattern as kiro-cli: ~/.kiro/auth.json
+// It defaults to ~/.cli-proxy-api/kiro-token.json
 func DefaultTokenPath() string {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return "./kiro-token.json"
 	}
-	return filepath.Join(homeDir, ".kiro", "auth.json")
+	return filepath.Join(homeDir, ".cli-proxy-api", "kiro-token.json")
 }
