@@ -4,6 +4,7 @@ package shared
 import (
 	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -66,7 +67,16 @@ func NewMockServer(t *testing.T, handler http.HandlerFunc) *MockServer {
 		handler(w, r)
 	})
 
-	ms.Server = httptest.NewServer(wrappedHandler)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+
+	ts := httptest.NewUnstartedServer(wrappedHandler)
+	ts.Listener = ln
+	ts.Start()
+	ms.Server = ts
+	t.Cleanup(ts.Close)
 	return ms
 }
 

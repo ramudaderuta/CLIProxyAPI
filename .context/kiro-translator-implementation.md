@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document details the debugging process and fixes implemented for the Kiro translator layer to resolve empty response content and ensure proper integration with the CLIProxyAPI.
+This document details the debugging process and fixes implemented for the Kiro translator layer to resolve empty response content and ensure proper integration with the CLIProxyAPI. Current implementation supports OpenAI Chat, Claude Messages, OpenAI Responses (non-stream + stream), and Anthropic-style inputs with IPv4-only httptest in restricted environments.
 
 ## Issues Identified
 
@@ -16,10 +16,13 @@ This document details the debugging process and fixes implemented for the Kiro t
 **Root Cause**: Kiro API returns AWS event-stream binary format, not plain JSON
 **Solution**: Implemented event-stream decoder and SSE parser
 
-### 3. Excessive Code Changes
-**Problem**: Initial changes added 819 lines to `kiro_openai_request.go`
-**Root Cause**: Ported entire main branch implementation
-**Solution**: Minimized to only 10 lines of necessary changes
+### 3. Translator Layout Alignment
+**Problem**: Kiro translators were nested inconsistently (chat-completions/responses folders).
+**Solution**: Restructured to mirror antigravity layout:
+- `internal/translator/kiro/claude` → request/response/init
+- `internal/translator/kiro/gemini` → request/response/init
+- `internal/translator/kiro/openai/chat-completions` and `openai/responses` → request/response/init
+- Added `constant.Kiro` and `FormatKiro` for registry wiring.
 
 ## Implementation Details
 
@@ -104,20 +107,21 @@ func (e *KiroExecutor) MapModel(model string) string {
 }
 ```
 
-### Minimal Request Translation Changes
+### Request Translation Updates
 
 **File**: `internal/translator/kiro/openai/chat-completions/kiro_openai_request.go`
-**Changes**: +16 lines/-6 lines (net +10 lines)
+- Now builds Kiro `conversationState` from OpenAI/Anthropic/OpenAI Responses inputs, with tool specs, tool context manifest, system prompts, multimodal, and `profileArn`/`projectName` passthrough.
+- OpenAI Responses `input` fallback supported (maps to `messages`).
+- Generates userInputMessage/toolUses/toolResults to avoid ValidationException.
 
-**Modifications**:
-1. Added import: `authkiro "github.com/ramudaderuta/CLIProxyAPI/v6/internal/auth/kiro"`
-2. Updated function signature to include `token` and `metadata` parameters
-3. Added error return value
-4. Removed unused `stream` parameter reference
+### Response Translation Updates
 
-**Original Approach**: 1128 lines (copied from main branch)
-**Optimized Approach**: 319 lines (+10 lines from baseline)
-**Savings**: 809 lines (-98.8%)
+**File**: `internal/translator/kiro/openai/chat-completions/kiro_openai_response.go`
+- Extracts assistant content from multiple Kiro paths, preserves toolUses → OpenAI tool_calls, and filters `<thinking>`.
+- Streaming conversions output OpenAI Chat deltas; Claude/Gemini converters reuse these to emit provider-specific chunks; OpenAI Responses conversions reuse OpenAI Chat path.
+
+### IPv4 Test Harness
+- All httptest servers forced to IPv4 listeners; skip with note when tcp6 is disabled in sandbox CI.
 
 ### Module Path Correction
 

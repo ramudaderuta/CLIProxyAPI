@@ -5,10 +5,23 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 )
+
+func newTCP4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+	ts := httptest.NewUnstartedServer(handler)
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts
+}
 
 // Helper: compress data with gzip
 func gzipBytes(b []byte) []byte {
@@ -239,22 +252,20 @@ func TestModifyResponse_DecompressesChunkedJSON(t *testing.T) {
 
 func TestReverseProxy_InjectsHeaders(t *testing.T) {
 	gotHeaders := make(chan http.Header, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
 		w.Write([]byte(`ok`))
 	}))
-	defer upstream.Close()
 
 	proxy, err := createReverseProxy(upstream.URL, NewStaticSecretSource("secret"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	}))
-	defer srv.Close()
 
 	res, err := http.Get(srv.URL + "/test")
 	if err != nil {
@@ -273,7 +284,7 @@ func TestReverseProxy_InjectsHeaders(t *testing.T) {
 
 func TestReverseProxy_EmptySecret(t *testing.T) {
 	gotHeaders := make(chan http.Header, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotHeaders <- r.Header.Clone()
 		w.WriteHeader(200)
 		w.Write([]byte(`ok`))
@@ -285,7 +296,7 @@ func TestReverseProxy_EmptySecret(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
@@ -313,7 +324,7 @@ func TestReverseProxy_ErrorHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
@@ -338,7 +349,7 @@ func TestReverseProxy_ErrorHandler(t *testing.T) {
 
 func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 	// Upstream returns gzipped JSON without Content-Encoding header
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.Write(gzipBytes([]byte(`{"upstream":"ok"}`)))
 	}))
@@ -349,7 +360,7 @@ func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
@@ -369,7 +380,7 @@ func TestReverseProxy_FullRoundTrip_Gzip(t *testing.T) {
 
 func TestReverseProxy_FullRoundTrip_PlainJSON(t *testing.T) {
 	// Upstream returns plain JSON
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write([]byte(`{"plain":"json"}`))
@@ -381,7 +392,7 @@ func TestReverseProxy_FullRoundTrip_PlainJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := newTCP4TestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		proxy.ServeHTTP(w, r)
 	}))
 	defer srv.Close()
@@ -440,52 +451,52 @@ func TestIsStreamingResponse(t *testing.T) {
 
 func TestFilterBetaFeatures(t *testing.T) {
 	tests := []struct {
-		name           string
-		header         string
+		name            string
+		header          string
 		featureToRemove string
-		expected       string
+		expected        string
 	}{
 		{
-			name:           "Remove context-1m from middle",
-			header:         "fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,oauth-2025-04-20",
+			name:            "Remove context-1m from middle",
+			header:          "fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07,oauth-2025-04-20",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
+			expected:        "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
 		},
 		{
-			name:           "Remove context-1m from start",
-			header:         "context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14",
+			name:            "Remove context-1m from start",
+			header:          "context-1m-2025-08-07,fine-grained-tool-streaming-2025-05-14",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "fine-grained-tool-streaming-2025-05-14",
+			expected:        "fine-grained-tool-streaming-2025-05-14",
 		},
 		{
-			name:           "Remove context-1m from end",
-			header:         "fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07",
+			name:            "Remove context-1m from end",
+			header:          "fine-grained-tool-streaming-2025-05-14,context-1m-2025-08-07",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "fine-grained-tool-streaming-2025-05-14",
+			expected:        "fine-grained-tool-streaming-2025-05-14",
 		},
 		{
-			name:           "Feature not present",
-			header:         "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
+			name:            "Feature not present",
+			header:          "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
+			expected:        "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
 		},
 		{
-			name:           "Only feature to remove",
-			header:         "context-1m-2025-08-07",
+			name:            "Only feature to remove",
+			header:          "context-1m-2025-08-07",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "",
+			expected:        "",
 		},
 		{
-			name:           "Empty header",
-			header:         "",
+			name:            "Empty header",
+			header:          "",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "",
+			expected:        "",
 		},
 		{
-			name:           "Header with spaces",
-			header:         "fine-grained-tool-streaming-2025-05-14, context-1m-2025-08-07 , oauth-2025-04-20",
+			name:            "Header with spaces",
+			header:          "fine-grained-tool-streaming-2025-05-14, context-1m-2025-08-07 , oauth-2025-04-20",
 			featureToRemove: "context-1m-2025-08-07",
-			expected:       "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
+			expected:        "fine-grained-tool-streaming-2025-05-14,oauth-2025-04-20",
 		},
 	}
 

@@ -1,12 +1,15 @@
 package kiro_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/claude"
 	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
+	kiroresponses "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
+	_ "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/openai/openai/responses"
 	"github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/tidwall/gjson"
 )
@@ -230,7 +233,7 @@ func TestResponseConversion(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			// Convert Kiro response to OpenAI format
-			openAIResp := responses.ConvertKiroResponseToOpenAI(
+			openAIResp := chat_completions.ConvertKiroResponseToOpenAI(
 				[]byte(tc.kiroResponse),
 				tc.model,
 				false,
@@ -316,7 +319,7 @@ func TestFullRoundTrip(t *testing.T) {
 	}`
 
 	// Convert response back to OpenAI format
-	openAIResp := responses.ConvertKiroResponseToOpenAI(
+	openAIResp := chat_completions.ConvertKiroResponseToOpenAI(
 		[]byte(mockKiroResponse),
 		"claude-sonnet-4-5",
 		false,
@@ -391,5 +394,110 @@ func TestPayloadPreservation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestKiroResponseMultiFormatNonStream verifies Kiro responses translate correctly for
+// OpenAI Chat, Claude Messages, and OpenAI Responses callers.
+func TestKiroResponseMultiFormatNonStream(t *testing.T) {
+	kiroResp := []byte(`{
+		"conversationState": {
+			"currentMessage": {
+				"assistantResponseMessage": {
+					"content": "Weather looks clear.",
+					"toolUses": [{
+						"toolUseId": "call_weather",
+						"name": "get_weather",
+						"input": {"location": "Paris"}
+					}]
+				}
+			}
+		}
+	}`)
+
+	// OpenAI Chat format
+	openAIResp := chat_completions.ConvertKiroResponseToOpenAI(kiroResp, "kiro-sonnet", false)
+	parsed := gjson.ParseBytes(openAIResp)
+	if parsed.Get("choices.0.message.content").String() != "Weather looks clear." {
+		t.Fatalf("unexpected OpenAI content: %s", parsed.Get("choices.0.message.content").String())
+	}
+	if parsed.Get("choices.0.message.tool_calls.0.function.name").String() != "get_weather" {
+		t.Fatalf("tool call not preserved in OpenAI response")
+	}
+
+	// Claude Messages format
+	claudeResp := claude.ConvertKiroResponseToClaude(kiroResp, "kiro-sonnet", false)
+	claudeJSON := gjson.ParseBytes(claudeResp)
+	if claudeJSON.Get("type").String() != "message" {
+		t.Fatalf("expected Claude type=message, got %s", claudeJSON.Get("type").String())
+	}
+	if claudeJSON.Get("content.#").Int() == 0 {
+		t.Fatalf("Claude content should not be empty")
+	}
+	if claudeJSON.Get("content.1.type").String() != "tool_use" {
+		t.Fatalf("expected tool_use block in Claude response")
+	}
+
+	// OpenAI Responses format
+	origReq := []byte(`{"model":"kiro-sonnet","input":[{"role":"user","content":"Hi"}]}`)
+	reqRaw := []byte(`{"conversationState":{}}`)
+	var param any
+	oaiResponses := kiroresponses.ConvertKiroResponseToOpenAIResponsesNonStream(
+		context.Background(),
+		"kiro-sonnet",
+		origReq,
+		reqRaw,
+		kiroResp,
+		&param,
+	)
+	oaiRespJSON := gjson.Parse(oaiResponses)
+	if oaiRespJSON.Get("object").String() != "response" {
+		t.Fatalf("expected object=response, got %s", oaiRespJSON.Get("object").String())
+	}
+	if oaiRespJSON.Get("output.0.content.0.text").String() == "" {
+		t.Fatalf("OpenAI Responses output text missing")
+	}
+}
+
+// TestKiroStreamingMultiFormat ensures streaming chunks translate for OpenAI Chat and Claude.
+func TestKiroStreamingMultiFormat(t *testing.T) {
+	kiroChunk := []byte(`{"type":"content_block_delta","delta":{"text":"Hello"}}`)
+
+	openAIChunk := chat_completions.ConvertKiroStreamChunkToOpenAI(kiroChunk, "kiro-sonnet")
+	if gjson.GetBytes(openAIChunk, "choices.0.delta.content").String() != "Hello" {
+		t.Fatalf("OpenAI delta missing text")
+	}
+
+	claudeChunk := claude.ConvertKiroStreamChunkToClaude(kiroChunk, "kiro-sonnet")
+	if gjson.GetBytes(claudeChunk, "type").String() != "content_block_delta" {
+		t.Fatalf("expected Claude content_block_delta chunk")
+	}
+	if gjson.GetBytes(claudeChunk, "delta.text").String() != "Hello" {
+		t.Fatalf("Claude delta text mismatch")
+	}
+	if gjson.GetBytes(claudeChunk, "choices").Exists() {
+		t.Fatalf("Claude chunk should not contain OpenAI choices")
+	}
+}
+
+// TestOpenAIResponsesRequestFallback ensures OpenAI Responses input is translated to Kiro.
+func TestOpenAIResponsesRequestFallback(t *testing.T) {
+	payload := []byte(`{
+		"model":"kiro-sonnet",
+		"input":[{"role":"user","content":"Fallback?"}],
+		"response_format":"v1-responses"
+	}`)
+
+	req := kiroresponses.ConvertOpenAIResponsesRequestToKiro("kiro-sonnet", payload, false)
+	jsonParsed := gjson.ParseBytes(req)
+	if !jsonParsed.Get("conversationState.currentMessage").Exists() {
+		t.Fatalf("conversationState.currentMessage missing in fallback conversion")
+	}
+	content := jsonParsed.Get("conversationState.currentMessage.userInputMessage.content").String()
+	if content == "" {
+		content = jsonParsed.Get("conversationState.currentMessage.content").String()
+	}
+	if content == "" {
+		t.Fatalf("user content should be preserved in fallback conversion")
 	}
 }

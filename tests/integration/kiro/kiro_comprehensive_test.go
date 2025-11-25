@@ -2,6 +2,7 @@ package kiro_test
 
 import (
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,12 +13,16 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/runtime/executor"
 	chatcompletions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
 )
 
 // MockKiroServer creates a test HTTP server that mimics Kiro API responses
 func MockKiroServer(t *testing.T) *httptest.Server {
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+
+	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Check authorization header
 		auth := r.Header.Get("Authorization")
 		if !strings.HasPrefix(auth, "Bearer ") {
@@ -82,6 +87,10 @@ func MockKiroServer(t *testing.T) *httptest.Server {
 			w.Write([]byte(response))
 		}
 	}))
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts
 }
 
 // TestRequestTranslation tests OpenAI to Kiro request conversion
@@ -159,7 +168,7 @@ func TestResponseTranslation(t *testing.T) {
 		}
 	}`)
 
-	openAIResponse := responses.ConvertKiroResponseToOpenAI(kiroResponse, "kiro-sonnet", false)
+	openAIResponse := chatcompletions.ConvertKiroResponseToOpenAI(kiroResponse, "kiro-sonnet", false)
 
 	if len(openAIResponse) == 0 {
 		t.Fatal("OpenAI response should not be empty")
@@ -179,7 +188,7 @@ func TestResponseTranslation(t *testing.T) {
 func TestThinkingContentFiltering(t *testing.T) {
 	textWithThinking := "Here's my answer: <thinking>internal reasoning</thinking> The result is 42."
 
-	filtered := responses.FilterThinkingContent(textWithThinking)
+	filtered := chatcompletions.FilterThinkingContent(textWithThinking)
 
 	if strings.Contains(filtered, "<thinking>") {
 		t.Error("Filtered text should not contain thinking tags")
@@ -241,7 +250,7 @@ func TestEndToEndNonStreaming(t *testing.T) {
 	}
 
 	// Convert response back to OpenAI format
-	openAIResponse := responses.ConvertKiroResponseToOpenAI(body, "kiro-sonnet", false)
+	openAIResponse := chatcompletions.ConvertKiroResponseToOpenAI(body, "kiro-sonnet", false)
 
 	if len(openAIResponse) == 0 {
 		t.Fatal("Response conversion failed")

@@ -2,6 +2,7 @@ package amp
 
 import (
 	"context"
+	"net"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -47,7 +48,13 @@ func TestAmpModule_Register_WithUpstream(t *testing.T) {
 	r := gin.New()
 
 	// Fake upstream to ensure URL is valid
-	upstream := httptest.NewServer(nil)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+	upstream := httptest.NewUnstartedServer(nil)
+	upstream.Listener = ln
+	upstream.Start()
 	defer upstream.Close()
 
 	accessManager := sdkaccess.NewManager()
@@ -230,7 +237,13 @@ func TestAmpModule_SecretSource_FromConfig(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	upstream := httptest.NewServer(nil)
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+	upstream := httptest.NewUnstartedServer(nil)
+	upstream.Listener = ln
+	upstream.Start()
 	defer upstream.Close()
 
 	accessManager := sdkaccess.NewManager()

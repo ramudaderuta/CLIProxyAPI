@@ -42,6 +42,7 @@ Get 10% OFF GLM CODING PLAN：https://z.ai/subscribe?ic=8JVLJQFSKB
 - OpenAI Codex multi-account load balancing
 - OpenAI-compatible upstream providers via config (e.g., OpenRouter)
 - Reusable Go SDK for embedding the proxy (see `docs/sdk-usage.md`)
+- Kiro translators are aligned with OpenAI/Claude/Gemini and OpenAI Responses schemas (non-stream + stream) using a unified `internal/translator/kiro/{claude,gemini,openai}` layout. Test helpers force IPv4-only `httptest` listeners; CI must permit IPv4 (tcp6 is skipped in restricted sandboxes).
 
 ## Getting Started
 

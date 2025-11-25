@@ -15,9 +15,9 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/helpers"
 	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v6/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v6/sdk/translator"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -172,9 +172,24 @@ func (e *KiroExecutor) Execute(
 	}
 
 	// Convert response to OpenAI format
-	openAIResp := responses.ConvertKiroResponseToOpenAI([]byte(kiroResponse), req.Model, false)
+	openAIResp := chat_completions.ConvertKiroResponseToOpenAI([]byte(kiroResponse), req.Model, false)
 
-	resp.Payload = openAIResp
+	// Translate response to requested source format when needed
+	if opts.SourceFormat != "" && opts.SourceFormat != sdktranslator.FormatOpenAI {
+		translated := sdktranslator.TranslateNonStream(
+			context.Background(),
+			sdktranslator.FormatOpenAI,
+			opts.SourceFormat,
+			req.Model,
+			opts.OriginalRequest,
+			kiroRequest,
+			openAIResp,
+			nil,
+		)
+		resp.Payload = []byte(translated)
+	} else {
+		resp.Payload = openAIResp
+	}
 
 	log.Debugf("Kiro Execute completed successfully")
 	return resp, nil
@@ -305,7 +320,7 @@ func (e *KiroExecutor) ExecuteStream(
 	streamChan := make(chan cliproxyexecutor.StreamChunk, 10)
 
 	// Start goroutine to process SSE stream
-	go e.processStream(ctx, httpResp.Body, req.Model, streamChan)
+	go e.processStream(ctx, httpResp.Body, req.Model, opts, kiroRequest, streamChan)
 
 	return streamChan, nil
 }
@@ -450,7 +465,7 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 }
 
 // processStream processes SSE stream from Kiro API.
-func (e *KiroExecutor) processStream(ctx context.Context, body io.ReadCloser, model string, streamChan chan cliproxyexecutor.StreamChunk) {
+func (e *KiroExecutor) processStream(ctx context.Context, body io.ReadCloser, model string, opts cliproxyexecutor.Options, requestRawJSON []byte, streamChan chan cliproxyexecutor.StreamChunk) {
 	defer body.Close()
 	defer close(streamChan)
 
@@ -478,8 +493,26 @@ func (e *KiroExecutor) processStream(ctx context.Context, body io.ReadCloser, mo
 
 		if n > 0 {
 			// Convert chunk to OpenAI format
-			chunk := responses.ConvertKiroStreamChunkToOpenAI(buf[:n], model)
+			chunk := chat_completions.ConvertKiroStreamChunkToOpenAI(buf[:n], model)
 			if chunk != nil {
+				if opts.SourceFormat != "" && opts.SourceFormat != sdktranslator.FormatOpenAI {
+					converted := sdktranslator.TranslateStream(
+						ctx,
+						sdktranslator.FormatOpenAI,
+						opts.SourceFormat,
+						model,
+						opts.OriginalRequest,
+						requestRawJSON,
+						chunk,
+						nil,
+					)
+					for _, line := range converted {
+						streamChan <- cliproxyexecutor.StreamChunk{
+							Payload: []byte(line),
+						}
+					}
+					continue
+				}
 				streamChan <- cliproxyexecutor.StreamChunk{
 					Payload: chunk,
 				}
@@ -571,6 +604,20 @@ func (e *KiroExecutor) flattenHistory(requestBody []byte) []byte {
 
 		role, _ := msg["role"].(string)
 		content, _ := msg["content"].(string)
+		if content == "" {
+			if u, ok := msg["userInputMessage"].(map[string]interface{}); ok {
+				if c, ok := u["content"].(string); ok {
+					content = c
+				}
+			}
+		}
+		if content == "" {
+			if a, ok := msg["assistantResponseMessage"].(map[string]interface{}); ok {
+				if c, ok := a["content"].(string); ok {
+					content = c
+				}
+			}
+		}
 
 		if role != "" && content != "" {
 			textHistory = append(textHistory, fmt.Sprintf("%s: %s", role, content))
@@ -618,7 +665,12 @@ func (e *KiroExecutor) buildMinimalRequest(requestBody []byte) []byte {
 	currentMsg, ok := convState["currentMessage"].(map[string]interface{})
 	if ok {
 		content, _ := currentMsg["content"].(string)
-		currentMsg["content"] = "(Continuing from previous context) " + content
+		if userMsg, ok := currentMsg["userInputMessage"].(map[string]interface{}); ok {
+			text, _ := userMsg["content"].(string)
+			userMsg["content"] = "(Continuing from previous context) " + text
+		} else {
+			currentMsg["content"] = "(Continuing from previous context) " + content
+		}
 	}
 
 	// Re-encode

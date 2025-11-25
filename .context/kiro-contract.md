@@ -9,7 +9,7 @@ This document defines the **protocol contract** between:
 
 It captures:
 
-1.  **Translation layer** behavior (`BuildRequest`, `ParseResponse`) which maps OpenAI/Anthropic messages to Kiro's `conversationState`.
+1.  **Translation layer** behavior (`BuildRequest`, `ParseResponse`) which maps OpenAI/Anthropic/OpenAI Responses messages to Kiro's `conversationState` and back (OpenAI Chat, Claude Messages, OpenAI Responses; non-stream + stream).
 2.  **Execution layer** behavior (`KiroExecutor`), including token rotation and fallback mechanisms for "Improperly formed request" errors.
 3.  **Authentication layer** behavior (`KiroAuth`, `KiroTokenStorage`) for OAuth token management.
 4.  **Streaming layer** behavior (`ConvertKiroStreamToAnthropic`, event stream decoding) for SSE stream conversion.
@@ -87,29 +87,25 @@ type TokenStore interface {
 
 ### 2.2 Translation Functions
 
-The Kiro translator does not use a generic conversion registry. Instead, it exposes specific entry points:
+Kiro translators are registered in the shared registry (FormatKiro) and support OpenAI Chat, Claude Messages, and OpenAI Responses:
 
 ```go
-// BuildRequest converts an OpenAI-compatible chat payload into Kiro's conversation request format.
+// BuildRequest converts an OpenAI/Anthropic/Responses payload into Kiro conversationState.
 func BuildRequest(
-    model string, 
-    payload []byte, 
-    token *authkiro.KiroTokenStorage, 
+    model string,
+    payload []byte,
+    token *authkiro.KiroTokenStorage,
     metadata map[string]any,
 ) ([]byte, error)
 
 // ParseResponse extracts assistant text and tool calls from a Kiro upstream payload (JSON or SSE).
-// This maintains backward compatibility by using default implementations.
 func ParseResponse(data []byte) (string, []OpenAIToolCall)
-
-// The new architecture uses dependency injection:
-type ResponseParser interface {
-    ParseResponse(data []byte) (string, []OpenAIToolCall)
-}
-
-// NewResponseParser creates a new ResponseParser with injected dependencies
-func NewResponseParser(processor JSONProcessor, extractor ContentExtractor) ResponseParser
 ```
+
+Streaming translators emit the target schema:
+* OpenAI Chat (`ConvertKiroStreamChunkToOpenAI`)
+* Claude Messages (`ConvertKiroStreamChunkToClaude`)
+* OpenAI Responses (`ConvertKiroResponseToOpenAIResponsesStream`)
 
 ### 2.3 Kiro Conversation Schema
 

@@ -2,8 +2,9 @@
 # Test all nonstream payloads with real Kiro server
 # Uses kiro-sonnet model for all tests
 
-API_KEY="test-api-key-1234567890"
-BASE_URL="http://localhost:8317"
+API_KEY="${API_KEY:-your-api-key-1}"
+BASE_URL="${BASE_URL:-http://localhost:8317}"
+MODEL="${MODEL:-kiro-sonnet}"
 TEST_DIR="tests/shared/testdata/nonstream"
 
 # Color codes
@@ -34,7 +35,7 @@ for file in "${files[@]}"; do
     echo -n "Testing $file... "
     
     # Load original payload and modify model to kiro-sonnet
-    payload=$(cat "$TEST_DIR/$file.json" | jq '.model = "kiro-sonnet"')
+    payload=$(cat "$TEST_DIR/$file.json" | jq --arg model "$MODEL" '.model = $model')
     
     response=$(echo "$payload" | curl -s -w "\n%{http_code}" \
         -X POST "$BASE_URL/v1/chat/completions" \
@@ -81,7 +82,7 @@ echo "Total: $((successful + failed)) tests"
 if [ $successful -gt 0 ]; then
     echo ""
     echo "Sample successful response:"
-    payload=$(cat "$TEST_DIR/openai_format_simple.json" | jq '.model = "kiro-sonnet"')
+    payload=$(cat "$TEST_DIR/openai_format_simple.json" | jq --arg model "$MODEL" '.model = $model')
     echo "$payload" | curl -s \
         -X POST "$BASE_URL/v1/chat/completions" \
         -H "Content-Type: application/json" \

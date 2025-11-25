@@ -1,9 +1,9 @@
-package responses
+package gemini
 
 import (
 	"encoding/json"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
+	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -11,7 +11,7 @@ import (
 // ConvertKiroResponseToGemini converts a Kiro response to Gemini generateContent format.
 func ConvertKiroResponseToGemini(kiroResponse []byte, model string, streaming bool) []byte {
 	// First convert to OpenAI format (easier to work with)
-	openAIResponse := responses.ConvertKiroResponseToOpenAI(kiroResponse, model, streaming)
+	openAIResponse := chat_completions.ConvertKiroResponseToOpenAI(kiroResponse, model, streaming)
 
 	// Parse OpenAI response
 	messageContent := gjson.GetBytes(openAIResponse, "choices.0.message.content").String()
@@ -89,7 +89,7 @@ func ConvertKiroResponseToGemini(kiroResponse []byte, model string, streaming bo
 // ConvertKiroStreamChunkToGemini converts a Kiro SSE stream chunk to Gemini streaming format
 func ConvertKiroStreamChunkToGemini(chunkData []byte, model string) []byte {
 	// First convert to OpenAI format
-	openAIChunk := responses.ConvertKiroStreamChunkToOpenAI(chunkData, model)
+	openAIChunk := chat_completions.ConvertKiroStreamChunkToOpenAI(chunkData, model)
 
 	// Parse OpenAI chunk
 	deltaContent := gjson.GetBytes(openAIChunk, "choices.0.delta.content").String()

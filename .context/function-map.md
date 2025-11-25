@@ -142,7 +142,7 @@ This document provides a comprehensive mapping of functions, classes, and their 
 | `QwenExecutor` | struct | `internal/runtime/executor/qwen_executor.go` | Executes Qwen API requests |
 | `IFlowExecutor` | struct | `internal/runtime/executor/iflow_executor.go` | Executes iFlow API requests |
 | `AntigravityExecutor` | struct | `internal/runtime/executor/antigravity_executor.go` | Executes Antigravity API requests |
-| `KiroExecutor` | struct | `internal/runtime/executor/kiro_executor.go` | Executes Kiro API requests |
+| `KiroExecutor` | struct | `internal/runtime/executor/kiro_executor.go` | Executes Kiro API requests; translates responses back to the caller’s source format (OpenAI Chat, Claude Messages, OpenAI Responses) and handles streaming conversions |
 
 ### Executor Interface Methods
 

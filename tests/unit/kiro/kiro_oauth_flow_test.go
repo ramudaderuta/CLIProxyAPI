@@ -3,6 +3,7 @@ package kiro
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -12,10 +13,22 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
 )
 
+func newTCP4ServerForOAuth(t *testing.T, handler http.Handler) *httptest.Server {
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+	ts := httptest.NewUnstartedServer(handler)
+	ts.Listener = ln
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts
+}
+
 // TestDeviceCodeFlow tests the OAuth device code flow
 func TestDeviceCodeFlow(t *testing.T) {
 	// Mock server for device code endpoint
-	deviceServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	deviceServer := newTCP4ServerForOAuth(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/device/authorize" {
 			t.Errorf("Unexpected path: %s", r.URL.Path)
 		}
@@ -58,7 +71,7 @@ func TestTokenPolling(t *testing.T) {
 	maxPolls := 3
 
 	// Mock server for token polling
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tokenServer := newTCP4ServerForOAuth(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pollCount++
 		w.Header().Set("Content-Type", "application/json")
 
@@ -123,7 +136,7 @@ func TestTokenPolling(t *testing.T) {
 
 // TestTokenRefresh tests the token refresh flow
 func TestTokenRefresh(t *testing.T) {
-	refreshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	refreshServer := newTCP4ServerForOAuth(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Errorf("Expected POST, got %s", r.Method)
 		}
@@ -258,7 +271,7 @@ func TestOAuthErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			errorServer := newTCP4ServerForOAuth(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				resp := map[string]interface{}{
 					"error":             tt.errorCode,
 					"error_description": tt.description,
@@ -283,7 +296,7 @@ func TestOAuthErrors(t *testing.T) {
 // TestOAuthTimeout tests timeout scenarios
 func TestOAuthTimeout(t *testing.T) {
 	t.Run("device code request timeout", func(t *testing.T) {
-		slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowServer := newTCP4ServerForOAuth(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(2 * time.Second)
 			w.WriteHeader(http.StatusOK)
 		}))

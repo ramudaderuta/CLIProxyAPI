@@ -1,6 +1,6 @@
-// Package responses provides response translation functionality from Kiro to OpenAI format.
+// Package chat_completions provides response translation functionality from Kiro to OpenAI format.
 // It converts Kiro conversationState responses into OpenAI Chat Completions format.
-package responses
+package chat_completions
 
 import (
 	"encoding/json"
@@ -30,13 +30,7 @@ var (
 //   - []byte: The transformed response in OpenAI Chat Completions format
 func ConvertKiroResponseToOpenAI(kiroResponse []byte, model string, stream bool) []byte {
 	kiroJSON := gjson.ParseBytes(kiroResponse)
-
-	// Extract the assistant message from conversationState
-	message := kiroJSON.Get("conversationState.currentMessage")
-	if !message.Exists() {
-		// Fallback: try to get response directly
-		message = kiroJSON.Get("response")
-	}
+	message := extractAssistantMessage(kiroJSON)
 
 	// Build OpenAI response
 	openAIResp := buildOpenAIResponse(message, model)
@@ -49,6 +43,42 @@ func ConvertKiroResponseToOpenAI(kiroResponse []byte, model string, stream bool)
 	}
 
 	return []byte(openAIResp)
+}
+
+// extractAssistantMessage finds the assistant message payload from Kiro response JSON.
+func extractAssistantMessage(root gjson.Result) gjson.Result {
+	conv := root.Get("conversationState")
+	candidates := []gjson.Result{
+		conv.Get("currentMessage.assistantResponseMessage"),
+		conv.Get("currentMessage.assistantMessage"),
+		conv.Get("currentMessage"),
+		root.Get("response"),
+	}
+
+	for _, candidate := range candidates {
+		if candidate.Exists() {
+			return candidate
+		}
+	}
+
+	// Look into history for the last assistant-like entry
+	history := conv.Get("history")
+	if history.IsArray() {
+		for i := len(history.Array()) - 1; i >= 0; i-- {
+			item := history.Array()[i]
+			if msg := item.Get("assistantResponseMessage"); msg.Exists() {
+				return msg
+			}
+			if msg := item.Get("assistantMessage"); msg.Exists() {
+				return msg
+			}
+			if item.Get("role").String() == "assistant" {
+				return item
+			}
+		}
+	}
+
+	return gjson.Result{}
 }
 
 // buildOpenAIResponse builds an OpenAI-compatible response from Kiro message
@@ -77,7 +107,7 @@ func buildOpenAIResponse(message gjson.Result, model string) string {
 
 // buildChoice builds a single choice object from Kiro message
 func buildChoice(message gjson.Result) map[string]interface{} {
-	content := message.Get("content").String()
+	content := extractMessageContent(message)
 
 	// Filter thinking content
 	content = FilterThinkingContent(content)
@@ -92,29 +122,9 @@ func buildChoice(message gjson.Result) map[string]interface{} {
 	}
 
 	// Handle tool calls
-	toolCalls := message.Get("toolCalls")
-	if toolCalls.Exists() && toolCalls.IsArray() {
-		var calls []map[string]interface{}
-		for _, tc := range toolCalls.Array() {
-			callID := tc.Get("id").String()
-			if callID == "" {
-				callID = "call_" + uuid.New().String()[:12]
-			}
-
-			calls = append(calls, map[string]interface{}{
-				"id":   callID,
-				"type": "function",
-				"function": map[string]interface{}{
-					"name":      tc.Get("function.name").String(),
-					"arguments": tc.Get("function.arguments").String(),
-				},
-			})
-		}
-
-		if len(calls) > 0 {
-			choice["message"].(map[string]interface{})["tool_calls"] = calls
-			choice["finish_reason"] = "tool_calls"
-		}
+	if calls := extractToolCalls(message); len(calls) > 0 {
+		choice["message"].(map[string]interface{})["tool_calls"] = calls
+		choice["finish_reason"] = "tool_calls"
 	}
 
 	return choice
@@ -167,6 +177,68 @@ func FilterThinkingContent(content string) string {
 	filtered = regexp.MustCompile(`\n{3,}`).ReplaceAllString(filtered, "\n\n")
 
 	return filtered
+}
+
+// extractMessageContent handles both string and array-based content blocks.
+func extractMessageContent(message gjson.Result) string {
+	if !message.Exists() {
+		return ""
+	}
+
+	content := message.Get("content")
+	if !content.Exists() {
+		content = message.Get("assistantMessage.content")
+	}
+
+	if content.IsArray() {
+		var parts []string
+		for _, part := range content.Array() {
+			switch part.Get("type").String() {
+			case "text":
+				if text := part.Get("text").String(); text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+
+	return content.String()
+}
+
+// extractToolCalls converts Kiro tool uses into OpenAI tool calls.
+func extractToolCalls(message gjson.Result) []map[string]interface{} {
+	toolCalls := message.Get("toolUses")
+	if !toolCalls.Exists() || !toolCalls.IsArray() {
+		toolCalls = message.Get("assistantMessage.toolUses")
+	}
+	if !toolCalls.Exists() || !toolCalls.IsArray() {
+		return nil
+	}
+
+	var calls []map[string]interface{}
+	for _, tc := range toolCalls.Array() {
+		callID := tc.Get("toolUseId").String()
+		if callID == "" {
+			callID = "call_" + uuid.New().String()[:12]
+		}
+
+		arguments := tc.Get("input").Raw
+		if arguments == "" {
+			arguments = tc.Get("input").String()
+		}
+
+		calls = append(calls, map[string]interface{}{
+			"id":   callID,
+			"type": "function",
+			"function": map[string]interface{}{
+				"name":      tc.Get("name").String(),
+				"arguments": arguments,
+			},
+		})
+	}
+
+	return calls
 }
 
 // ConvertKiroStreamChunkToOpenAI converts a Kiro SSE stream chunk to OpenAI format

@@ -1,4 +1,4 @@
-package chatcompletions
+package claude
 
 import (
 	"encoding/json"

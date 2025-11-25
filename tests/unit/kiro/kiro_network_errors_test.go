@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,10 +12,23 @@ import (
 	"time"
 )
 
+func newTCP4Server(tb testing.TB, handler http.Handler) *httptest.Server {
+	tb.Helper()
+	ln, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		tb.Skip("Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later")
+	}
+	ts := httptest.NewUnstartedServer(handler)
+	ts.Listener = ln
+	ts.Start()
+	tb.Cleanup(ts.Close)
+	return ts
+}
+
 // TestConnectionTimeout tests timeout scenarios
 func TestConnectionTimeout(t *testing.T) {
 	t.Run("slow server response", func(t *testing.T) {
-		slowServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		slowServer := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Simulate slow response (2 seconds)
 			time.Sleep(2 * time.Second)
 			w.WriteHeader(http.StatusOK)
@@ -42,7 +56,7 @@ func TestConnectionTimeout(t *testing.T) {
 	})
 
 	t.Run("context timeout", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			time.Sleep(200 * time.Millisecond)
 			w.WriteHeader(http.StatusOK)
 		}))
@@ -63,7 +77,7 @@ func TestConnectionTimeout(t *testing.T) {
 	})
 
 	t.Run("request cancellation", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Long-running request
 			<-r.Context().Done()
 		}))
@@ -115,7 +129,7 @@ func TestConnectionRefused(t *testing.T) {
 // TestMalformedResponse tests malformed HTTP response handling
 func TestMalformedResponse(t *testing.T) {
 	t.Run("invalid JSON response", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// Write invalid JSON
@@ -141,7 +155,7 @@ func TestMalformedResponse(t *testing.T) {
 	})
 
 	t.Run("empty response body", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// Empty body
@@ -164,7 +178,7 @@ func TestMalformedResponse(t *testing.T) {
 	})
 
 	t.Run("corrupted JSON stream", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			// Mix of valid and invalid JSON
@@ -186,7 +200,7 @@ func TestMalformedResponse(t *testing.T) {
 	})
 
 	t.Run("unexpected content type", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`<html><body>Error</body></html>`))
@@ -210,7 +224,7 @@ func TestMalformedResponse(t *testing.T) {
 // TestPartialSSEStream tests partial/incomplete SSE stream handling
 func TestPartialSSEStream(t *testing.T) {
 	t.Run("incomplete SSE event", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			w.Header().Set("Cache-Control", "no-cache")
 			w.Header().Set("Connection", "keep-alive")
@@ -248,7 +262,7 @@ func TestPartialSSEStream(t *testing.T) {
 	})
 
 	t.Run("SSE stream interruption", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher := w.(http.Flusher)
 
@@ -340,7 +354,7 @@ func TestHTTPStatusCodes(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.statusCode)
 				json.NewEncoder(w).Encode(map[string]interface{}{
 					"error":       tc.description,
@@ -377,7 +391,7 @@ func TestNetworkRetryLogic(t *testing.T) {
 		attemptCount := 0
 		maxRetries := 3
 
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			attemptCount++
 			if attemptCount < maxRetries {
 				w.WriteHeader(http.StatusInternalServerError)
@@ -485,7 +499,7 @@ func TestProxyConfiguration(t *testing.T) {
 // TestLargeResponseHandling tests handling of large responses
 func TestLargeResponseHandling(t *testing.T) {
 	t.Run("large JSON response", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 
@@ -514,7 +528,7 @@ func TestLargeResponseHandling(t *testing.T) {
 	})
 
 	t.Run("streaming large response", func(t *testing.T) {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server := newTCP4Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/event-stream")
 			flusher := w.(http.Flusher)
 
@@ -554,7 +568,7 @@ func TestLargeResponseHandling(t *testing.T) {
 
 // BenchmarkNetworkErrorHandling benchmarks error handling performance
 func BenchmarkNetworkErrorHandling(b *testing.B) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newTCP4Server(b, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer server.Close()

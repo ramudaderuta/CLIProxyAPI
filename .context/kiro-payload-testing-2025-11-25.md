@@ -1,11 +1,11 @@
 # Kiro Payload Testing and Anthropic Format Support
 
 **Date**: 2025-11-25  
-**Status**: Mock testing complete ✅ | Server integration blocked ⚠️
+**Status**: Live formats working ✅ | Server integration fixed ✅ | Env-level IPv4-only httptest noted ⚠️
 
 ## Overview
 
-This document summarizes the work on validating Kiro payload test data and implementing Anthropic format support.
+This document tracks Kiro payload validation, translator behavior, and the current test/runtime context after recent fixes.
 
 ## Completed Work
 
@@ -66,22 +66,23 @@ if systemPrompt == "" {
    - Parameter preservation checks
    - **Result**: 14/14 PASS ✅
 
-### 4. Server Integration Testing
+### 4. Current Integration State (Updated)
 
-**Setup**:
-- Created `test-all-payloads.sh` script to test all payloads
-- Configured server with API key: `test-api-key-1234567890`
-- Updated Kiro token in `~/.cli-proxy-api/kiro-auth-token.json`
-
-**Results**: All requests fail with HTTP 500 ⚠️
+- Live endpoints verified against real Kiro:
+  - `/v1/chat/completions` → OpenAI Chat format (choices[].message, tool_calls supported).
+  - `/v1/messages` → Claude Messages format (`type: "message"`, content array/tool_use blocks).
+  - `/v1/responses` → OpenAI Responses format (`object: "response"`, output content parts).
+- Request converter now handles OpenAI/Anthropic/OpenAI Responses inputs, including `input` array fallback and tool specs/manifest.
+- Response converters cover OpenAI Chat, Claude Messages, OpenAI Responses; streaming path emits provider-specific chunks.
+- Environment note: ipv6 listeners are blocked here; all httptest servers use IPv4 or `t.Skip` with the note “Current runtime environment disables tcp6, needs to be enabled in CI that supports IPv4 later.”
 
 ## Issues Discovered
 
 ### Server Integration Problem
 
-**Symptom**: All API requests return HTTP 500 Internal Server Error
+**Symptom (old)**: All API requests returned HTTP 500 Internal Server Error
 
-**Root Cause**: Kiro API returns `400 ValidationException` for all requests
+**Root Cause (old)**: Kiro API returned `400 ValidationException` for all requests. Current request formatting and response translation have been fixed; live calls succeed.
 
 **Evidence** (from `debug_kiro.log`):
 ```
@@ -141,10 +142,8 @@ X-Amzn-Errortype: ValidationException
   - Modified `ConvertOpenAIRequestToKiro()` to check both formats
 
 ### Test Files Created
-- `tests/unit/kiro/kiro_all_payloads_test.go`
-- `tests/unit/kiro/kiro_anthropic_format_test.go`
-- `tests/unit/kiro/kiro_streaming_data_test.go` (renamed)
-- `tests/unit/kiro/kiro_payload_validation_test.go` (updated)
+- `tests/unit/kiro/kiro_streaming_data_test.go`
+- `tests/unit/kiro/kiro_payload_validation_test.go`
 
 ### Test Data Created
 - `tests/shared/testdata/nonstream/openai_format_simple.json`
@@ -165,3 +164,29 @@ X-Amzn-Errortype: ValidationException
 ## Conclusion
 
 The translation layer is **fully functional** as verified by comprehensive mock testing. The Anthropic format support has been successfully implemented. However, server integration is blocked by Kiro API validation errors. The next session should focus on debugging the request format to match Kiro API expectations.
+
+## TODOs / Gaps to Close (3W1H)
+
+1) Golden fixtures for responses (What/Why/Who/How)
+- What: Create golden files (non-stream + stream) for OpenAI Chat, Claude Messages, and OpenAI Responses outputs from Kiro. Cover tool_calls/tool_use, mixed text/tool interleave, and thinking-tag filtering.
+- Why: Locks response shape to prevent regressions and mirrors antigravity’s coverage discipline.
+- Who: Translator/QA owners for Kiro.
+- How: Add golden JSON/NDJSON under `tests/unit/kiro/testdata/golden` and assert byte-for-byte matches in Kiro response/stream tests.
+
+2) Token accounting parity (What/Why/Who/How)
+- What: Replace the char/4 estimate in Kiro executor with a richer per-call accounting (prompt/completion/total, and stream usage when available).
+- Why: Aligns with other providers’ token reporting and prevents surprising usage gaps for clients.
+- Who: Runtime executor owner.
+- How: Plumb usage from Kiro payloads when present; otherwise add a lightweight tokenizer fallback. Add unit tests that assert usage fields in non-stream and stream final chunks.
+
+3) Pipeline integration review (What/Why/Who/How)
+- What: Evaluate routing Kiro through the shared translator pipeline (registry) instead of the custom inline path for source-format translation.
+- Why: Reduces divergence from other providers and centralizes format conversions.
+- Who: Runtime/translator owners.
+- How: Spike a branch that maps Kiro into the standard pipeline hooks; compare behavior with current inline path; keep the current approach if latency/compatibility tradeoffs are unacceptable but document the decision.
+
+4) Reverse translations (optional) (What/Why/Who/How)
+- What: Add registry entries for Kiro→other providers if bidirectional flows become necessary (e.g., replaying Kiro outputs as inputs to another provider).
+- Why: Future-proofs cross-provider chaining; currently not required for caller-format conversions.
+- Who: Translator owners.
+- How: Mirror antigravity-style reverse registrations; add targeted tests to ensure role/content/tool fidelity across conversions.

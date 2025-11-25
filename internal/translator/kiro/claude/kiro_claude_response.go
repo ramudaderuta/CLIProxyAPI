@@ -1,10 +1,10 @@
-package responses
+package claude
 
 import (
 	"encoding/json"
 	"strings"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
+	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
 	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 )
@@ -13,7 +13,7 @@ import (
 // Since Kiro responses are similar to OpenAI, we reuse the OpenAI converter and adjust the format.
 func ConvertKiroResponseToClaude(kiroResponse []byte, model string, streaming bool) []byte {
 	// First convert to OpenAI format
-	openAIResponse := responses.ConvertKiroResponseToOpenAI(kiroResponse, model, streaming)
+	openAIResponse := chat_completions.ConvertKiroResponseToOpenAI(kiroResponse, model, streaming)
 
 	// Parse OpenAI response
 	id := gjson.GetBytes(openAIResponse, "id").String()
@@ -83,7 +83,7 @@ func ConvertKiroResponseToClaude(kiroResponse []byte, model string, streaming bo
 // ConvertKiroStreamChunkToClaude converts a Kiro SSE stream chunk to Claude format
 func ConvertKiroStreamChunkToClaude(chunkData []byte, model string) []byte {
 	// First convert to OpenAI format
-	openAIChunk := responses.ConvertKiroStreamChunkToOpenAI(chunkData, model)
+	openAIChunk := chat_completions.ConvertKiroStreamChunkToOpenAI(chunkData, model)
 
 	// For streaming, Claude uses similar SSE format but with different event names
 	// Convert the OpenAI chunk to Claude format

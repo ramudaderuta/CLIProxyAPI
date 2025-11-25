@@ -7,10 +7,10 @@ The Kiro CLI Provider enables CLIProxyAPI to interact with Kiro (formerly CodeWh
 ### Features
 
 **OAuth Authentication**: Secure device code flow (GitHub OAuth & AWS Builder ID)  
-**Multi-Format Support**: OpenAI, Claude, and Gemini API compatibility  
+**Multi-Format Support**: OpenAI, Claude, Gemini, and OpenAI Responses API compatibility (non-stream + stream) with unified translators under `internal/translator/kiro/{claude,gemini,openai}`  
 **Automatic Token Management**: Auto-refresh with 5-minute expiration buffer  
 **Multi-Account Support**: Token rotation and failover across multiple accounts  
-**Streaming Support**: Full SSE streaming with 6 event types  
+**Streaming Support**: Full SSE streaming with 6 event types; streaming translators emit OpenAI Chat, Claude Messages, and OpenAI Responses formats depending on the source
 **Tool Calling**: Function/tool calling with proper ID sanitization  
 **Multimodal**: Text + image content support  
 
@@ -573,5 +573,4 @@ curl http://localhost:8080/v1/models | jq '.data[] | select(.id | contains("kiro
 - Minimal overhead (~1ms token validation per request)
 - Token refresh only when needed
 - Follows existing executor patterns
-
 

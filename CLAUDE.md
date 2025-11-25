@@ -180,7 +180,7 @@ The Kiro provider supports two authentication methods:
 ### Basic Request
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "kiro-sonnet",
@@ -193,7 +193,7 @@ curl http://localhost:8080/v1/chat/completions \
 ### Streaming Request
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -N \
   -d '{
@@ -208,7 +208,7 @@ curl http://localhost:8080/v1/chat/completions \
 ### Tool Calling
 
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "kiro-sonnet",

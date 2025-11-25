@@ -48,6 +48,10 @@ go test ./tests/unit/... -run 'SSE|Translation' -v -update
 # Run tests with coverage report
 go test ./tests/unit/... -coverprofile=coverage.out
 go tool cover -html=coverage.out
+
+# Run live payload smoke tests (Kiro)
+tests/test-all-payloads.sh
+# Note: Some httptest cases are forced to IPv4; CI must allow IPv4 (tcp6 is skipped in restricted environments).
 ```
 
 ### Code Quality
@@ -262,7 +266,7 @@ You can use any OpenAI-compatible client to interact with Kiro models.
 
 **Example Request:**
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "kiro-sonnet",
@@ -276,7 +280,7 @@ Streaming is fully supported via Server-Sent Events (SSE).
 
 **Example Request:**
 ```bash
-curl http://localhost:8080/v1/chat/completions \
+curl http://localhost:8317/v1/chat/completions \
   -H "Content-Type: application/json" \
   -N \
   -d '{
@@ -327,3 +331,9 @@ All notable changes to this project will be documented in this file.
   - Support for `kiro-sonnet`, `kiro-opus`, and `kiro-haiku` models.
   - Multi-account support with automatic load balancing.
   - Streaming and tool calling support.
+
+### Kiro Translator Structure
+- `internal/translator/kiro/{claude,gemini,openai}` mirrors the antigravity layout: request, response, and init files sit directly under each provider folder.
+- `constant.Kiro` and `translator.FormatKiro` define the provider identifier for registry lookups.
+- OpenAI Responses compatibility lives under `internal/translator/kiro/openai/responses` with request/response init wiring.
+- Response-path conversions now cover OpenAI Chat, Claude Messages, and OpenAI Responses (non-stream + stream) to ensure downstream message formats stay correct.

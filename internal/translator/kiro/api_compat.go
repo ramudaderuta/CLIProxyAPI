@@ -7,7 +7,6 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
 	chat_completions "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/chat-completions"
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/openai/responses"
 	"github.com/tidwall/gjson"
 )
 
@@ -55,7 +54,7 @@ func BuildRequest(
 func ParseResponse(data []byte) (string, []OpenAIToolCall) {
 	// First, convert Kiro response to OpenAI format
 	// Assuming model name doesn't affect parsing, use empty string
-	openAIResp := responses.ConvertKiroResponseToOpenAI(data, "", false)
+	openAIResp := chat_completions.ConvertKiroResponseToOpenAI(data, "", false)
 
 	// Parse the OpenAI response to extract text and tool calls
 	parsed := gjson.ParseBytes(openAIResp)

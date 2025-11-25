@@ -1,4 +1,4 @@
-package chatcompletions
+package gemini
 
 import (
 	"encoding/json"

@@ -106,6 +106,8 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 					if len(toolCalls) > 0 {
 						message, _ = sjson.Set(message, "tool_calls", toolCalls)
 					}
+				} else if content := item.Get("content"); content.Exists() && content.Type == gjson.String {
+					message, _ = sjson.Set(message, "content", content.String())
 				}
 
 				out, _ = sjson.SetRaw(out, "messages.-1", message)
