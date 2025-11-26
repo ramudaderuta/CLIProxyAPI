@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
@@ -327,23 +329,17 @@ func (f *DeviceCodeFlow) PollForToken(ctx context.Context, deviceCode string) (*
 
 // requestToken attempts to exchange the device code for tokens.
 func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*KiroTokenStorage, error) {
-	payload := map[string]interface{}{
-		"client_id":   f.clientID,
-		"device_code": deviceCode,
-		"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",
-	}
+	form := url.Values{}
+	form.Set("client_id", f.clientID)
+	form.Set("device_code", deviceCode)
+	form.Set("grant_type", "urn:ietf:params:oauth:grant-type:device_code")
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, NewAuthError("requestToken", err, "failed to marshal request")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenEndpoint, bytes.NewReader(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, NewAuthError("requestToken", err, "failed to create request")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Kiro-CLI")
 	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
@@ -439,26 +435,20 @@ func (f *DeviceCodeFlow) requestToken(ctx context.Context, deviceCode string) (*
 //   - *KiroTokenStorage: Updated token storage with new access token
 //   - error: An error if refresh fails, nil otherwise
 func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) (*KiroTokenStorage, error) {
-	payload := map[string]interface{}{
-		"client_id":     f.clientID,
-		"grant_type":    "refresh_token",
-		"refresh_token": refreshToken,
-	}
+	form := url.Values{}
+	form.Set("client_id", f.clientID)
+	form.Set("grant_type", "refresh_token")
+	form.Set("refresh_token", refreshToken)
 	if f.clientSecret != "" {
-		payload["client_secret"] = f.clientSecret
+		form.Set("client_secret", f.clientSecret)
 	}
 
-	jsonData, err := json.Marshal(payload)
-	if err != nil {
-		return nil, NewAuthError("RefreshToken", err, "failed to marshal request")
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", TokenEndpoint, bytes.NewReader(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "POST", TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return nil, NewAuthError("RefreshToken", err, "failed to create request")
 	}
 
-	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "Kiro-CLI")
 	req.Header.Set("x-amz-user-agent", "Kiro-CLI")
@@ -475,6 +465,7 @@ func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) 
 	}
 
 	if resp.StatusCode != http.StatusOK {
+		log.Debugf("RefreshToken: non-200 response status=%d body=%s", resp.StatusCode, string(body))
 		return nil, NewAuthError("RefreshToken", fmt.Errorf("status %d: %s", resp.StatusCode, string(body)), "refresh failed")
 	}
 

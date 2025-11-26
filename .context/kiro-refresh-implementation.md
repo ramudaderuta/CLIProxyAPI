@@ -85,7 +85,7 @@ This revealed the correct snake_case format that was accidentally changed to cam
 
 ## Critical Bug Fix
 
-### Files Modified
+### Files Modified (historical snake_case fix)
 
 **`internal/auth/kiro/oauth.go`**
 
@@ -117,6 +117,14 @@ func (f *DeviceCodeFlow) RefreshToken(ctx context.Context, refreshToken string) 
 - ✅ Removed `clientSecret` (not needed for refresh)
 - ✅ Changed `grantType` → `grant_type`
 - ✅ Changed `refreshToken` → `refresh_token`
+
+### Additional Spec Compliance (current change)
+
+- Switched `requestToken` and `RefreshToken` to use `application/x-www-form-urlencoded` with AWS SSO OIDC token endpoint (`client_id`, `device_code`/`refresh_token`, `grant_type`, optional `client_secret`).
+- Added debug log on non-200 refresh responses to capture status/body for troubleshooting.
+- Refresh endpoint selection must match token type:
+  - BuilderId / IdC tokens (`provider: "BuilderId"` / `authMethod: "IdC"`): `https://oidc.{region}.amazonaws.com/token`
+  - Social/GitHub tokens (`provider: "Github"` / `authMethod: "social"`): `https://prod.{region}.auth.desktop.kiro.dev/refreshToken`
 
 #### 2. requestToken Method (Line 330-334)
 
@@ -662,7 +670,7 @@ The KIRO token refresh implementation combines:
 - Token status: `expiresAt: "2025-11-25T18:18:04.553Z"` (expired)
 - Test request: `POST /v1/chat/completions` with model `kiro-sonnet`
 
-### Observations: Token Refresh Triggered ✅
+### Observations: Token Refresh Triggered
 
 From server logs at `02:16:56-57`:
 
@@ -684,83 +692,6 @@ From server logs at `02:16:56-57`:
 3. ❌ **Refresh Failed**: AWS returned HTTP 401 `"invalid_client"` error
 4. ✅ **Graceful Degradation**: System returned original token for API retry (as designed)
 
-### Root Cause: Missing OIDC Client Cache ⚠️
-
-**Problem Identified**:
-
-```bash
-$ cat ~/.cli-proxy-api/oidc_client.json
-File not found
-```
-
-**Impact**:
-
-The token refresh implementation is **correct**, but fails due to environmental issue:
-
-1. **Token Creation**: Token was created with OIDC Client A (hash: `e909a0580879b06ece1202964fbe9dda95ea4ce3`)
-2. **Cache Missing**: File `~/.cli-proxy-api/oidc_client.json` not found
-3. **New Registration**: `ensureOAuthInitialized()` registers a new Client B
-4. **Client Mismatch**: AWS rejects refresh because:
-   - Refresh token issued by Client A
-   - Refresh request uses Client B's `client_id`
-   - Result: `{"error":"invalid_client"}`
-
-**Code Path**:
-
-```go
-// internal/auth/kiro/auth.go
-func (a *KiroAuthenticator) RefreshToken(ctx, storage) {
-    // This loads cached client OR registers new one
-    if err := a.ensureOAuthInitialized(ctx); err != nil {
-        return nil, err
-    }
-    
-    // Uses wrong client_id if cache was missing
-    newToken, err := a.oauth.RefreshToken(ctx, storage.RefreshToken)
-}
-```
-
-### Verified Behavior ✅
-
-| Component | Status | Evidence |
-|-----------|--------|----------|
-| **5-minute mandatory buffer** | ✅ Working | Refresh triggered at 1m7s remaining |
-| **Token expiration detection** | ✅ Working | Correctly identified expired token |
-| **RefreshToken() call** | ✅ Working | Method invoked with correct parameters |
-| **Graceful degradation** | ✅ Working | Returned original token on failure |
-| **Error logging** | ✅ Working | Detailed logs for debugging |
-| **OIDC client persistence** | ❌ Issue | Cache file missing, causing client mismatch |
-
-### Resolution
-
-**To Fix Token Refresh**:
-
-1. **Re-authenticate** to create fresh token with cached client:
-   ```bash
-   ./cli-proxy-api auth login kiro
-   ```
-
-2. **Verify cache created**:
-   ```bash
-   ls -la ~/.cli-proxy-api/oidc_client.json
-   ```
-
-3. **Test refresh again** with properly cached client
-
-**Prevention**:
-
-- Ensure `SaveCachedClient()` is called after client registration
-- Add validation: verify client cache exists before allowing token refresh
-- Consider storing `clientId` in token file for diagnostics
-
-### Conclusion
-
-The token refresh implementation is **working as designed**:
-- ✅ Correct timing (5-minute and 10-minute buffers)
-- ✅ Proper error handling and graceful degradation
-- ✅ Comprehensive logging
-
-The observed failure is due to **missing OIDC client cache file**, not an implementation bug. This is an environmental/operational issue that can be resolved by re-authenticating.
 
 ---
 
@@ -783,8 +714,3 @@ Despite fixing auto-discovery, token refresh continued to fail with `invalid_cli
 *   **Symptom**: `kiro-token.json` contains `clientIdHash: "e909a058..."`. The system correctly auto-discovers the file `~/.cli-proxy-api/e909a058...json`.
 *   **Mismatch**: The content of this JSON file contains a `clientId` (`GI2tPRg...`) whose SHA1 hash is `996e3a65...`, **NOT** `e909a058...`.
 *   **Conclusion**: The file content does not match the filename (which represents the expected hash). The token belongs to a different client than the one in the file. AWS rejects the refresh request because the client ID sent (`GI2tPRg...`) does not match the one associated with the refresh token.
-
-### 3. Next Steps
-
-1.  **User Action Required**: Run `./cli-proxy-api auth login kiro` to re-authenticate. This will generate a new token and a matching OIDC client file, resolving the mismatch.
-2.  **Verification**: After re-login, the auto-discovery and refresh mechanism should work seamlessly.
