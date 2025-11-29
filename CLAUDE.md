@@ -1,4 +1,6 @@
-# CLIProxyAPI - AI Model Proxy Server
+---
+description: "CLIProxyAPI project constitution for alignment "
+---
 
 ## Design Philosophy
 
@@ -237,58 +239,79 @@ curl http://localhost:8317/v1/chat/completions \
   }'
 ```
 
-
 ## Development Guidance
 
 You **MUST** actively leverage sub-agents whenever they can add value in terms of code quality, speed, or clarity. You should *not* try to do everything yourself; instead, think like a lead engineer delegating to specialists.
-
 
 ## Available Sub-Agents
 
 You can delegate work to the following sub-agents:
 
-* `explore`
+- `explore`  
+  - Handles analysis work: quick research, design review, options comparison, and solution sketches.  
+  - Useful when requirements are unclear, multiple approaches exist, or you need to map the problem space before committing.
 
-  * Handles analysis work: quick research, design review, options comparison, and solution sketches.
-  * Useful when requirements are unclear, multiple approaches exist, or you need to map the problem space before committing.
+- `tdd-expert`  
+  - Specializes in Test-Driven Development.  
+  - Designs test suites, testing strategies, and refactors code to be more testable.
 
-* `tdd-expert`
+- `debug-expert`  
+  - Focuses on reproducing, isolating, and fixing bugs.  
+  - Great at reading stack traces, logs, and reasoning about undefined or edge behavior.
 
-  * Specializes in Test-Driven Development.
-  * Designs test suites, testing strategies, and refactors code to be more testable.
+- `rust-pro`  
+  - Expert in modern Rust (ownership, lifetimes, async, unsafe, performance).  
+  - Helps with architecture, idiomatic patterns, and tricky compiler errors.
 
-* `debug-expert`
+- `javascript-typescript-pro`  
+  - Expert in JS/TS (Node.js, browser, tooling, typing strategies).  
+  - Helps with type design, refactors, and integration with libraries/tooling.
 
-  * Focuses on reproducing, isolating, and fixing bugs.
-  * Great at reading stack traces, logs, and reasoning about undefined or edge behavior.
+- `frontend-mobile-developer`  
+  - Specializes in web & mobile UI coding (React, React Native, modern frontend stacks).  
+  - Builds and refines UI components, screens, interactions, and state management.
 
-* `code-reports`
+- `dx-expert`  
+  - Developer Experience specialist.  
+  - Improves tooling, CLIs, project structure, local dev flows, and CI/CD ergonomics.
 
-  * Deep code-intelligence agent for reading repositories, building function/class maps, and explaining architecture across languages. 
-  * Ideal when you need dependency graphs, usage examples, or code analysis reports from local projects or GitHub repos. 
+- `ui-ux-expert`  
+  - Focuses on user experience, information architecture, and design clarity.  
+  - Suggests layouts, flows, copy, and interaction improvements.
 
-* `golang-pro`
-
-  * Senior Go 1.21+ specialist for modern language features, advanced concurrency, and high-performance services. 
-  * Best for Go design reviews, performance tuning, and building production-ready microservices and tooling. 
-
-* `documentation-expert`
-
-  * Writes and maintains clear, concise, and consistent documentation.
-  * Produces READMEs, API docs, migration guides, ADRs, and inline comments.
+- `documentation-expert`  
+  - Writes and maintains clear, concise, and consistent documentation.  
+  - Produces READMEs, API docs, migration guides, ADRs, and inline comments.
 
 ## Skills Available to Sub-Agents
 
-Sub-agents **should select these skills** as needed to complete their tasks at a high level of quality.
-When delegating, you can:
-
-- Let the sub-agent choose the most appropriate skills for the task.
-- Explicitly recommend certain skills, and/or.
+You **can and should** leverage the following skills when relevant.
 
 **Skills:**
 
+- `rust-paddle-ocr`  
+  - OCR-related workflows, especially Rust integrations and PaddleOCR usage.
+
+- `llm-optimization-expert`  
+  - Prompt design, LLM evaluation, latency/cost optimization, and retrieval patterns.
+
+- `openai-agents-js`  
+  - JavaScript/TypeScript integrations for OpenAI agents, SDK usage, and patterns.
+
 - `backend-expert`  
   - Architecture and implementation of backend services, microservices, and APIs.
+
+- `feature-development-expert`  
+  - End-to-end feature delivery: from spec to implementation and rollout.
+
+- `tauri-v2`  
+  - Building desktop apps with Tauri v2, including Rust + frontend integration.
+
+- `code-review-expert`  
+  - Deep code review, style consistency, performance and correctness feedback.
+
+- `frontend-expert`  
+  - Web frontend architecture, patterns, and advanced UI-state management.
 
 - `refactoring-expert`  
   - Safely restructuring code to improve clarity, modularity, and maintainability.
@@ -296,9 +319,10 @@ When delegating, you can:
 - `testing-expert`  
   - Testing strategies across unit, integration, and end-to-end tests.
 
-- `api-expert`  
-  - Designing/reviewing API contracts, defining API standards, or creating mock servers.
+- `rust-expert`  
+  - Rust language expertise (ownership, lifetimes, unsafe, performance, tooling).
 
+Sub-agents **should select and combine these skills** as needed to complete their tasks at a high level of quality.
 
 ## Core Behavior
 
@@ -322,14 +346,14 @@ When delegating, you can:
 
 ---
 
-## Mandatory Context Initialization for Sub-Agents
+## Mandatory Context Initialization
 
 Whenever you delegate a task to *any* sub-agent, you **must** ensure they restore the base context before doing any work.
 
 **Rule: Before a sub-agent starts its actual reasoning or coding, it must run:**
 
 ```bash
-python ./context_restore.py
+python3 ./context_restore.py
 ```
 
 ## Delegation Framework
@@ -346,7 +370,7 @@ Whenever you delegate a task to a sub-agent, you **MUST** describe the task usin
 - **Where**  
   - Specify **where** this task applies and **where** it should be executed, including:
     - Which **module/service/file/layer** or part of the system is in scope.  
-    - Which **skills** are recommended or required (e.g., `database-expert`, `testing-expert`).
+    - Which **skills** are recommended or required.
 
 - **How**  
   - Include required skills/commands (especially context restore), conventions, and quality criteria.
@@ -358,8 +382,8 @@ Your delegation message to a sub-agent should look conceptually like:
 > **Why:** [Goal, context, and constraints]  
 > **Where:** [Recommended skills, area and scope]  
 > **How:**  
-> 1. Run `python3 context_restore.py` to restore base project context.  
+> 1. Run `python3 context_restore.py` to restore base project context.
 > 2. Use the recommended skills to outline at least two viable architectures.  
 > 3. For each option, list pros/cons and when it is preferable.  
 > 4. Conclude with a recommendation and reasoning.  
-> 5. Return the result as a structured markdown document (headings, bullet points) and save to `./.context/*.md`.
+> 5. Provides instructions for summarizing the changes and save to `.serena/memories/*.md`.

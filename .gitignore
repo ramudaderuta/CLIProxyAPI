@@ -30,4 +30,3 @@ docs/*
 # Tooling metadata
 .vscode/*
 .claude/*
-.serena/*

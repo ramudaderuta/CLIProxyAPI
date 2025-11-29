@@ -2,7 +2,7 @@
 """
 Context Restore Script
 
-Reads and displays the project context from README.md, AGENTS.md, and .context/ folder.
+Reads and displays the project context from README.md, AGENTS.md, and .serena/memories/ folder.
 This script helps quickly rebuild the mental model of a project.
 """
 
@@ -24,8 +24,8 @@ def find_agents_md(project_root: Path) -> Optional[Path]:
 
 
 def find_context_directory(project_root: Path) -> Optional[Path]:
-    """Locate .context directory in the project root."""
-    context_dir = project_root / ".context"
+    """Locate .serena/memories directory in the project root."""
+    context_dir = project_root / ".serena/memories"
 
     if context_dir.exists() and context_dir.is_dir():
         return context_dir
@@ -44,7 +44,7 @@ def find_readme(project_root: Path) -> Optional[Path]:
 
 
 def load_metadata(context_dir: Path) -> Optional[dict]:
-    """Load metadata from .context/metadata.json if it exists."""
+    """Load metadata from .serena/memories/metadata.json if it exists."""
     metadata_file = context_dir / "metadata.json"
 
     if not metadata_file.exists():
@@ -59,7 +59,7 @@ def load_metadata(context_dir: Path) -> Optional[dict]:
 
 
 def list_context_files(context_dir: Path) -> list:
-    """List all files in the .context directory."""
+    """List all files in the .serena/memories directory."""
     files = []
 
     for item in context_dir.iterdir():
@@ -92,7 +92,7 @@ def display_context_summary(agents_md: Path, readme: Optional[Path], context_dir
     file_size = agents_md.stat().st_size
     print(f"   Size: {file_size:,} bytes")
 
-    # Display .context directory info
+    # Display .serena/memories directory info
     if context_dir:
         context_files = list_context_files(context_dir)
         print(f"\n📂 Context directory: {context_dir}")
@@ -104,7 +104,7 @@ def display_context_summary(agents_md: Path, readme: Optional[Path], context_dir
                 file_size = file.stat().st_size
                 print(f"   - {file.name} ({file_size:,} bytes)")
     else:
-        print("\n📂 No .context directory found")
+        print("\n📂 No .serena/memories directory found")
 
     print("\n" + "="*70)
 
@@ -135,7 +135,7 @@ def main():
     # Find README.md
     readme = find_readme(project_root)
 
-    # Find .context directory
+    # Find .serena/memories directory
     context_dir = find_context_directory(project_root)
 
     # Load metadata
