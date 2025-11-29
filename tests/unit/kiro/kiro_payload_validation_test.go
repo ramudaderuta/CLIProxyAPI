@@ -64,8 +64,8 @@ func TestRequestTranslation(t *testing.T) {
 		},
 		// Anthropic/Kiro format tests
 		{
-			name:           "orignal - Anthropic format with tools and history",
-			filename:       "orignal",
+			name:           "claude_format - Anthropic format with tools and history",
+			filename:       "claude_format",
 			expectedModel:  "claude-sonnet-4-5",
 			expectHistory:  true,
 			expectMessages: true,
@@ -74,8 +74,8 @@ func TestRequestTranslation(t *testing.T) {
 			format:         "anthropic",
 		},
 		{
-			name:           "orignal_tool_call - Anthropic request with tool calls",
-			filename:       "orignal_tool_call",
+			name:           "claude_format_with_tools - Anthropic request with tool calls",
+			filename:       "claude_format_with_tools",
 			expectedModel:  "claude-sonnet-4-5",
 			expectHistory:  true,
 			expectMessages: true,
@@ -84,8 +84,8 @@ func TestRequestTranslation(t *testing.T) {
 			format:         "anthropic",
 		},
 		{
-			name:           "orignal_tool_call_no_result - Anthropic tool call without result",
-			filename:       "orignal_tool_call_no_result",
+			name:           "claude_format_tool_call_no_result - Anthropic tool call without result",
+			filename:       "claude_format_tool_call_no_result",
 			expectedModel:  "claude-sonnet-4-5",
 			expectHistory:  true,
 			expectMessages: true,
@@ -94,8 +94,8 @@ func TestRequestTranslation(t *testing.T) {
 			format:         "anthropic",
 		},
 		{
-			name:           "orignal_tool_call_no_tools - Anthropic no tools defined",
-			filename:       "orignal_tool_call_no_tools",
+			name:           "claude_format_simple - Anthropic no tools defined",
+			filename:       "claude_format_simple",
 			expectedModel:  "claude-sonnet-4-5",
 			expectHistory:  true,
 			expectMessages: true,
@@ -290,7 +290,7 @@ func TestFullRoundTrip(t *testing.T) {
 	}
 
 	// Load a real payload
-	payload := shared.LoadNonStreamRequest(t, "orignal")
+	payload := shared.LoadNonStreamRequest(t, "claude_format")
 
 	// Convert to Kiro format
 	kiroRequest, err := chat_completions.ConvertOpenAIRequestToKiro(
@@ -343,10 +343,10 @@ func TestPayloadPreservation(t *testing.T) {
 	}
 
 	payloads := []string{
-		"orignal",
-		"orignal_tool_call",
-		"orignal_tool_call_no_result",
-		"orignal_tool_call_no_tools",
+		"claude_format",
+		"claude_format_with_tools",
+		"claude_format_tool_call_no_result",
+		"claude_format_simple",
 	}
 
 	for _, filename := range payloads {

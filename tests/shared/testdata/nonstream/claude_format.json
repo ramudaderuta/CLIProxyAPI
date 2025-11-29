@@ -1,8 +1,8 @@
 {
   "metadata": {
-    "user_id": "user_fd4f99d961b75986847dac6c6384694acc7cc85d457882cb25b5ea88d1330080./truncated"
+    "user_id": "user_fd4f99d961b75986847dac6c6384694acc7cc85d457882cb25b5ea88d1330080"
   },
-  "model": "claude-sonnet-4-5",
+  "model": "kiro-sonnet",
   "system": [
     {
       "type": "text",
@@ -13,7 +13,7 @@
     },
     {
       "type": "text",
-      "text": "\nYou are an interactive CLI tool that helps users with software engin./truncated",
+      "text": "\nYou are an interactive CLI tool that helps users with software engin...truncated",
       "cache_control": {
         "type": "ephemeral"
       }
@@ -22,26 +22,26 @@
   "messages": [
     {
       "role": "user",
-      "content": "<system-reminder>\nCalled the Read tool with the following input: {\"fi./truncated"
+      "content": "<system-reminder>\nCalled the Read tool with the following input: {\"fi...truncated"
     },
     {
       "role": "user",
       "content": [
         {
           "type": "text",
-          "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# Sub-Agen./truncated"
+          "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# Sub-Agen...truncated"
         },
         {
           "type": "text",
-          "text": "<system-reminder>\nThis is a reminder that your todo list is currently./truncated"
+          "text": "<system-reminder>\nThis is a reminder that your todo list is currently...truncated"
         },
         {
           "type": "text",
-          "text": "<system-reminder>\nAs you answer the user's questions, you can use the./truncated"
+          "text": "<system-reminder>\nAs you answer the user's questions, you can use the...truncated"
         },
         {
           "type": "text",
-          "text": "This session is being continued from a previous conversation that ran./truncated"
+          "text": "This session is being continued from a previous conversation that ran...truncated"
         }
       ]
     },
@@ -60,7 +60,7 @@
               {
                 "status": "completed",
                 "activeForm": "Consolidate Architecture & Design",
-                "content": "Consolidate Architecture & Design (8 → 3 agents): system-architect, c./truncated"
+                "content": "Consolidate Architecture & Design (8 → 3 agents): system-architect, c...truncated"
               },
               {
                 "content": "Consolidate Database Operations (3 → 1 agent): database-expert",
@@ -98,7 +98,7 @@
           "type": "tool_use"
         },
         {
-          "text": "I can see from the summary that I was in the middle of executing the ./truncated",
+          "text": "I can see from the summary that I was in the middle of executing the ...truncated",
           "type": "text",
           "cache_control": {
             "type": "ephemeral"
@@ -109,7 +109,7 @@
     {
       "content": [
         {
-          "content": "Todos have been modified successfully. Ensure that you continue to us./truncated",
+          "content": "Todos have been modified successfully. Ensure that you continue to us...truncated",
           "cache_control": {
             "type": "ephemeral"
           },
@@ -122,7 +122,7 @@
   ],
   "tools": [
     {
-      "description": "Launch a new agent to handle complex, multi-step tasks autonomously. ./truncated",
+      "description": "Launch a new agent to handle complex, multi-step tasks autonomously. ...truncated",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -136,12 +136,12 @@
               "opus",
               "haiku"
             ],
-            "description": "Optional model to use for this agent. If not specified, inherits from./truncated",
+            "description": "Optional model to use for this agent. If not specified, inherits from...truncated",
             "type": "string"
           },
           "resume": {
             "type": "string",
-            "description": "Optional agent ID to resume from. If provided, the agent will continu./truncated"
+            "description": "Optional agent ID to resume from. If provided, the agent will continu...truncated"
           },
           "description": {
             "type": "string",
@@ -163,7 +163,7 @@
       "name": "Task"
     },
     {
-      "description": "Executes a given bash command in a persistent shell session with opti./truncated",
+      "description": "Executes a given bash command in a persistent shell session with opti...truncated",
       "input_schema": {
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#  ",
@@ -171,7 +171,7 @@
         "properties": {
           "dangerouslyDisableSandbox": {
             "type": "boolean",
-            "description": "Set this to true to dangerously override sandbox mode and run command./truncated"
+            "description": "Set this to true to dangerously override sandbox mode and run command...truncated"
           },
           "command": {
             "description": "The command to execute",
@@ -183,11 +183,11 @@
           },
           "description": {
             "type": "string",
-            "description": "Clear, concise description of what this command does in 5-10 words, i./truncated"
+            "description": "Clear, concise description of what this command does in 5-10 words, i...truncated"
           },
           "run_in_background": {
             "type": "boolean",
-            "description": "Set to true to run this command in the background. Use BashOutput to ./truncated"
+            "description": "Set to true to run this command in the background. Use BashOutput to ...truncated"
           }
         },
         "required": [
@@ -198,7 +198,7 @@
     },
     {
       "name": "Glob",
-      "description": "- Fast file pattern matching tool that works with any codebase size\n-./truncated",
+      "description": "- Fast file pattern matching tool that works with any codebase size\n-...truncated",
       "input_schema": {
         "required": [
           "pattern"
@@ -213,42 +213,42 @@
           },
           "path": {
             "type": "string",
-            "description": "The directory to search in. If not specified, the current working dir./truncated"
+            "description": "The directory to search in. If not specified, the current working dir...truncated"
           }
         }
       }
     },
     {
-      "description": "A powerful search tool built on ripgrep\n\n  Usage:\n  - ALWAYS use Grep./truncated",
+      "description": "A powerful search tool built on ripgrep\n\n  Usage:\n  - ALWAYS use Grep...truncated",
       "input_schema": {
         "type": "object",
         "properties": {
           "-C": {
             "type": "number",
-            "description": "Number of lines to show before and after each match (rg -C). Requires./truncated"
+            "description": "Number of lines to show before and after each match (rg -C). Requires...truncated"
           },
           "-B": {
             "type": "number",
-            "description": "Number of lines to show before each match (rg -B). Requires output_mo./truncated"
+            "description": "Number of lines to show before each match (rg -B). Requires output_mo...truncated"
           },
           "path": {
             "type": "string",
             "description": "File or directory to search in (rg PATH). Defaults to current working directory."
           },
           "-A": {
-            "description": "Number of lines to show after each match (rg -A). Requires output_mod./truncated",
+            "description": "Number of lines to show after each match (rg -A). Requires output_mod...truncated",
             "type": "number"
           },
           "-n": {
             "type": "boolean",
-            "description": "Show line numbers in output (rg -n). Requires output_mode: \"content\",./truncated"
+            "description": "Show line numbers in output (rg -n). Requires output_mode: \"content\",...truncated"
           },
           "pattern": {
             "type": "string",
             "description": "The regular expression pattern to search for in file contents"
           },
           "offset": {
-            "description": "Skip first N lines/entries before applying head_limit, equivalent to ./truncated",
+            "description": "Skip first N lines/entries before applying head_limit, equivalent to ...truncated",
             "type": "number"
           },
           "output_mode": {
@@ -258,7 +258,7 @@
               "files_with_matches",
               "count"
             ],
-            "description": "Output mode: \"content\" shows matching lines (supports -A/-B/-C contex./truncated"
+            "description": "Output mode: \"content\" shows matching lines (supports -A/-B/-C contex...truncated"
           },
           "-i": {
             "description": "Case insensitive search (rg -i)",
@@ -266,7 +266,7 @@
           },
           "multiline": {
             "type": "boolean",
-            "description": "Enable multiline mode where . matches newlines and patterns can span ./truncated"
+            "description": "Enable multiline mode where . matches newlines and patterns can span ...truncated"
           },
           "glob": {
             "type": "string",
@@ -274,11 +274,11 @@
           },
           "type": {
             "type": "string",
-            "description": "File type to search (rg --type). Common types: js, py, rust, go, java./truncated"
+            "description": "File type to search (rg --type). Common types: js, py, rust, go, java...truncated"
           },
           "head_limit": {
             "type": "number",
-            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Wor./truncated"
+            "description": "Limit output to first N lines/entries, equivalent to \"| head -N\". Wor...truncated"
           }
         },
         "required": [
@@ -291,11 +291,11 @@
     },
     {
       "name": "ExitPlanMode",
-      "description": "Use this tool when you are in plan mode and have finished presenting ./truncated",
+      "description": "Use this tool when you are in plan mode and have finished presenting ...truncated",
       "input_schema": {
         "properties": {
           "plan": {
-            "description": "The plan you came up with, that you want to run by the user for appro./truncated",
+            "description": "The plan you came up with, that you want to run by the user for appro...truncated",
             "type": "string"
           }
         },
@@ -309,7 +309,7 @@
     },
     {
       "name": "Read",
-      "description": "Reads a file from the local filesystem. You can access any file direc./truncated",
+      "description": "Reads a file from the local filesystem. You can access any file direc...truncated",
       "input_schema": {
         "properties": {
           "file_path": {
@@ -318,11 +318,11 @@
           },
           "offset": {
             "type": "number",
-            "description": "The line number to start reading from. Only provide if the file is to./truncated"
+            "description": "The line number to start reading from. Only provide if the file is to...truncated"
           },
           "limit": {
             "type": "number",
-            "description": "The number of lines to read. Only provide if the file is too large to./truncated"
+            "description": "The number of lines to read. Only provide if the file is too large to...truncated"
           }
         },
         "required": [
@@ -335,7 +335,7 @@
     },
     {
       "name": "Edit",
-      "description": "Performs exact string replacements in files. \n\nUsage:\n- You must use ./truncated",
+      "description": "Performs exact string replacements in files. \n\nUsage:\n- You must use ...truncated",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#  ",
         "type": "object",
@@ -368,7 +368,7 @@
     },
     {
       "name": "Write",
-      "description": "Writes a file to the local filesystem.\n\nUsage:\n- This tool will overw./truncated",
+      "description": "Writes a file to the local filesystem.\n\nUsage:\n- This tool will overw...truncated",
       "input_schema": {
         "properties": {
           "content": {
@@ -390,17 +390,17 @@
       }
     },
     {
-      "description": "Completely replaces the contents of a specific cell in a Jupyter note./truncated",
+      "description": "Completely replaces the contents of a specific cell in a Jupyter note...truncated",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#  ",
         "type": "object",
         "properties": {
           "notebook_path": {
             "type": "string",
-            "description": "The absolute path to the Jupyter notebook file to edit (must be absol./truncated"
+            "description": "The absolute path to the Jupyter notebook file to edit (must be absol...truncated"
           },
           "cell_id": {
-            "description": "The ID of the cell to edit. When inserting a new cell, the new cell w./truncated",
+            "description": "The ID of the cell to edit. When inserting a new cell, the new cell w...truncated",
             "type": "string"
           },
           "new_source": {
@@ -413,7 +413,7 @@
               "code",
               "markdown"
             ],
-            "description": "The type of the cell (code or markdown). If not specified, it default./truncated"
+            "description": "The type of the cell (code or markdown). If not specified, it default...truncated"
           },
           "edit_mode": {
             "description": "The type of edit to make (replace, insert, delete). Defaults to replace.",
@@ -435,7 +435,7 @@
     },
     {
       "name": "WebFetch",
-      "description": "\n- Fetches content from a specified URL and processes it using an AI ./truncated",
+      "description": "\n- Fetches content from a specified URL and processes it using an AI ...truncated",
       "input_schema": {
         "additionalProperties": false,
         "$schema": "http://json-schema.org/draft-07/schema#  ",
@@ -458,7 +458,7 @@
       }
     },
     {
-      "description": "Use this tool to create and manage a structured task list for your cu./truncated",
+      "description": "Use this tool to create and manage a structured task list for your cu...truncated",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -504,7 +504,7 @@
     },
     {
       "name": "WebSearch",
-      "description": "\n- Allows Claude to search the web and use the results to inform resp./truncated",
+      "description": "\n- Allows Claude to search the web and use the results to inform resp...truncated",
       "input_schema": {
         "required": [
           "query"
@@ -537,7 +537,7 @@
     },
     {
       "name": "BashOutput",
-      "description": "\n- Retrieves output from a running or completed background bash shell./truncated",
+      "description": "\n- Retrieves output from a running or completed background bash shell...truncated",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#  ",
         "type": "object",
@@ -548,7 +548,7 @@
           },
           "filter": {
             "type": "string",
-            "description": "Optional regular expression to filter the output lines. Only lines ma./truncated"
+            "description": "Optional regular expression to filter the output lines. Only lines ma...truncated"
           }
         },
         "required": [
@@ -559,7 +559,7 @@
     },
     {
       "name": "KillShell",
-      "description": "\n- Kills a running background bash shell by its ID\n- Takes a shell_id./truncated",
+      "description": "\n- Kills a running background bash shell by its ID\n- Takes a shell_id...truncated",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#  ",
         "type": "object",
@@ -596,16 +596,16 @@
                 "options": {
                   "minItems": 2,
                   "maxItems": 4,
-                  "description": "The available choices for this question. Must have 2-4 options. Each ./truncated",
+                  "description": "The available choices for this question. Must have 2-4 options. Each ...truncated",
                   "type": "array",
                   "items": {
                     "properties": {
                       "label": {
                         "type": "string",
-                        "description": "The display text for this option that the user will see and select. S./truncated"
+                        "description": "The display text for this option that the user will see and select. S...truncated"
                       },
                       "description": {
-                        "description": "Explanation of what this option means or what will happen if chosen. ./truncated",
+                        "description": "Explanation of what this option means or what will happen if chosen. ...truncated",
                         "type": "string"
                       }
                     },
@@ -619,14 +619,14 @@
                 },
                 "multiSelect": {
                   "type": "boolean",
-                  "description": "Set to true to allow the user to select multiple options instead of j./truncated"
+                  "description": "Set to true to allow the user to select multiple options instead of j...truncated"
                 },
                 "question": {
                   "type": "string",
-                  "description": "The complete question to ask the user. Should be clear, specific, and./truncated"
+                  "description": "The complete question to ask the user. Should be clear, specific, and...truncated"
                 },
                 "header": {
-                  "description": "Very short label displayed as a chip/tag (max 12 chars). Examples: \"A./truncated",
+                  "description": "Very short label displayed as a chip/tag (max 12 chars). Examples: \"A...truncated",
                   "type": "string"
                 }
               },
@@ -648,10 +648,10 @@
         }
       },
       "name": "AskUserQuestion",
-      "description": "Use this tool when you need to ask the user questions during executio./truncated"
+      "description": "Use this tool when you need to ask the user questions during executio...truncated"
     },
     {
-      "description": "Execute a skill within the main conversation\n\n<skills_instructions>\nW./truncated",
+      "description": "Execute a skill within the main conversation\n\n<skills_instructions>\nW...truncated",
       "input_schema": {
         "$schema": "http://json-schema.org/draft-07/schema#  ",
         "type": "object",
@@ -670,7 +670,7 @@
     },
     {
       "name": "SlashCommand",
-      "description": "Execute a slash command within the main conversation\n\nHow slash comma./truncated",
+      "description": "Execute a slash command within the main conversation\n\nHow slash comma...truncated",
       "input_schema": {
         "type": "object",
         "properties": {
@@ -691,6 +691,6 @@
     "budget_tokens": 4096,
     "type": "enabled"
   },
-  "max_tokens": 16384,
-  "temperature": 1
+  "max_tokens": 1024,
+  "temperature": 0
 }

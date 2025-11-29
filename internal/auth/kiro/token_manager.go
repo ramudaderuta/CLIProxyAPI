@@ -95,9 +95,9 @@ func (tm *TokenManager) LoadTokens(ctx context.Context) error {
 	return nil
 }
 
-// GetNextToken returns the next available token using round-robin selection.
+// GetNextToken returns the next available token entry using round-robin selection.
 // It automatically validates and refreshes tokens as needed.
-func (tm *TokenManager) GetNextToken(ctx context.Context) (*KiroTokenStorage, error) {
+func (tm *TokenManager) GetNextToken(ctx context.Context) (*TokenEntry, error) {
 	tm.mu.Lock()
 	defer tm.mu.Unlock()
 
@@ -150,7 +150,7 @@ func (tm *TokenManager) GetNextToken(ctx context.Context) (*KiroTokenStorage, er
 		// Move to next token for round-robin
 		tm.currentIndex = (tm.currentIndex + 1) % len(tm.tokens)
 
-		return validToken, nil
+		return entry, nil
 	}
 
 	return nil, fmt.Errorf("all tokens failed validation")

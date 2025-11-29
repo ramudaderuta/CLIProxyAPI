@@ -74,11 +74,11 @@ func TestRoundRobinSelection(t *testing.T) {
 		// Get tokens in sequence
 		var selectedTokens []string
 		for i := 0; i < 6; i++ { // Get 6 tokens to see 2 full rotations
-			token, err := manager.GetNextToken(ctx)
+			entry, err := manager.GetNextToken(ctx)
 			if err != nil {
 				t.Fatalf("Failed to get token %d: %v", i, err)
 			}
-			selectedTokens = append(selectedTokens, token.AccessToken)
+			selectedTokens = append(selectedTokens, entry.Storage.AccessToken)
 		}
 
 		// Verify round-robin pattern: 1,2,3,1,2,3
@@ -161,11 +161,11 @@ func TestAutomaticFailover(t *testing.T) {
 
 	t.Run("failover to valid token", func(t *testing.T) {
 		// First token is expired, should failover to second
-		token, err := manager.GetNextToken(ctx)
+		entry, err := manager.GetNextToken(ctx)
 		if err != nil {
 			// Expected: expired token should cause error or automatic skip
 			t.Logf("Expected error for expired token: %v", err)
-		} else if token.AccessToken == "valid_token" {
+		} else if entry.Storage.AccessToken == "valid_token" {
 			t.Log("✓ Successfully failed over to valid token")
 		}
 	})

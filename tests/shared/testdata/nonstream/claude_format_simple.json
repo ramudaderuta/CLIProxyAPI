@@ -1,9 +1,10 @@
 {
   "metadata": {
-    "user_id": "user_fd4f99d961b75986847dac6c6384694acc7cc85d457882cb25b5ea88d1330080./truncated"
+    "user_id": "user_fd4f99d961b75986847dac6c6384694acc7cc85d457882cb25b5ea88d1330080"
   },
-  "model": "claude-sonnet-4-5",
-  "max_tokens": 16384,
+  "model": "kiro-sonnet",
+  "max_tokens": 1024,
+  "temperature": 0,
   "system": [
     {
       "type": "text",
@@ -14,7 +15,7 @@
     },
     {
       "type": "text",
-      "text": "\nYou are an interactive CLI tool that helps users with software engin./truncated",
+      "text": "\nYou are an interactive CLI tool that helps users with software engin...truncated",
       "cache_control": {
         "type": "ephemeral"
       }
@@ -23,26 +24,26 @@
   "messages": [
     {
       "role": "user",
-      "content": "<system-reminder>\nCalled the Read tool with the following input: {\"fi./truncated"
+      "content": "<system-reminder>\nCalled the Read tool with the following input: {\"fi...truncated"
     },
     {
       "role": "user",
       "content": [
         {
           "type": "text",
-          "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# Sub-Agen./truncated"
+          "text": "<system-reminder>\nResult of calling the Read tool: \"     1→# Sub-Agen...truncated"
         },
         {
           "type": "text",
-          "text": "<system-reminder>\nThis is a reminder that your todo list is currently./truncated"
+          "text": "<system-reminder>\nThis is a reminder that your todo list is currently...truncated"
         },
         {
           "type": "text",
-          "text": "<system-reminder>\nAs you answer the user's questions, you can use the./truncated"
+          "text": "<system-reminder>\nAs you answer the user's questions, you can use the...truncated"
         },
         {
           "type": "text",
-          "text": "This session is being continued from a previous conversation that ran./truncated"
+          "text": "This session is being continued from a previous conversation that ran...truncated"
         }
       ]
     },
@@ -61,7 +62,7 @@
               {
                 "status": "completed",
                 "activeForm": "Consolidate Architecture & Design",
-                "content": "Consolidate Architecture & Design (8 → 3 agents): system-architect, c./truncated"
+                "content": "Consolidate Architecture & Design (8 → 3 agents): system-architect, c...truncated"
               },
               {
                 "content": "Consolidate Database Operations (3 → 1 agent): database-expert",

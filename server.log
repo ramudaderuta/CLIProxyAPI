@@ -1,0 +1,14 @@
+nohup: 忽略输入
+CLIProxyAPI Version: dev, Commit: none, BuiltAt: unknown
+API server started successfully
+server clients and configuration updated: 1 clients (1 auth files + 0 Gemini API keys + 0 Claude API keys + 0 Codex keys + 0 OpenAI-compat)
+auth file changed (WRITE): e909a0580879b06ece1202964fbe9dda95ea4ce3.json, processing incrementally
+auth file changed (WRITE): e909a0580879b06ece1202964fbe9dda95ea4ce3.json, processing incrementally
+server clients and configuration updated: 1 clients (1 auth files + 0 Gemini API keys + 0 Claude API keys + 0 Codex keys + 0 OpenAI-compat)
+auth file changed (WRITE): e909a0580879b06ece1202964fbe9dda95ea4ce3.json, processing incrementally
+server clients and configuration updated: 1 clients (1 auth files + 0 Gemini API keys + 0 Claude API keys + 0 Codex keys + 0 OpenAI-compat)
+auth file changed (WRITE): kiro-auth-token.json, processing incrementally
+auth file changed (WRITE): kiro-auth-token.json, processing incrementally
+server clients and configuration updated: 0 clients (0 auth files + 0 Gemini API keys + 0 Claude API keys + 0 Codex keys + 0 OpenAI-compat)
+auth file changed (CREATE): kiro-auth-token.json, processing incrementally
+server clients and configuration updated: 1 clients (1 auth files + 0 Gemini API keys + 0 Claude API keys + 0 Codex keys + 0 OpenAI-compat)

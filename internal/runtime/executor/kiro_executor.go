@@ -29,13 +29,19 @@ const (
 
 // KiroExecutor implements the executor interface for Kiro API.
 type KiroExecutor struct {
-	cfg *config.Config
+	cfg          *config.Config
+	tokenManager *kiro.TokenManager
 }
 
 // NewKiroExecutor creates a new Kiro executor instance.
 func NewKiroExecutor(cfg *config.Config) *KiroExecutor {
+	tm := kiro.NewTokenManager(cfg)
+	// Best effort load tokens - errors are logged inside LoadTokens
+	_ = tm.LoadTokens(context.Background())
+
 	return &KiroExecutor{
-		cfg: cfg,
+		cfg:          cfg,
+		tokenManager: tm,
 	}
 }
 
@@ -75,25 +81,43 @@ func (e *KiroExecutor) Execute(
 ) (resp cliproxyexecutor.Response, err error) {
 	log.Debugf("Kiro Execute: model=%s, stream=%v", req.Model, opts.Stream)
 
-	// Load token from auth metadata
-	tokenStorage, err := e.loadToken(auth)
-	if err != nil {
-		return resp, fmt.Errorf("failed to load token: %w", err)
+	var validToken *kiro.KiroTokenStorage
+	var tokenEntry *kiro.TokenEntry
+
+	// Try to get token from TokenManager first
+	if e.tokenManager != nil && e.tokenManager.GetTokenCount() > 0 {
+		entry, err := e.tokenManager.GetNextToken(ctx)
+		if err == nil {
+			log.Debugf("Using token from TokenManager: %s", entry.Label)
+			validToken = entry.Storage
+			tokenEntry = entry
+		} else {
+			log.Warnf("Failed to get token from TokenManager: %v", err)
+		}
 	}
 
-	// Try to validate and refresh token (best-effort, non-blocking)
-	// Even if this fails, we'll proceed with the request and let the API be the source of truth
-	authenticator := kiro.NewKiroAuthenticator(e.cfg)
-	validToken, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+	// Fallback to auth metadata if no token from manager
 	if validToken == nil {
-		// TryValidateToken returned nil, fall back to original
-		validToken = tokenStorage
-	}
+		log.Debug("Falling back to auth metadata token")
+		tokenStorage, err := e.loadToken(auth)
+		if err != nil {
+			return resp, fmt.Errorf("failed to load token: %w", err)
+		}
 
-	if refreshed {
-		log.Info("Token was proactively refreshed, updating auth metadata")
-		if err := e.saveToken(auth, validToken); err != nil {
-			log.Warnf("Failed to save proactively refreshed token: %v", err)
+		// Try to validate and refresh token (best-effort, non-blocking)
+		authenticator := kiro.NewKiroAuthenticator(e.cfg)
+		vt, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+		if vt == nil {
+			validToken = tokenStorage
+		} else {
+			validToken = vt
+		}
+
+		if refreshed {
+			log.Info("Token was proactively refreshed, updating auth metadata")
+			if err := e.saveToken(auth, validToken); err != nil {
+				log.Warnf("Failed to save proactively refreshed token: %v", err)
+			}
 		}
 	}
 
@@ -115,6 +139,8 @@ func (e *KiroExecutor) Execute(
 		log.Info("Received 401 Unauthorized, attempting token refresh and retry")
 		httpResp.Body.Close()
 
+		authenticator := kiro.NewKiroAuthenticator(e.cfg)
+
 		// Attempt to refresh the token
 		newToken, refreshErr := authenticator.RefreshToken(ctx, validToken)
 		if refreshErr != nil {
@@ -122,7 +148,19 @@ func (e *KiroExecutor) Execute(
 		}
 
 		log.Info("Token refreshed after 401, saving and retrying request")
-		// Save the refreshed token
+
+		// Save the refreshed token to file if we have an entry
+		if tokenEntry != nil && tokenEntry.Path != "" {
+			if err := newToken.SaveTokenToFile(tokenEntry.Path); err != nil {
+				log.Warnf("Failed to save refreshed token to file %s: %v", tokenEntry.Path, err)
+			} else {
+				log.Infof("Refreshed token persisted to %s", tokenEntry.Path)
+				// Update entry storage
+				tokenEntry.Storage = newToken
+			}
+		}
+
+		// Always update auth metadata
 		if err := e.saveToken(auth, newToken); err != nil {
 			log.Warnf("Failed to save refreshed token after 401: %v", err)
 		}
@@ -171,14 +209,20 @@ func (e *KiroExecutor) Execute(
 	}
 	log.Debugf("Normalized payload (first 500 bytes): %s", normalizedPreview)
 
-	// Parse SSE events and aggregate content
-	aggregatedContent := parseSSEEventsForContent(normalizedBody)
+	// Parse SSE events and build complete Kiro response structure
+	kiroResponse, err := parseSSEEventsToKiroResponse(normalizedBody)
+	if err != nil {
+		log.Warnf("Failed to parse SSE events: %v", err)
+		// Fallback to minimal response with extracted content
+		kiroResponse = []byte(fmt.Sprintf(`{"conversationState":{"currentMessage":{"content":"","role":"assistant"}}}`))
+	}
 
-	// Debug: Log aggregated content
-	log.Debugf("Aggregated content from SSE: %s", aggregatedContent)
-
-	// Build a conversationState-like response for the converter
-	kiroResponse := fmt.Sprintf(`{"conversationState":{"currentMessage":{"content":"%s"}}}`, strings.ReplaceAll(aggregatedContent, `"`, `\"`))
+	// Debug: Log parsed Kiro response
+	responsePreview := string(kiroResponse)
+	if len(responsePreview) > 500 {
+		responsePreview = responsePreview[:500]
+	}
+	log.Debugf("Parsed Kiro response (first 500 bytes): %s", responsePreview)
 
 	// Check for HTTP errors (after potential retry)
 	if httpResp.StatusCode != http.StatusOK {
@@ -191,7 +235,7 @@ func (e *KiroExecutor) Execute(
 	}
 
 	// Convert response to OpenAI format
-	openAIResp := chat_completions.ConvertKiroResponseToOpenAI([]byte(kiroResponse), req.Model, false)
+	openAIResp := chat_completions.ConvertKiroResponseToOpenAI(kiroResponse, req.Model, false)
 
 	// Translate response to requested source format when needed
 	if opts.SourceFormat != "" && opts.SourceFormat != sdktranslator.FormatOpenAI {
@@ -214,35 +258,40 @@ func (e *KiroExecutor) Execute(
 	return resp, nil
 }
 
-// parseSSEEventsForContent extracts content from SSE events using gjson.
-// Handles both plain JSON format and AWS event-stream decoded format with :message-typeevent prefix.
-func parseSSEEventsForContent(data []byte) string {
-	var result strings.Builder
+// parseSSEEventsToKiroResponse aggregates ALL SSE events into a complete Kiro response structure.
+// Handles assistantResponseEvent (content), messageMetadataEvent (conversationId),
+// followupPromptEvent, and toolCall events.
+// Returns a JSON bytes representation of the complete conversationState structure.
+func parseSSEEventsToKiroResponse(data []byte) ([]byte, error) {
 	dataStr := string(data)
+
+	// Aggregation state
+	var contentParts []string
+	conversationID := ""
+	var followupPrompts []map[string]interface{}
+	var toolCalls []map[string]interface{}
 
 	// Process the data to find all JSON objects
 	offset := 0
 	for offset < len(dataStr) {
-		// Look for JSON object start
-		// Handle event-stream format: :message-typeevent{"content":"..."}
-		// Or plain format: {"content":"..."}
-
-		jsonStart := -1
-
-		// First try to find event-stream format marker
+		// Look for JSON object start with event-stream format marker
 		eventMarker := strings.Index(dataStr[offset:], ":message-typeevent{")
-		if eventMarker >= 0 {
-			jsonStart = offset + eventMarker + len(":message-typeevent")
-		} else {
-			// Fall back to plain JSON format
+		if eventMarker < 0 {
+			// Try plain JSON format as fallback
 			plainStart := strings.Index(dataStr[offset:], `{"`)
-			if plainStart >= 0 {
-				jsonStart = offset + plainStart
+			if plainStart < 0 {
+				break
 			}
+			eventMarker = plainStart
+		} else {
+			// Adjust for the prefix length
+			eventMarker = eventMarker + len(":message-typeevent")
 		}
 
-		if jsonStart < 0 {
-			break
+		jsonStart := offset + eventMarker
+		if eventMarker == len(`:message-typeevent`) {
+			// We found the event-stream marker, adjust offset
+			jsonStart = offset + eventMarker
 		}
 
 		// Find the end of this JSON object by counting braces
@@ -289,18 +338,65 @@ func parseSSEEventsForContent(data []byte) string {
 
 		// Extract and parse the JSON object
 		jsonStr := dataStr[jsonStart:jsonEnd]
+		result := gjson.Parse(jsonStr)
 
-		// Use gjson to safely extract the content field
-		content := gjson.Get(jsonStr, "content").String()
-		if content != "" {
-			result.WriteString(content)
+		// Extract different event types
+		if content := result.Get("content").String(); content != "" {
+			contentParts = append(contentParts, content)
+		}
+
+		if convID := result.Get("conversationId").String(); convID != "" {
+			conversationID = convID
+		}
+
+		if followup := result.Get("followupPrompt"); followup.Exists() {
+			followupPrompts = append(followupPrompts, map[string]interface{}{
+				"content": followup.Get("content").String(),
+			})
+		}
+
+		if toolCall := result.Get("toolCall"); toolCall.Exists() {
+			toolCalls = append(toolCalls, map[string]interface{}{
+				"id":    toolCall.Get("id").String(),
+				"name":  toolCall.Get("name").String(),
+				"input": toolCall.Get("input").Value(),
+			})
 		}
 
 		// Move past this JSON object
 		offset = jsonEnd
 	}
 
-	return result.String()
+	// Build the complete Kiro response structure
+	response := map[string]interface{}{
+		"conversationState": map[string]interface{}{
+			"currentMessage": map[string]interface{}{
+				"role":    "assistant",
+				"content": strings.Join(contentParts, ""),
+			},
+		},
+	}
+
+	// Add optional fields if present
+	if conversationID != "" {
+		response["conversationState"].(map[string]interface{})["conversationId"] = conversationID
+	}
+
+	if len(followupPrompts) > 0 {
+		response["conversationState"].(map[string]interface{})["followupPrompts"] = followupPrompts
+	}
+
+	if len(toolCalls) > 0 {
+		response["conversationState"].(map[string]interface{})["currentMessage"].(map[string]interface{})["toolCalls"] = toolCalls
+	}
+
+	// Convert to JSON
+	jsonBytes, err := json.Marshal(response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal Kiro response: %w", err)
+	}
+
+	return jsonBytes, nil
 }
 
 // ExecuteStream performs a streaming request to Kiro API.
@@ -312,23 +408,43 @@ func (e *KiroExecutor) ExecuteStream(
 ) (stream <-chan cliproxyexecutor.StreamChunk, err error) {
 	log.Debugf("Kiro ExecuteStream: model=%s", req.Model)
 
-	// Load and validate token
-	tokenStorage, err := e.loadToken(auth)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load token: %w", err)
+	var validToken *kiro.KiroTokenStorage
+	var tokenEntry *kiro.TokenEntry
+
+	// Try to get token from TokenManager first
+	if e.tokenManager != nil && e.tokenManager.GetTokenCount() > 0 {
+		entry, err := e.tokenManager.GetNextToken(ctx)
+		if err == nil {
+			log.Debugf("Using token from TokenManager: %s", entry.Label)
+			validToken = entry.Storage
+			tokenEntry = entry
+		} else {
+			log.Warnf("Failed to get token from TokenManager: %v", err)
+		}
 	}
 
-	// Try to validate and refresh token (best-effort, non-blocking)
-	authenticator := kiro.NewKiroAuthenticator(e.cfg)
-	validToken, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+	// Fallback to auth metadata if no token from manager
 	if validToken == nil {
-		validToken = tokenStorage
-	}
+		log.Debug("Falling back to auth metadata token")
+		tokenStorage, err := e.loadToken(auth)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load token: %w", err)
+		}
 
-	if refreshed {
-		log.Info("Token was proactively refreshed in stream, updating auth metadata")
-		if err := e.saveToken(auth, validToken); err != nil {
-			log.Warnf("Failed to save proactively refreshed token in stream: %v", err)
+		// Try to validate and refresh token (best-effort, non-blocking)
+		authenticator := kiro.NewKiroAuthenticator(e.cfg)
+		vt, refreshed := authenticator.TryValidateToken(ctx, tokenStorage)
+		if vt == nil {
+			validToken = tokenStorage
+		} else {
+			validToken = vt
+		}
+
+		if refreshed {
+			log.Info("Token was proactively refreshed in stream, updating auth metadata")
+			if err := e.saveToken(auth, validToken); err != nil {
+				log.Warnf("Failed to save proactively refreshed token in stream: %v", err)
+			}
 		}
 	}
 
@@ -355,6 +471,8 @@ func (e *KiroExecutor) ExecuteStream(
 		httpResp.Body.Close()
 		log.Debugf("401 response body: %s", string(body))
 
+		authenticator := kiro.NewKiroAuthenticator(e.cfg)
+
 		// Attempt to refresh the token
 		newToken, refreshErr := authenticator.RefreshToken(ctx, validToken)
 		if refreshErr != nil {
@@ -362,7 +480,19 @@ func (e *KiroExecutor) ExecuteStream(
 		}
 
 		log.Info("Stream token refreshed after 401, saving and retrying request")
-		// Save the refreshed token
+
+		// Save the refreshed token to file if we have an entry
+		if tokenEntry != nil && tokenEntry.Path != "" {
+			if err := newToken.SaveTokenToFile(tokenEntry.Path); err != nil {
+				log.Warnf("Failed to save refreshed token to file %s: %v", tokenEntry.Path, err)
+			} else {
+				log.Infof("Refreshed token persisted to %s", tokenEntry.Path)
+				// Update entry storage
+				tokenEntry.Storage = newToken
+			}
+		}
+
+		// Always update auth metadata
 		if err := e.saveToken(auth, newToken); err != nil {
 			log.Warnf("Failed to save refreshed token after stream 401: %v", err)
 		}
@@ -511,10 +641,20 @@ func (e *KiroExecutor) sendRequest(ctx context.Context, token *kiro.KiroTokenSto
 	req.Header.Set("x-amzn-kiro-agent-mode", "vibe")
 
 	// Log request details to file with pretty formatting
-	f, err := os.OpenFile("/home/build/code/CLIProxyAPI/debug_kiro.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// Create logs directory if it doesn't exist
+	logDir := "/home/build/code/CLIProxyAPI/logs"
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		log.Warnf("Failed to create logs directory: %v", err)
+	}
+
+	// Generate timestamped filename: debug_kiro_YYYYMMDD_HHMMSS.log
+	timestamp := time.Now().Format("20060102_150405")
+	logFile := fmt.Sprintf("%s/debug_kiro_%s.log", logDir, timestamp)
+
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err == nil {
 		defer f.Close()
-		f.WriteString("\n" + strings.Repeat("=", 80) + "\n")
+		f.WriteString(strings.Repeat("=", 80) + "\n")
 		f.WriteString(fmt.Sprintf("KIRO API REQUEST - %s\n", time.Now().Format("2006-01-02 15:04:05")))
 		f.WriteString(strings.Repeat("=", 80) + "\n")
 		f.WriteString(fmt.Sprintf("URL: %s\n", KiroAPIEndpoint))
