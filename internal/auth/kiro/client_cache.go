@@ -10,24 +10,42 @@ import (
 )
 
 // LoadCachedClient loads a cached OIDC client from disk.
-// It first attempts to load from the provided auth directory, then falls back to
-// auto-discovery by scanning the provided auth directory for JSON files containing clientId.
+// It first attempts to load from the provided auth directory using the clientIdHash if provided.
+// If not found or no hash provided, it falls back to standard oidc_client.json,
+// and finally auto-discovery by scanning the provided auth directory.
 //
 // Parameters:
 //   - authDir: The directory to scan for client files
+//   - clientIdHash: Optional hash of the client ID to load a specific client file
 //
 // Returns:
 //   - *RegisteredClient: The cached client, or nil if not found or expired
 //   - error: An error if loading fails (not including file not found)
-func LoadCachedClient(authDir string) (*RegisteredClient, error) {
+func LoadCachedClient(authDir string, clientIdHash string) (*RegisteredClient, error) {
 	if authDir == "" {
 		// Fallback to default if no authDir provided (though it should be)
 		authDir = filepath.Dir(DefaultTokenPath())
 	}
 
+	// 0. Optimization: Try to load specific client file if hash is provided
+	if clientIdHash != "" {
+		// The client file is named <hash>.json
+		specificPath := filepath.Join(authDir, clientIdHash+".json")
+		client, err := loadClientFromPath(specificPath, false)
+		if err == nil && client != nil {
+			log.Debugf("Loaded specific client from %s", specificPath)
+			return client, nil
+		}
+		if err != nil && !os.IsNotExist(err) {
+			log.Warnf("Failed to load specific client from path %s: %v", specificPath, err)
+		}
+		// If specific file not found, fall back to other methods
+		log.Debugf("Specific client file %s not found, falling back to standard/discovery", specificPath)
+	}
+
 	// 1. Try standard oidc_client.json in authDir
 	standardPath := filepath.Join(authDir, "oidc_client.json")
-	client, err := loadClientFromPath(standardPath)
+	client, err := loadClientFromPath(standardPath, true)
 	if err == nil && client != nil {
 		return client, nil
 	}
@@ -52,7 +70,11 @@ func LoadCachedClient(authDir string) (*RegisteredClient, error) {
 }
 
 // loadClientFromPath loads a client from a specific file path.
-func loadClientFromPath(path string) (*RegisteredClient, error) {
+//
+// Parameters:
+//   - path: The file path to load
+//   - checkExpiry: Whether to check if the client is expired (true) or ignore expiration (false)
+func loadClientFromPath(path string, checkExpiry bool) (*RegisteredClient, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -64,7 +86,7 @@ func loadClientFromPath(path string) (*RegisteredClient, error) {
 	}
 
 	// Check if expired
-	if client.IsExpired() {
+	if checkExpiry && client.IsExpired() {
 		log.Debugf("Client at %s is expired", path)
 		return nil, nil // Expired cache
 	}

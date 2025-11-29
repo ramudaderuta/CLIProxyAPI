@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -380,5 +382,101 @@ func BenchmarkTokenRefreshDecision(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		_ = time.Now().Add(buffer).After(token.ExpiresAt)
+	}
+}
+
+// TestLoadCachedClient_SpecificHash tests loading a client with a specific hash
+func TestLoadCachedClient_SpecificHash(t *testing.T) {
+	// Create a temporary directory for auth files
+	tmpDir, err := os.MkdirTemp("", "kiro-auth-test")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// Create a dummy client
+	client := &kiro.RegisteredClient{
+		ClientID:     "test-client-id",
+		ClientSecret: "test-client-secret",
+		RegisteredAt: time.Now(),
+	}
+
+	// Save it with a specific hash name
+	hash := "test-hash-123"
+	filename := hash + ".json"
+	path := filepath.Join(tmpDir, filename)
+
+	data, err := json.Marshal(client)
+	if err != nil {
+		t.Fatalf("Failed to marshal client: %v", err)
+	}
+	err = os.WriteFile(path, data, 0600)
+	if err != nil {
+		t.Fatalf("Failed to write client file: %v", err)
+	}
+
+	// Test 1: Load with correct hash - should succeed without scanning
+	loadedClient, err := kiro.LoadCachedClient(tmpDir, hash)
+	if err != nil {
+		t.Errorf("Failed to load client with hash: %v", err)
+	}
+	if loadedClient == nil {
+		t.Fatal("Loaded client is nil")
+	}
+	if loadedClient.ClientID != client.ClientID {
+		t.Errorf("Expected ClientID %s, got %s", client.ClientID, loadedClient.ClientID)
+	}
+
+	// Test 2: Load with incorrect hash - should fall back to scan (and fail if we don't have other files)
+	// Since we have a valid file in the dir, scan MIGHT pick it up if we're not careful.
+	// But discoverClientInDirectory checks for "clientId" field which our dummy has.
+	// So it should find it via scan.
+	loadedClient2, err := kiro.LoadCachedClient(tmpDir, "wrong-hash")
+	if err != nil {
+		t.Errorf("Failed to load client with wrong hash (fallback): %v", err)
+	}
+	if loadedClient2 == nil {
+		t.Fatal("Loaded client (fallback) is nil")
+	}
+	if loadedClient2.ClientID != client.ClientID {
+		t.Errorf("Expected ClientID %s, got %s", client.ClientID, loadedClient2.ClientID)
+	}
+}
+
+// TestLoadCachedClient_NoHash tests loading a client without a hash
+func TestLoadCachedClient_NoHash(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "kiro-auth-test-2")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	client := &kiro.RegisteredClient{
+		ClientID:     "test-client-id-2",
+		ClientSecret: "test-client-secret-2",
+		RegisteredAt: time.Now(),
+	}
+
+	// Save as standard oidc_client.json
+	path := filepath.Join(tmpDir, "oidc_client.json")
+	data, err := json.Marshal(client)
+	if err != nil {
+		t.Fatalf("Failed to marshal client: %v", err)
+	}
+	err = os.WriteFile(path, data, 0600)
+	if err != nil {
+		t.Fatalf("Failed to write client file: %v", err)
+	}
+
+	// Load without hash
+	loadedClient, err := kiro.LoadCachedClient(tmpDir, "")
+	if err != nil {
+		t.Errorf("Failed to load client without hash: %v", err)
+	}
+	if loadedClient == nil {
+		t.Fatal("Loaded client is nil")
+	}
+	if loadedClient.ClientID != client.ClientID {
+		t.Errorf("Expected ClientID %s, got %s", client.ClientID, loadedClient.ClientID)
 	}
 }

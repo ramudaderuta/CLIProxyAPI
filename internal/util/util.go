@@ -75,7 +75,19 @@ func CountAuthFiles(authDir string) int {
 			return nil
 		}
 		if strings.HasSuffix(strings.ToLower(d.Name()), ".json") {
-			count++
+			// Read file to check if it's actually an auth token file
+			// We want to exclude client configuration files (which have clientId but no tokens)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil
+			}
+
+			// Simple string check is faster than unmarshaling and sufficient for this purpose
+			content := strings.ToLower(string(data))
+			if strings.Contains(content, `"accesstoken"`) || strings.Contains(content, `"access_token"`) ||
+				strings.Contains(content, `"refreshtoken"`) || strings.Contains(content, `"refresh_token"`) {
+				count++
+			}
 		}
 		return nil
 	})

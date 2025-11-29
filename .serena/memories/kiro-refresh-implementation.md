@@ -714,3 +714,12 @@ Despite fixing auto-discovery, token refresh continued to fail with `invalid_cli
 *   **Symptom**: `kiro-token.json` contains `clientIdHash: "e909a058..."`. The system correctly auto-discovers the file `~/.cli-proxy-api/e909a058...json`.
 *   **Mismatch**: The content of this JSON file contains a `clientId` (`GI2tPRg...`) whose SHA1 hash is `996e3a65...`, **NOT** `e909a058...`.
 *   **Conclusion**: The file content does not match the filename (which represents the expected hash). The token belongs to a different client than the one in the file. AWS rejects the refresh request because the client ID sent (`GI2tPRg...`) does not match the one associated with the refresh token.
+
+### 3. Targeted Client Loading Optimization
+
+**Date**: 2025-11-29
+
+To improve performance and reliability, we optimized the client loading mechanism to avoid scanning the entire auth directory when the client ID hash is known.
+
+*   **Targeted Loading**: Modified `LoadCachedClient` to accept an optional `clientIdHash`. If provided, it attempts to load the specific file `authDir/<clientIdHash>.json` directly.
+*   **Expiry Check Fix**: We discovered that `loadClientFromPath` was strictly enforcing expiration checks, causing the targeted loading to fail if the client file appeared expired locally (even if valid on the server). We updated `loadClientFromPath` to accept a `checkExpiry` parameter. When loading a specific file by hash, we now pass `checkExpiry=false`, trusting the API to validate the client, similar to how auto-discovery works.

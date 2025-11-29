@@ -283,47 +283,6 @@ You can delegate work to the following sub-agents:
   - Writes and maintains clear, concise, and consistent documentation.  
   - Produces READMEs, API docs, migration guides, ADRs, and inline comments.
 
-## Skills Available to Sub-Agents
-
-You **can and should** leverage the following skills when relevant.
-
-**Skills:**
-
-- `rust-paddle-ocr`  
-  - OCR-related workflows, especially Rust integrations and PaddleOCR usage.
-
-- `llm-optimization-expert`  
-  - Prompt design, LLM evaluation, latency/cost optimization, and retrieval patterns.
-
-- `openai-agents-js`  
-  - JavaScript/TypeScript integrations for OpenAI agents, SDK usage, and patterns.
-
-- `backend-expert`  
-  - Architecture and implementation of backend services, microservices, and APIs.
-
-- `feature-development-expert`  
-  - End-to-end feature delivery: from spec to implementation and rollout.
-
-- `tauri-v2`  
-  - Building desktop apps with Tauri v2, including Rust + frontend integration.
-
-- `code-review-expert`  
-  - Deep code review, style consistency, performance and correctness feedback.
-
-- `frontend-expert`  
-  - Web frontend architecture, patterns, and advanced UI-state management.
-
-- `refactoring-expert`  
-  - Safely restructuring code to improve clarity, modularity, and maintainability.
-
-- `testing-expert`  
-  - Testing strategies across unit, integration, and end-to-end tests.
-
-- `rust-expert`  
-  - Rust language expertise (ownership, lifetimes, unsafe, performance, tooling).
-
-Sub-agents **should select and combine these skills** as needed to complete their tasks at a high level of quality.
-
 ## Core Behavior
 
 1. **Default to delegation.**  

@@ -88,7 +88,7 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage
 		authDir = filepath.Join(home, authDir[2:])
 	}
 
-	registeredClient, err = LoadCachedClient(authDir)
+	registeredClient, err = LoadCachedClient(authDir, "")
 	if err != nil {
 		log.Warnf("Failed to load cached client: %v", err)
 		fmt.Printf("[DEBUG] Authenticate: Cache load error: %v\n", err)
@@ -140,8 +140,13 @@ func (a *KiroAuthenticator) Authenticate(ctx context.Context) (*KiroTokenStorage
 
 // ensureOAuthInitialized ensures that the OAuth client is initialized.
 // It loads the client registration from cache or registers a new client if needed.
-func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context) error {
+// If clientIdHash is provided, it attempts to load the specific client for that hash.
+func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context, clientIdHash string) error {
+	// If already initialized, check if it matches the requested hash (if provided)
 	if a.oauth != nil {
+		// If no hash provided, or if we can't verify the hash (DeviceCodeFlow doesn't expose it easily yet),
+		// assume it's fine.
+		// TODO: Ideally we should verify the hash matches a.oauth.clientID
 		return nil
 	}
 
@@ -152,7 +157,7 @@ func (a *KiroAuthenticator) ensureOAuthInitialized(ctx context.Context) error {
 		authDir = filepath.Join(home, authDir[2:])
 	}
 
-	registeredClient, err := LoadCachedClient(authDir)
+	registeredClient, err := LoadCachedClient(authDir, clientIdHash)
 	if err != nil {
 		log.Warnf("Failed to load cached client: %v", err)
 	}
@@ -190,7 +195,7 @@ func (a *KiroAuthenticator) RefreshToken(ctx context.Context, storage *KiroToken
 	}
 
 	// Ensure OAuth client is initialized
-	if err := a.ensureOAuthInitialized(ctx); err != nil {
+	if err := a.ensureOAuthInitialized(ctx, storage.ClientIdHash); err != nil {
 		return nil, fmt.Errorf("failed to initialize oauth client: %w", err)
 	}
 
