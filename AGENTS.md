@@ -112,8 +112,8 @@ When a description is truncated, we add **two mirrored metadata blocks** that ca
 ### Revised understanding of the Nov 2025 “Improperly formed request” issue
 
 After retesting, `tool_use` and `tool_result` in history are broadly acceptable to Kiro. The 400 “Improperly formed request” errors reproduce reliably in only these cases:
-- The last user turn ends with a `tool_result` and no trailing user text (`tests/shared/testdata/nonstream/claude_request_todowrite_bad.json`).
-- The effective final user turn has empty/whitespace content (e.g., a trailing newline), even if a prior `tool_use` exists (`tests/shared/testdata/nonstream/claude_request_todowrite_bad2.json`).
+- The last user turn ends with a `tool_result` and no trailing user text (`tests/testdata/claude_request_todowrite_bad.json`).
+- The effective final user turn has empty/whitespace content (e.g., a trailing newline), even if a prior `tool_use` exists (`tests/testdata/claude_request_todowrite_bad2.json`).
 
 What we are doing instead:
 - Keep `tool_use`/`tool_result` blocks intact in history and current turns. Do not strip or summarize them by default.
@@ -136,10 +136,10 @@ Tests to rely on:
 - Auth-dir discovery rotation: `go test ./tests/unit/kiro -run TestKiroExecutor_AuthDirDiscovery_RoundRobinWithFailover -count=1` ensures `auth-dir`-discovered `kiro-*.json` files also cycle and fail over correctly.
 - Full regression: `go test ./tests/unit/... ./tests/regression/... -race -cover`
 - Real replay: start `./cli-proxy-api --config config.test.yaml` and POST
-  `tests/shared/testdata/nonstream/claude_request_todowrite_continue.json` to `/v1/messages`.
+  `tests/testdata/claude_request_todowrite_continue.json` to `/v1/messages`.
   - Should now succeed without "Improperly formed request" errors (you should see fallback log messages only on the first attempt; the final SSE delivered to the client matches the Anthropic reference stream).
   - Latest request bodies are logged under `logs/v1-messages-*.log`; verify structured `tool_use`/`tool_result` are preserved in history, assistant tool_use-only turns have a `content` placeholder, and the active current user turn contains non-empty text (".") when needed. If a fallback fires you’ll also see the flattened/minimal payload snapshots inline in the logs.
-  - Hard case: POST `tests/shared/testdata/nonstream/test_hard_request.json` (stream=true) and `tests/shared/testdata/streaming/orignal.json`. Expect Anthropic-style SSE with the same event order the reference CLIProxy recordings show; even if the upstream emits the legacy “Improperly formed request” body, the executor should automatically resend and the stream shown to the client must contain the full assistant response.
+  - Hard case: POST `tests/testdata/orignal_stream.json`. Expect Anthropic-style SSE with the same event order the reference CLIProxy recordings show; even if the upstream emits the legacy “Improperly formed request” body, the executor should automatically resend and the stream shown to the client must contain the full assistant response.
 
 ### Kiro Debugging Quickstart
 When `debug: true`, the Kiro executor emits truncated request/response bodies (`kiro request payload:` / `kiro response payload:`) directly into the main log—perfect for validating translated system prompts and legacy tool chunks without enabling verbose request logging. For full-fidelity captures, flip `request-log: true`, reproduce with `./cli-proxy-api --config config.test.yaml`, and inspect the generated `logs/v1-messages-*.log` file, which now includes the Anthropic-style request as well as the reconstructed `toolUseEvent` stream sent back to the client.

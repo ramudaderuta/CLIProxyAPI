@@ -13,7 +13,7 @@ import (
 )
 
 func TestKiroExecutorFallbackBuilders(t *testing.T) {
-	payload := testutil.LoadTestData(t, "streaming/orignal.json")
+	payload := testutil.LoadTestData(t, "claude_format.json")
 	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
 
 	primaryBody, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)

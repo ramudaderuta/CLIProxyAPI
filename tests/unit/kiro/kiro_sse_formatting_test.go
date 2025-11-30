@@ -3,13 +3,11 @@ package kiro_test
 import (
 	"encoding/binary"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
+	testutil "github.com/router-for-me/CLIProxyAPI/v6/tests/shared"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -876,12 +874,7 @@ func deepCopy(value any) any {
 
 func loadStreamingFixture(t *testing.T, name string) string {
 	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	require.True(t, ok, "failed to resolve caller information for fixture helper")
-	baseDir := filepath.Dir(file)
-	path := filepath.Join(baseDir, "testdata", "streaming", name)
-	data, err := os.ReadFile(path)
-	require.NoErrorf(t, err, "failed to read fixture %s", path)
+	data := testutil.LoadTestData(t, name)
 
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	var builder strings.Builder

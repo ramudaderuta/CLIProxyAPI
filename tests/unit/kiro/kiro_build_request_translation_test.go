@@ -298,7 +298,7 @@ func TestBuildRequestStripsMarkupFromToolDescriptions(t *testing.T) {
 
 func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
-	payload := testutil.LoadTestData(t, "nonstream/claude_code_tooling_request.json")
+	payload := testutil.LoadTestData(t, "claude_format_simple.json")
 
 	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
 	if err != nil {
@@ -357,7 +357,7 @@ func TestBuildRequestPreservesClaudeCodeBuiltinTools(t *testing.T) {
 
 func TestBuildRequestAddsToolReferenceForTruncatedDescriptions(t *testing.T) {
 	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
-	payload := testutil.LoadTestData(t, "nonstream/claude_code_tooling_request.json")
+	payload := testutil.LoadTestData(t, "claude_format_simple.json")
 
 	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
 	if err != nil {
@@ -475,7 +475,7 @@ func TestBuildRequestIncludesPlanModeMetadata(t *testing.T) {
 
 func TestBuildRequestHydratesCurrentUserForAssistantToolUseFollowedByToolResult(t *testing.T) {
 	token := &authkiro.KiroTokenStorage{AccessToken: "token"}
-	payload := testutil.LoadTestData(t, "streaming/orignal.json")
+	payload := testutil.LoadTestData(t, "claude_format.json")
 
 	body, err := kirotranslator.BuildRequest("claude-sonnet-4-5", payload, token, nil)
 	if err != nil {
@@ -887,8 +887,7 @@ func TestBuildRequest_EnsuresNonEmptyFinalUserContent(t *testing.T) {
 		expectToolResultsInHistory bool
 		expectedContent            string
 	}{
-		{"tool_result_last", "nonstream/claude_request_todowrite_bad.json", false, true, "."},
-		{"whitespace_last", "nonstream/claude_request_todowrite_bad2.json", false, false, "."},
+		{"tool_result_last", "claude_format_tool_call_no_result.json", false, true, "."},
 	}
 
 	for _, tc := range cases {

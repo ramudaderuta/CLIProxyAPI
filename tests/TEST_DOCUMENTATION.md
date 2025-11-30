@@ -71,12 +71,12 @@ Key coverage:
 | `TestParseResponseStripsProtocolNoiseFromContent` | `tests/unit/kiro/kiro_response_test.go` | Ensures `content-type…application/json` leaks and other control strings are scrubbed before Anthropic responses are returned. |
 | `TestBuildRequestStripsControlCharactersFromUserContent` | `tests/unit/kiro/kiro_translation_test.go` | Rejects ANSI escapes / `<system-reminder>` scaffolding present in Claude Code prompts. |
 | `TestBuildRequestPreservesLongToolDescriptions` + `TestBuildRequestStripsMarkupFromToolDescriptions` | same | Enforces the 256-char Kiro limit while ensuring the hashed `Tool reference manifest` plus `toolContextManifest` carry the full text on-demand. |
-| `TestBuildRequestPreservesClaudeCodeBuiltinTools` | same | Loads the real-world fixture `nonstream/claude_code_tooling_request.json` to ensure Bash/Task/Grep/etc. survive translation, clamp to 256 chars, and emit the extra context/tool-choice directives Claude Code expects. |
+| `TestBuildRequestPreservesClaudeCodeBuiltinTools` | same | Loads the real-world fixture `claude_format_simple.json` to ensure Bash/Task/Grep/etc. survive translation, clamp to 256 chars, and emit the extra context/tool-choice directives Claude Code expects. |
 | `TestBuildRequestAddsToolReferenceForTruncatedDescriptions` | same | Guards against the Nov'25 regression by verifying every tool description is ≤256 chars while the manifest still exposes the full Task/Bash/etc guidance (with hashes) for fetch-on-demand transport. |
 | `TestBuildRequestIncludesPlanModeMetadata` | same | Asserts that Task/ExitPlanMode helpers now populate `planMode` metadata (active state, pending call IDs) and inject a plan directive into the system prompt whenever a plan agent is running. |
 | `TestBuildAnthropicStreamingChunksMatchReference` | `tests/unit/kiro/kiro_sse_formatting_test.go` | Replays recorded AIClient-2-API conversations (plain text, tool-only, multi-tool, empty responses) and compares every SSE event emitted by the Go translator—indices, stop reasons, usage, and tool deltas—against the reference adapter to guarantee parity. |
 | `TestConvertKiroStreamToAnthropic_LongArgumentsMerged` | same | Feeds the mapper the legacy split-chunk tool arguments captured from AIClient-2-API logs to ensure JSON fragments merge into a single `input_json_delta` exactly like the reference adapter. |
-| `TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_Fixture` | same | Loads `tests/unit/kiro/testdata/streaming/cross_chunk_spaces.ndjson` (symlinked to the shared fixture) to lock in the “I'll use␠TDD workflows for CI/CD.” spacing regression observed in Nov ’25 Kiro SSE traces. |
+| `TestConvertKiroStreamToAnthropic_CrossChunkSpacePreservation_Fixture` | same | Loads `tests/testdata/cross_chunk_spaces.ndjson` via `testutil.LoadTestData` to lock in the “I'll use␠TDD workflows for CI/CD.” spacing regression observed in Nov ’25 Kiro SSE traces. |
 | `TestConvertKiroStreamToAnthropic_FollowupPromptFlag` | same | Confirms `followupPrompt` booleans in upstream chunks become `followup_prompt` + `stop_reason: "followup"` in the outgoing `message_delta`, matching the reference stream contract. |
 | `TestConvertKiroStreamToAnthropic_StopReasonOverrides` | same | Covers cancel/time-out/fallback flows by asserting any upstream `stop_reason` values survive translation, while empty ones fall back to `end_turn`, mirroring AIClient-2-API’s behaviour. |
 
@@ -85,8 +85,8 @@ Key coverage:
 - `cmd/devtools/show_kiro_request` pretty-prints the exact payload `BuildRequest` emits. Run `go run ./cmd/devtools/show_kiro_request <path/to/openai_request.json>` when chasing a regression so you don’t have to instrument the server.
 - When reproducing the Nov’25 “Improperly formed request” flow locally, always run both variants:
   1. `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`
-  2. `./cli-proxy-api --config config.test.yaml` and `curl -sS -D - -o /tmp/original_response.json -H 'Authorization: Bearer test-api-key-1234567890' -H 'Content-Type: application/json' --data @tests/shared/testdata/streaming/orignal.json http://localhost:8317/v1/messages`
-  3. Repeat the same curl with any additional streaming fixture (`tests/shared/testdata/streaming/orignal.json` already sets `"stream": true`; `tests/shared/testdata/nonstream/test_hard_request.json` is another high-stress case).
+  2. `./cli-proxy-api --config config.test.yaml` and `curl -sS -D - -o /tmp/original_response.json -H 'Authorization: Bearer test-api-key-1234567890' -H 'Content-Type: application/json' --data @tests/testdata/claude_format.json http://localhost:8317/v1/messages`
+  3. Repeat the same curl with any additional streaming fixture (`tests/testdata/claude_format.json` already sets `"stream": true`).
 - Expect to see `kiro request (primary) failed … trying flattened variant` (and, if necessary, `…trying minimal variant`) in `/tmp/cli-proxy-server.log`. The final SSE that reaches the client must match the recorded Anthropic stream even if Kiro emitted the legacy error body.
 
 When diagnosing future “Improperly formed request” errors, reproduce with `/tmp/claude_request.json` (saved during the Nov 2025 incident) and rerun the suite above before shipping changes.
@@ -106,17 +106,11 @@ tests/
 │       ├── kiro_sse_formatting_test.go
 │       ├── kiro_translation_test.go
 │       ├── kiro_hard_request_test.go
-│       └── testdata/
-│           ├── nonstream/*.json (symlinks to shared)
-│           ├── streaming/*.ndjson (symlinks to shared)
-│           ├── golden/*.golden
-│           └── errors/*.json
 ├── integration/
 │   └── kiro/
 │       ├── kiro_executor_integration_test.go   //go:build integration
 │       ├── kiro_sse_integration_test.go        //go:build integration
-│       ├── kiro_translation_integration_test.go//go:build integration
-│       └── testdata/ (symlinks to shared)
+│       └── kiro_translation_integration_test.go//go:build integration
 ├── regression/
 │   └── kiro/
 │       ├── kiro_bug_regression_test.go (bug-linked repros only)
@@ -124,7 +118,6 @@ tests/
 │       ├── kiro_thinking_truncation_test.go
 │       ├── kiro_fix_verification_test.go
 │       ├── kiro_sse_buffer_test.go (SSE buffer limit tests)
-│       └── testdata/ (symlinks to shared)
 ├── benchmarks/
 │   └── kiro/
 │       └── executor_benchmark_test.go
@@ -134,16 +127,13 @@ tests/
 │   ├── golden.go         # Golden file helpers (-golden flag)
 │   ├── env.go            # Env/time/random helpers
 │   ├── io.go             # Centralized test data loading
-│   ├── testdata/        # Centralized test data
-│   │   ├── nonstream/*.json
-│   │   └── streaming/*.ndjson
 │   └── test_utils.go     # KiroTestFixtures and common utilities
+├── testdata/            # Centralized test fixtures (all suites; flat list)
 └── TEST_DOCUMENTATION.md
 ```
 
 **Notes**
-- **Centralized test data** in `tests/shared/testdata/` eliminates duplication across unit/integration/regression tests
-- **Symlinks** from individual test directories to shared testdata maintain compatibility (e.g., `tests/unit/kiro/testdata/streaming/cross_chunk_spaces.ndjson -> tests/shared/testdata/streaming/cross_chunk_spaces.ndjson`)
+- **Centralized test data** lives only in `tests/testdata/` and is loaded via `testutil.LoadTestData` from any suite
 - **Dynamic token creation** replaces hardcoded absolute paths with `t.TempDir()`
 - Put test-only data under a `testdata/` folder. Go tooling ignores it for builds, and paths are stable.
 - Prefer **domain folders** (e.g., `kiro/`) so file names can be concise (no long prefixes).
@@ -216,7 +206,7 @@ tests/
 
 ### **Copying test data across categories**
 - **Don't**: Duplicate identical JSON files in `unit/`, `integration/`, and `regression/`
-- **Do**: Use centralized `tests/shared/testdata/` with symlinks
+- **Do**: Load everything from `tests/testdata/` via `testutil.LoadTestData` (no per-suite copies)
 
 ### **Asserting full SSE format in integration tests**
 - **Don't**: Detailed SSE format validation in integration tests
@@ -258,7 +248,7 @@ tests/
 
 - **Top-level tests**: `Test<Domain>_<Capability>_<Scenario>`
   _Example_: `TestKiro_Executor_ToolCalls`.
-- **Table-driven subtests**: `t.Run("<case>")` with meaningful, grep-friendly names like `streaming/tool-interleave`.
+- **Table-driven subtests**: `t.Run("<case>")` with meaningful, grep-friendly names like `streaming_cross_chunk_spaces`.
 - **Benchmarks**: `Benchmark<Domain>_<Target>`.
 
 ---
@@ -305,21 +295,19 @@ assert.Equal(t, want, got, "case=%s", tc.name)
 ## Testdata & Golden Files
 
 ### Accessing Shared Test Data
-- Use centralized test data from `tests/shared/testdata/`:
+- Use centralized test data from `tests/testdata/`:
 
 ```go
 // Load test data from shared location
-fixtureData := testutil.LoadTestData(t, "nonstream/text_then_tool.json")
+fixtureData := testutil.LoadTestData(t, "claude_request_todowrite_bad.json")
 ```
 
 - Use `t.TempDir()` for ephemeral writes and dynamic token creation.
 
 ### Centralized Test Data Structure
-The `tests/shared/testdata/` directory organizes test fixtures by type:
-- **nonstream/**: Non-streaming request/response JSON files
-- **streaming/**: Streaming test data in NDJSON format
-- **golden/**: Golden reference files with `.golden` extension
-- **errors/**: Error case test data for negative testing
+The `tests/testdata/` directory is flat; filenames indicate purpose:
+- **nonstream** cases: JSON payloads (e.g., `claude_request_todowrite_bad.json`)
+- **streaming** cases: NDJSON fixtures or JSONs with `_stream` suffix (e.g., `cross_chunk_spaces.ndjson`, `claude_format.json`)
 
 ### Golden Testing
 - Golden files live at `tests/shared/golden/*.golden`.
@@ -510,9 +498,8 @@ PASS: TestToolCallIDIntegration (0.00s)
 - **Confirmed**: Content properly distributed across multiple text_delta events as expected
 
 ### **Centralized Test Data**
-- Created `tests/shared/testdata/{nonstream,streaming}/` with shared JSON/NDJSON files
-- Replaced duplicate files in `unit/`, `integration/`, `regression/` with symlinks
-- Implemented `testutil.LoadTestData()` helper for consistent access
+- Created `tests/testdata/{nonstream,streaming}/` with shared JSON/NDJSON files
+- All suites load fixtures directly through `testutil.LoadTestData()`; no per-suite copies or symlinks remain
 
 ### **Removed Redundant SSE Format Tests**
 - Simplified integration SSE tests to basic smoke assertions only

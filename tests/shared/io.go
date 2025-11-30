@@ -8,19 +8,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// LoadTestData loads test data from the shared testdata directory
+// LoadTestData loads test data from the centralized testdata directory
 func LoadTestData(t *testing.T, relPath string) []byte {
 	t.Helper()
 
-	// Try multiple path strategies to find the shared testdata directory
+	// Try multiple path strategies to find the centralized testdata directory
 	var paths []string
 
 	// Strategy 1: Relative to current test location (for unit/integration/regression tests)
 	// From tests/unit/kiro or tests/integration/kiro, we need to go up 2 levels to reach tests/
-	paths = append(paths, filepath.Join("..", "..", "shared", "testdata", relPath))
+	paths = append(paths, filepath.Join("..", "..", "testdata", relPath))
 
 	// Strategy 2: Direct path from repo root
-	paths = append(paths, filepath.Join("tests", "shared", "testdata", relPath))
+	paths = append(paths, filepath.Join("tests", "testdata", relPath))
 
 	var data []byte
 	var err error

@@ -1,0 +1,175 @@
+{
+  "metadata": {
+    "user_id": "test_user"
+  },
+  "model": "claude-sonnet-4-5",
+  "max_tokens": 1024,
+  "stream": false,
+  "system": [
+    {
+      "type": "text",
+      "text": "Test system message."
+    }
+  ],
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Test prompt"
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "id": "tooluse_1",
+          "input": {
+            "todos": [
+              {
+                "content": "Test todo",
+                "status": "pending",
+                "activeForm": "Testing"
+              }
+            ]
+          },
+          "name": "TodoWrite",
+          "type": "tool_use"
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "Continue without tool result"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "Task",
+      "description": "Launch background plan executors that can fork long-running subtasks, coordinate multi-step workflows, capture partial results, retry failing commands, and report granular progress back to Claude Code operators. Use this whenever multi-step planning is required, or when you need concurrent execution of thinking, coding, testing, and deployment activities across multiple environments.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "goal": {"type": "string"},
+          "priority": {"type": "string"}
+        },
+        "required": ["goal"]
+      }
+    },
+    {
+      "name": "Bash",
+      "description": "Run bash command.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string"}
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "Glob",
+      "description": "List files that match the supplied glob pattern.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {"type": "string"}
+        },
+        "required": ["pattern"]
+      }
+    },
+    {
+      "name": "Grep",
+      "description": "Search for text across files.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "pattern": {"type": "string"},
+          "path": {"type": "string"}
+        },
+        "required": ["pattern"]
+      }
+    },
+    {
+      "name": "TodoWrite",
+      "description": "Create and manage todo list tasks.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "todos": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "content": {"type": "string"},
+                "status": {"type": "string"},
+                "activeForm": {"type": "string"}
+              },
+              "required": ["content", "status", "activeForm"]
+            }
+          }
+        },
+        "required": ["todos"]
+      }
+    },
+    {
+      "name": "Skill",
+      "description": "Register reusable AI helpers.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "skill_name": {"type": "string"},
+          "instructions": {"type": "string"}
+        },
+        "required": ["skill_name", "instructions"]
+      }
+    },
+    {
+      "name": "SlashCommand",
+      "description": "Expose quick entrypoints for common actions inside Claude Code.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "command": {"type": "string"},
+          "args": {"type": "string"}
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "Write",
+      "description": "Write file.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "file_path": {"type": "string"},
+          "content": {"type": "string"}
+        },
+        "required": ["file_path", "content"]
+      }
+    },
+    {
+      "name": "get_weather",
+      "description": "Fetch current weather conditions for a city and unit (C or F).",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "city": {"type": "string"},
+          "unit": {"type": "string", "enum": ["C", "F"]}
+        },
+        "required": ["city"]
+      }
+    }
+  ],
+  "tool_choice": {
+    "type": "tool",
+    "name": "get_weather"
+  }
+}

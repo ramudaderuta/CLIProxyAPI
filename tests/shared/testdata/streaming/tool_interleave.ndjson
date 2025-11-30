@@ -1,4 +1,0 @@
-{"content": "Save"}
-{"content": " "}
-{"content": "file"}
-{"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "write_file", "input": {"path": "test.txt"}}}
