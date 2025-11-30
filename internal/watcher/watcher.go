@@ -1265,10 +1265,18 @@ func (w *Watcher) SnapshotCoreAuths() []*coreauth.Auth {
 			continue
 		}
 		t, _ := metadata["type"].(string)
-		if t == "" {
+		provider := strings.ToLower(strings.TrimSpace(t))
+
+		// Fallback: infer provider from filename for kiro tokens that miss the type field.
+		if provider == "" && strings.Contains(strings.ToLower(name), "kiro") {
+			provider = "kiro"
+			metadata["type"] = "kiro"
+		}
+
+		// If still empty, skip.
+		if provider == "" {
 			continue
 		}
-		provider := strings.ToLower(t)
 		if provider == "gemini" {
 			provider = "gemini-cli"
 		}

@@ -75,8 +75,6 @@ CLIProxyAPI/
 │   ├── regression/         # Bug regression tests
 │   ├── benchmarks/         # Performance benchmarks
 │   └── shared/             # Shared test utilities and data
-│       ├── golden/         # Expected API responses
-│       └── testdata/       # Sample requests
 ├── sdk/                     # Public Go SDK for embedding
 ├── docs/                    # Documentation (8 markdown files)
 │   ├── function-map.md     # Comprehensive function mapping

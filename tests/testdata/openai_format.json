@@ -1,0 +1,468 @@
+{
+    "model": "claude-sonnet-4-5",
+    "temperature": 0,
+    "max_tokens": 1024,
+    "stream": false,
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are a helpful AI coding assistant with access to various development tools."
+        },
+        {
+            "role": "user",
+            "content": "I need to consolidate multiple agent files. I have already consolidated SEO, Architecture, and Database agents. Now I'm working on consolidating Debugging & Troubleshooting agents."
+        },
+        {
+            "role": "assistant",
+            "content": "I can help you consolidate the debugging agents. Let me first read the current agent list to see what we're working with.",
+            "tool_calls": [
+                {
+                    "id": "call_read_agents_123",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{\"file_path\":\"/workspace/agents/debug-agents.md\"}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_read_agents_123",
+            "content": "# Debug Agents\n\n1. debug-expert\n2. troubleshooter\n3. error-analyzer\n\nAll three focus on debugging and error resolution."
+        },
+        {
+            "role": "assistant",
+            "content": "I see we have three debugging agents that can be consolidated. Let me update the task list to track our progress.",
+            "tool_calls": [
+                {
+                    "id": "call_todo_456",
+                    "type": "function",
+                    "function": {
+                        "name": "TodoWrite",
+                        "arguments": "{\"todos\":[{\"content\":\"Consolidate SEO & Content Marketing (10 → 1 agent): seo-expert\",\"status\":\"completed\",\"activeForm\":\"Consolidate SEO\"},{\"content\":\"Consolidate Architecture & Design (8 → 3 agents): system-architect, code-architect, ui-designer\",\"status\":\"completed\",\"activeForm\":\"Consolidate Architecture\"},{\"content\":\"Consolidate Database Operations (3 → 1 agent): database-expert\",\"status\":\"completed\",\"activeForm\":\"Consolidate Database\"},{\"content\":\"Consolidate Debugging & Troubleshooting (3 → 1 agent): debug-expert\",\"status\":\"in_progress\",\"activeForm\":\"Consolidate Debugging\"},{\"content\":\"Consolidate Security Coding (3 → 1 agent): security-coder-expert\",\"status\":\"pending\",\"activeForm\":\"Consolidate Security\"},{\"content\":\"Delete old consolidated agent files\",\"status\":\"pending\",\"activeForm\":\"Delete old files\"},{\"content\":\"Update documentation and indexes\",\"status\":\"pending\",\"activeForm\":\"Update docs\"}]}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_todo_456",
+            "content": "Todos have been updated successfully. Continue using TodoWrite to modify the task list as you make progress."
+        },
+        {
+            "role": "user",
+            "content": "Good. Now consolidate the debug agents into one expert file."
+        }
+    ],
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "Task",
+                "description": "Launch a new agent to handle complex, multi-step tasks autonomously. The agent will execute the task and return results when complete. Use this for substantial work that requires multiple steps or specialized expertise.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "subagent_type": {
+                            "type": "string",
+                            "description": "The type of specialized agent to use for this task"
+                        },
+                        "model": {
+                            "type": "string",
+                            "enum": [
+                                "sonnet",
+                                "opus",
+                                "haiku"
+                            ],
+                            "description": "Optional model to use for this agent. If not specified, inherits from parent."
+                        },
+                        "resume": {
+                            "type": "string",
+                            "description": "Optional agent ID to resume from. If provided, the agent will continue from where it left off."
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "A short (3-5 word) description of the task"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "The task for the agent to perform"
+                        }
+                    },
+                    "required": [
+                        "description",
+                        "prompt",
+                        "subagent_type"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "description": "Executes a given bash command in a persistent shell session with optional timeout and background execution support.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The command to execute"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Clear, concise description of what this command does in 5-10 words, in sentence case."
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Optional timeout in milliseconds (max 600000)"
+                        },
+                        "run_in_background": {
+                            "type": "boolean",
+                            "description": "Set to true to run this command in the background. Use BashOutput to retrieve results later."
+                        }
+                    },
+                    "required": [
+                        "command"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Glob",
+                "description": "Fast file pattern matching tool that works with any codebase size. Uses glob patterns to find files matching specific criteria. Returns list of matching file paths.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "The glob pattern to match files against"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "The directory to search in. If not specified, the current working directory is used."
+                        }
+                    },
+                    "required": [
+                        "pattern"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Grep",
+                "description": "A powerful search tool built on ripgrep. Use this to search for patterns in file contents across your codebase. Supports regex, case-insensitive search, and context lines.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "The regular expression pattern to search for in file contents"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "File or directory to search in (rg PATH). Defaults to current working directory."
+                        },
+                        "output_mode": {
+                            "type": "string",
+                            "enum": [
+                                "content",
+                                "files_with_matches",
+                                "count"
+                            ],
+                            "description": "Output mode: 'content' shows matching lines, 'files_with_matches' shows only filenames, 'count' shows number of matches per file"
+                        },
+                        "-i": {
+                            "type": "boolean",
+                            "description": "Case insensitive search (rg -i)"
+                        },
+                        "-A": {
+                            "type": "number",
+                            "description": "Number of lines to show after each match (rg -A). Requires output_mode: 'content'."
+                        },
+                        "-B": {
+                            "type": "number",
+                            "description": "Number of lines to show before each match (rg -B). Requires output_mode: 'content'."
+                        },
+                        "-C": {
+                            "type": "number",
+                            "description": "Number of lines to show before and after each match (rg -C). Requires output_mode: 'content'."
+                        },
+                        "type": {
+                            "type": "string",
+                            "description": "File type to search (rg --type). Common types: js, py, rust, go, java, etc."
+                        },
+                        "glob": {
+                            "type": "string",
+                            "description": "Glob pattern to filter files (e.g. '*.js', '*.{ts,tsx}') - maps to rg --glob"
+                        }
+                    },
+                    "required": [
+                        "pattern"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "description": "Reads a file from the local filesystem. You can access any file directly by specifying its absolute path. Use offset and limit for large files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to read"
+                        },
+                        "offset": {
+                            "type": "number",
+                            "description": "The line number to start reading from. Only provide if the file is too large to read in one go."
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "The number of lines to read. Only provide if the file is too large to read in one go."
+                        }
+                    },
+                    "required": [
+                        "file_path"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Edit",
+                "description": "Performs exact string replacements in files. You must use the exact original text as it appears in the file for old_string. Use Read to verify content first if unsure.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to modify"
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "The text to replace"
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The text to replace it with (must be different from old_string)"
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Replace all occurences of old_string (default false)"
+                        }
+                    },
+                    "required": [
+                        "file_path",
+                        "old_string",
+                        "new_string"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "description": "Writes a file to the local filesystem. This tool will overwrite existing files without confirmation. Use Edit for modifications to existing files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to write (must be absolute, not relative)"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The content to write to the file"
+                        }
+                    },
+                    "required": [
+                        "file_path",
+                        "content"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "WebFetch",
+                "description": "Fetches content from a specified URL and processes it using an AI assistant. Returns relevant extracted information based on your prompt.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {
+                            "type": "string",
+                            "format": "uri",
+                            "description": "The URL to fetch content from"
+                        },
+                        "prompt": {
+                            "type": "string",
+                            "description": "The prompt to run on the fetched content"
+                        }
+                    },
+                    "required": [
+                        "url",
+                        "prompt"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "TodoWrite",
+                "description": "Use this tool to create and manage a structured task list for your current work. Update the status as you make progress through tasks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "description": "The updated todo list",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "content": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    },
+                                    "status": {
+                                        "type": "string",
+                                        "enum": [
+                                            "pending",
+                                            "in_progress",
+                                            "completed"
+                                        ]
+                                    },
+                                    "activeForm": {
+                                        "type": "string",
+                                        "minLength": 1
+                                    }
+                                },
+                                "required": [
+                                    "content",
+                                    "status",
+                                    "activeForm"
+                                ]
+                            }
+                        }
+                    },
+                    "required": [
+                        "todos"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "WebSearch",
+                "description": "Allows Claude to search the web and use the results to inform responses. Useful for finding current information, documentation, or researching topics.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "minLength": 2,
+                            "description": "The search query to use"
+                        },
+                        "allowed_domains": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Only include search results from these domains"
+                        },
+                        "blocked_domains": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "description": "Never include search results from these domains"
+                        }
+                    },
+                    "required": [
+                        "query"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "AskUserQuestion",
+                "description": "Use this tool when you need to ask the user questions during execution. Present 1-4 multiple choice questions with 2-4 options each.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "description": "Questions to ask the user (1-4 questions)",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": {
+                                        "type": "string",
+                                        "description": "The complete question to ask the user. Should be clear, specific, and actionable."
+                                    },
+                                    "header": {
+                                        "type": "string",
+                                        "description": "Very short label displayed as a chip/tag (max 12 chars). Examples: 'Approach', 'Style', 'Format'"
+                                    },
+                                    "options": {
+                                        "type": "array",
+                                        "minItems": 2,
+                                        "maxItems": 4,
+                                        "description": "The available choices for this question. Must have 2-4 options.",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": {
+                                                    "type": "string",
+                                                    "description": "The display text for this option that the user will see and select. Should be concise and clear."
+                                                },
+                                                "description": {
+                                                    "type": "string",
+                                                    "description": "Explanation of what this option means or what will happen if chosen. Be specific and helpful."
+                                                }
+                                            },
+                                            "required": [
+                                                "label",
+                                                "description"
+                                            ]
+                                        }
+                                    },
+                                    "multiSelect": {
+                                        "type": "boolean",
+                                        "description": "Set to true to allow the user to select multiple options instead of just one."
+                                    }
+                                },
+                                "required": [
+                                    "question",
+                                    "header",
+                                    "options",
+                                    "multiSelect"
+                                ]
+                            }
+                        }
+                    },
+                    "required": [
+                        "questions"
+                    ]
+                }
+            }
+        }
+    ]
+}

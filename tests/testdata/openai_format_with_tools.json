@@ -1,0 +1,229 @@
+{
+    "model": "claude-sonnet-4-5",
+    "temperature": 0,
+    "max_tokens": 1024,
+    "stream": false,
+    "messages": [
+        {
+            "role": "system",
+            "content": "You are an expert software development assistant with deep knowledge of debugging, troubleshooting, and error resolution."
+        },
+        {
+            "role": "user",
+            "content": "I'm getting an error in my React application. Can you help me debug it?"
+        },
+        {
+            "role": "assistant",
+            "content": "Of course! I'd be happy to help debug your React application. Let me first check what error logs we have.",
+            "tool_calls": [
+                {
+                    "id": "call_bash_logs_001",
+                    "type": "function",
+                    "function": {
+                        "name": "Bash",
+                        "arguments": "{\"command\":\"tail -n 50 /var/log/app.log\",\"description\":\"Check application error logs\"}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_bash_logs_001",
+            "content": "Error: Cannot read property 'map' of undefined\n    at ProductList.render (ProductList.jsx:45)\n    at React.Component.render\nTypeError: Cannot read property 'map' of undefined"
+        },
+        {
+            "role": "assistant",
+            "content": "I see the issue - it's a common React error where you're trying to map over undefined data. Let me read the ProductList component to understand the context.",
+            "tool_calls": [
+                {
+                    "id": "call_read_component_002",
+                    "type": "function",
+                    "function": {
+                        "name": "Read",
+                        "arguments": "{\"file_path\":\"/app/src/components/ProductList.jsx\"}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_read_component_002",
+            "content": "import React from 'react';\n\nfunction ProductList({ products }) {\n  return (\n    <div className=\"product-list\">\n      {products.map(product => (\n        <div key={product.id}>\n          <h3>{product.name}</h3>\n          <p>${product.price}</p>\n        </div>\n      ))}\n    </div>\n  );\n}\n\nexport default ProductList;"
+        },
+        {
+            "role": "assistant",
+            "content": "Perfect! I found the issue. The `products` prop is undefined when the component renders. This typically happens when data is still loading. Let me fix this by adding a safety check.",
+            "tool_calls": [
+                {
+                    "id": "call_edit_fix_003",
+                    "type": "function",
+                    "function": {
+                        "name": "Edit",
+                        "arguments": "{\"file_path\":\"/app/src/components/ProductList.jsx\",\"old_string\":\"function ProductList({ products }) {\\n  return (\\n    <div className=\\\"product-list\\\">\\n      {products.map(product => (\",\"new_string\":\"function ProductList({ products = [] }) {\\n  return (\\n    <div className=\\\"product-list\\\">\\n      {products.map(product => (\"}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_edit_fix_003",
+            "content": "File successfully updated. The default parameter has been added to prevent undefined errors."
+        },
+        {
+            "role": "assistant",
+            "content": "Great! I've fixed the issue by adding a default empty array to the products prop. This prevents the error when data is still loading. Let me verify the fix by running the application.",
+            "tool_calls": [
+                {
+                    "id": "call_test_app_004",
+                    "type": "function",
+                    "function": {
+                        "name": "Bash",
+                        "arguments": "{\"command\":\"npm test -- ProductList.test.jsx\",\"description\":\"Run tests for ProductList component\"}"
+                    }
+                }
+            ]
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_test_app_004",
+            "content": "PASS  src/components/ProductList.test.jsx\n  ProductList\n    ✓ renders without crashing (12 ms)\n    ✓ displays products correctly (8 ms)\n    ✓ handles empty products array (5 ms)\n\nTest Suites: 1 passed, 1 total\nTests:       3 passed, 3 total"
+        },
+        {
+            "role": "user",
+            "content": "Excellent! The fix works. Can you also add some error boundary handling?"
+        }
+    ],
+    "tools": [
+        {
+            "type": "function",
+            "function": {
+                "name": "Read",
+                "description": "Reads a file from the local filesystem",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to read"
+                        },
+                        "offset": {
+                            "type": "number",
+                            "description": "Optional line number to start reading from"
+                        },
+                        "limit": {
+                            "type": "number",
+                            "description": "Optional number of lines to read"
+                        }
+                    },
+                    "required": [
+                        "file_path"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Edit",
+                "description": "Performs exact string replacements in files",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file to modify"
+                        },
+                        "old_string": {
+                            "type": "string",
+                            "description": "The exact text to replace"
+                        },
+                        "new_string": {
+                            "type": "string",
+                            "description": "The replacement text"
+                        },
+                        "replace_all": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Replace all occurrences"
+                        }
+                    },
+                    "required": [
+                        "file_path",
+                        "old_string",
+                        "new_string"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Write",
+                "description": "Writes content to a file",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "The absolute path to the file"
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The content to write"
+                        }
+                    },
+                    "required": [
+                        "file_path",
+                        "content"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Bash",
+                "description": "Executes bash commands",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "The command to execute"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Description of what the command does"
+                        }
+                    },
+                    "required": [
+                        "command"
+                    ]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "Grep",
+                "description": "Search for patterns in files",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {
+                            "type": "string",
+                            "description": "The pattern to search for"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Path to search in"
+                        }
+                    },
+                    "required": [
+                        "pattern"
+                    ]
+                }
+            }
+        }
+    ]
+}
