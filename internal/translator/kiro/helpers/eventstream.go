@@ -1,4 +1,4 @@
-package kiro
+package helpers
 
 import (
 	"bytes"
@@ -87,7 +87,7 @@ func extractJSONPayload(payload []byte) string {
 				continue
 			}
 		}
-		if isMeteringPayloadString(trimmed) || isContextUsagePayloadString(trimmed) {
+		if IsMeteringPayloadString(trimmed) || IsContextUsagePayloadString(trimmed) {
 			continue
 		}
 		if builder.Len() > 0 {
