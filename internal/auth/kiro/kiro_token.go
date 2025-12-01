@@ -38,6 +38,13 @@ type KiroTokenStorage struct {
 	// Provider indicates the OAuth provider used (e.g., "Github").
 	Provider string `json:"provider"`
 
+	// Region optionally carries the AWS region to use (primarily for IdC tokens
+	// that don't embed region in a profileArn).
+	Region string `json:"region,omitempty"`
+
+	// ClientIDHash is present on some IdC flows; stored for completeness.
+	ClientIDHash string `json:"clientIdHash,omitempty"`
+
 	// Type indicates the authentication provider type, always "kiro" for this storage.
 	Type string `json:"type"`
 }
@@ -104,6 +111,8 @@ func LoadTokenFromFile(authFilePath string) (*KiroTokenStorage, error) {
 		token.ProfileArn = coalesceString(token.ProfileArn, raw, "profileArn", "profile_arn")
 		token.AuthMethod = coalesceString(token.AuthMethod, raw, "authMethod", "auth_method")
 		token.Provider = coalesceString(token.Provider, raw, "provider")
+		token.Region = coalesceString(token.Region, raw, "region")
+		token.ClientIDHash = coalesceString(token.ClientIDHash, raw, "clientIdHash", "client_id_hash")
 		if token.ExpiresAt.IsZero() {
 			if ts, ok := coalesceTime(raw, "expiresAt", "expires_at"); ok {
 				token.ExpiresAt = ts

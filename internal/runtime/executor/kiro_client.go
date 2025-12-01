@@ -63,7 +63,7 @@ func (c *kiroClient) doRequest(ctx context.Context, auth *cliproxyauth.Auth, tok
 
 	c.debugDumpPayload("kiro request", body)
 
-	endpoint := c.buildEndpoint(model, token.ProfileArn, regionOverride)
+	endpoint := c.buildEndpoint(model, token, regionOverride)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
@@ -114,18 +114,55 @@ func (c *kiroClient) doRequest(ctx context.Context, auth *cliproxyauth.Auth, tok
 	return data, resp.StatusCode, resp.Header.Clone(), nil
 }
 
-func (c *kiroClient) buildEndpoint(model, profileArn, regionOverride string) string {
-	region := c.extractRegion(regionOverride, profileArn)
+func (c *kiroClient) buildEndpoint(model string, token *authkiro.KiroTokenStorage, regionOverride string) string {
+	region := c.extractRegion(regionOverride, token)
 	if strings.HasPrefix(strings.ToLower(model), "amazonq-") {
 		return fmt.Sprintf(kiroAmazonQURLTemplate, region)
 	}
 	return fmt.Sprintf(kiroBaseURLTemplate, region)
 }
 
-func (c *kiroClient) extractRegion(regionOverride, profileArn string) string {
+func (c *kiroClient) extractRegion(regionOverride string, token *authkiro.KiroTokenStorage) string {
 	if trimmed := strings.TrimSpace(regionOverride); trimmed != "" {
 		return trimmed
 	}
+
+	if token != nil {
+		authMethod := strings.ToLower(strings.TrimSpace(token.AuthMethod))
+
+		// Social tokens typically embed region in profileArn; prefer that first.
+		if authMethod == "social" {
+			if region := extractRegionFromProfileArn(token.ProfileArn); region != "" {
+				return region
+			}
+			if trimmed := strings.TrimSpace(token.Region); trimmed != "" {
+				return trimmed
+			}
+		}
+
+		// IdC tokens carry region explicitly; prefer Region field first.
+		if authMethod == "idc" || authMethod == "id" || authMethod == "idcprovider" {
+			if trimmed := strings.TrimSpace(token.Region); trimmed != "" {
+				return trimmed
+			}
+			if region := extractRegionFromProfileArn(token.ProfileArn); region != "" {
+				return region
+			}
+		}
+
+		// Fallback for unknown authMethod: try explicit region, then ARN.
+		if trimmed := strings.TrimSpace(token.Region); trimmed != "" {
+			return trimmed
+		}
+		if region := extractRegionFromProfileArn(token.ProfileArn); region != "" {
+			return region
+		}
+	}
+
+	return kiroDefaultRegion
+}
+
+func extractRegionFromProfileArn(profileArn string) string {
 	parts := strings.Split(profileArn, ":")
 	if len(parts) > 3 {
 		region := parts[3]
@@ -133,7 +170,7 @@ func (c *kiroClient) extractRegion(regionOverride, profileArn string) string {
 			return region
 		}
 	}
-	return kiroDefaultRegion
+	return ""
 }
 
 func (c *kiroClient) applyHeaders(req *http.Request, token string) {

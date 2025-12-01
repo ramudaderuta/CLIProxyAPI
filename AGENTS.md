@@ -6,6 +6,11 @@ CLIProxyAPI is a Go-based HTTP proxy server that provides unified OpenAI/Gemini/
 
 ## Current Work Context
 
+- **Dec 2025 – Kiro auth + integration logging updates**
+  - Kiro token loader now accepts both social and IdC token layouts. It captures `region` and `clientIdHash` fields, and keeps `profileArn` when present. Region resolution order: `regionOverride` → for social: `profileArn` then `region`; for IdC: `region` then `profileArn`; finally defaults to `us-east-1`.
+  - `kiro_client` uses the above logic to build the endpoint, avoiding misroutes when IdC tokens lack `profileArn`.
+  - Integration test helper (`tests/integration/kiro/kiro_payload_integration_test.go`) logs full request/response bodies and headers into the timestamped `logs/kiro_payload_debug_*.log` files for quick inspection of real upstream payloads. Server processes are started in their own process group and killed group-wide to prevent `WaitDelay` hangs.
+
 - **Session summary prompt (drop into Claude Code when resuming work)**:  
   *“Continue the Nov’25 Kiro <> Claude Code parity effort. Kiro now clamps tool descriptions to ≤256 chars, injects a ‘Tool reference (full descriptions preserved…)’ block, and mirrors Anthropic `tool_choice` into `claudeToolChoice`. Verify future edits keep these guarantees by re-running `go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1`.”*
 - **Kiro ↔ Claude Code parity push**: Sanitized Anthropic payload translation to strip ANSI escapes, stray `<system-reminder>` blocks, and other control bytes before they touch Kiro (`internal/translator/kiro/request.go`). Anthropic responses are likewise scrubbed to remove protocol metadata (e.g. `content-type` fragments) before returning to Claude Code.
