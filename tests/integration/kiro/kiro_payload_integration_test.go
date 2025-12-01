@@ -1,5 +1,83 @@
 package kiro_test
 
+// This test performs end-to-end integration testing for the Kiro provider,
+// verifying that it correctly translates between OpenAI and Anthropic (Claude) formats.
+//
+// PREREQUISITES:
+//   - A valid kiro-auth-token.json file must exist in ~/.cli-proxy-api/
+//   - The test uses the real token for authentication
+//
+// TIMEOUT & RETRY CONFIGURATION:
+//   - HTTP request timeout: 10 seconds per attempt
+//   - Kiro executor retry attempts: up to 3 (primary → flattened → minimal)
+//   - Maximum total request time: 30 seconds (10s × 3 attempts)
+//   - Test must complete within: 30 seconds
+//
+// RUNNING TESTS:
+//
+// 1. Run All Tests (OpenAI + Anthropic formats)
+//    ------------------------------------------
+//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads
+//
+//    Expected duration: 10-30 seconds
+//
+//    This runs:
+//    - OpenAI Chat Completions (3 test cases)
+//      * openai_format_simple
+//      * openai_format
+//      * openai_format_with_tools
+//    - Anthropic Messages (3 test cases)
+//      * claude_format
+//      * claude_format_tool_call_no_result
+//      * claude_format_simple
+//
+// 2. Run Only OpenAI Format Tests
+//    -----------------------------
+//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions
+//
+// 3. Run Only Anthropic/Claude Format Tests
+//    ---------------------------------------
+//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages
+//
+// 4. Run Specific Test Cases
+//    ------------------------
+//    Single test case:
+//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions/openai_format_simple
+//
+//    Specific Claude test:
+//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages/claude_format_simple
+//
+//    Pattern matching (all simple format tests):
+//    go test -tags=integration -v ./tests/integration/kiro -run '.*/.*simple'
+//
+// 5. Skip Integration Tests (for unit test runs)
+//    --------------------------------------------
+//    go test -short -v ./tests/integration/kiro -run TestKiroPayloads
+//
+//    or simply:
+//    go test -short ./...
+//
+// LOGGING:
+//   - Logs are written to logs/kiro_payload_debug_YYYYMMDD_HHMMSS.log
+//   - Each test run creates a new timestamped log file
+//   - Logs include detailed request/response debug information
+//   - Log files are automatically closed when test completes
+//   - The test also shows the log filename in the output
+//
+// TEST DATA:
+//   Test payloads are loaded from tests/testdata/:
+//   - openai_format_simple.json
+//   - openai_format.json
+//   - openai_format_with_tools.json
+//   - claude_format.json
+//   - claude_format_tool_call_no_result.json
+//   - claude_format_simple.json
+//
+// VALIDATION:
+//   - OpenAI format tests strictly verify: choices, choices.0.message
+//   - Anthropic format tests strictly verify: content, role
+//   - Any format mismatch will cause the test to FAIL
+
 import (
 	"bytes"
 	"encoding/json"
@@ -9,42 +87,35 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	internalconfig "github.com/router-for-me/CLIProxyAPI/v6/internal/config"
+	sdkconfig "github.com/router-for-me/CLIProxyAPI/v6/sdk/config"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tidwall/gjson"
+	"gopkg.in/natefinch/lumberjack.v2"
 	"gopkg.in/yaml.v3"
 
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/registry"
 )
 
 // TestKiroPayloads performs an end-to-end integration test for Kiro.
-// It checks if Kiro tokens exist, starts the server, and runs payload tests.
+// It starts the server with built-in config and runs payload tests.
 func TestKiroPayloads(t *testing.T) {
 	const modelName = "claude-sonnet-4-5" // must exist in registry.GetKiroModels
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	// 1. Locate and parse config.yaml
+	// 1. Locate project root
 	rootDir, err := findProjectRoot()
 	require.NoError(t, err, "Failed to find project root")
-	configPath := filepath.Join(rootDir, "config.yaml")
 
-	cfg, err := config.LoadConfig(configPath)
-	require.NoError(t, err, "Failed to load config.yaml")
-
-	// 2. Check for Kiro tokens
-	authDir := expandPath(cfg.AuthDir)
-	if !hasKiroTokens(authDir) {
-		t.Skipf("No Kiro tokens found in %s. Skipping Kiro integration tests.", authDir)
-	}
-
-	// 3. Start the server
+	// 2. Start the server with built-in config (no external config.yaml needed)
 	_, port, cleanup := startServer(t, rootDir)
 	defer cleanup()
 
@@ -75,15 +146,16 @@ func TestKiroPayloads(t *testing.T) {
 
 				assert.Equal(t, 200, code, "Expected HTTP 200. Body: %s", resp)
 				assert.True(t, gjson.Get(resp, "id").Exists(), "Missing 'id'. Body: %s", resp)
-				assert.True(t, gjson.Get(resp, "choices").Exists(), "Missing 'choices'. Body: %s", resp)
-				assert.True(t, gjson.Get(resp, "choices.0.message").Exists(), "Missing 'message'. Body: %s", resp)
+				// Strictly verify OpenAI format response from /v1/chat/completions
+				assert.True(t, gjson.Get(resp, "choices").Exists(), "Response must be OpenAI format with 'choices' field. Body: %s", resp)
+				assert.True(t, gjson.Get(resp, "choices.0.message").Exists(), "Missing 'choices.0.message'. Body: %s", resp)
 			})
 		}
 	})
 
 	t.Run("Anthropic Messages", func(t *testing.T) {
 		files := []string{
-			"claude_format_with_tools",
+			"claude_format",
 			"claude_format_tool_call_no_result",
 			"claude_format_simple",
 		}
@@ -103,8 +175,7 @@ func TestKiroPayloads(t *testing.T) {
 	})
 }
 
-// Helpers
-
+// findProjectRoot locates the project root directory by looking for go.mod
 func findProjectRoot() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
@@ -122,85 +193,58 @@ func findProjectRoot() (string, error) {
 	}
 }
 
-func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[2:])
-	}
-	return path
-}
-
-func hasKiroTokens(authDir string) bool {
-	entries, err := os.ReadDir(authDir)
-	if err != nil {
-		return false
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.Contains(entry.Name(), "kiro") { // Simplified check
-			return true
-		}
-	}
-	// Also check for any json files that might contain kiro tokens if naming convention differs
-	// But for now, let's assume if the directory is not empty, we might have tokens.
-	// Actually, let's look for *token* files.
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".json") {
-			return true
-		}
-	}
-	return false
-}
-
 func startServer(t *testing.T, rootDir string) (*exec.Cmd, int, func()) {
-	// Build the server first to ensure we run the latest code
-	buildCmd := exec.Command("go", "build", "-o", "cli-proxy-api-test", "./cmd/server")
-	buildCmd.Dir = rootDir
-	out, err := buildCmd.CombinedOutput()
-	require.NoError(t, err, "Failed to build server: %s", string(out))
-
-	serverBin := filepath.Join(rootDir, "cli-proxy-api-test")
-	port := 8318 // Use a different port for testing to avoid conflict
-	tempAuthDir := t.TempDir()
-
-	// Create a temporary config for the test server
-	// We need to copy the real config but change the port
-	// For simplicity, we'll pass the port via env var if supported, or just rely on config.
-	// Since config.yaml is hardcoded to 8317, we might conflict if main server is running.
-	// Let's try to run with the existing config and hope 8317 is free, or use a temp config.
-	// Better: Create a temp config file.
-
-	origConfigPath := filepath.Join(rootDir, "config.yaml")
-	cfg, err := config.LoadConfig(origConfigPath)
-	require.NoError(t, err)
-
-	// Ensure the test server binds to the expected port regardless of existing config values.
-	cfg.Port = port
-	// Enable verbose server logging during integration runs for easier debugging.
-	cfg.Debug = true
-	// Copy kiro token into an isolated temp auth dir and inject missing type field to satisfy watcher.
-	if authDir := strings.TrimSpace(cfg.AuthDir); authDir != "" {
-		sourcePath := filepath.Join(expandPath(authDir), "kiro-auth-token.json")
-		tokenBytes, readErr := os.ReadFile(sourcePath)
-		require.NoError(t, readErr, "failed to read kiro token file: %s", sourcePath)
-		var token map[string]any
-		require.NoError(t, json.Unmarshal(tokenBytes, &token))
-		token["type"] = "kiro"
-		destPath := filepath.Join(tempAuthDir, "kiro-auth-token.json")
-		patched, marshalErr := json.Marshal(token)
-		require.NoError(t, marshalErr)
-		require.NoError(t, os.WriteFile(destPath, patched, 0o600))
-		cfg.AuthDir = tempAuthDir
-		cfg.KiroTokenFiles = nil // rely on auth-dir scanning so watcher registers kiro auth
+	// Create logs directory in project root if it doesn't exist
+	logsDir := filepath.Join(rootDir, "logs")
+	if _, err := os.Stat(logsDir); os.IsNotExist(err) {
+		os.MkdirAll(logsDir, 0755)
 	}
 
+	// Generate timestamped log filename
+	timestamp := time.Now().Format("20060102_150405") // YYYYMMDD_HHMMSS
+	logFilename := filepath.Join(logsDir, fmt.Sprintf("kiro_payload_debug_%s.log", timestamp))
+
+	// Configure logger to write to the timestamped file
+	fileLogger := &lumberjack.Logger{
+		Filename:   logFilename,
+		MaxSize:    100, // megabytes
+		MaxBackups: 0,
+		MaxAge:     0,
+		Compress:   false,
+	}
+
+	// Set up logging.BaseLogger
+	logging.SetupBaseLogger()
+	logrus.SetOutput(fileLogger)
+	logrus.SetLevel(logrus.DebugLevel)
+	logrus.SetReportCaller(true)
+	logrus.SetFormatter(&logging.LogFormatter{})
+
+	// Create built-in config (no need for external config.yaml)
+	cfg := &internalconfig.Config{
+		SDKConfig: sdkconfig.SDKConfig{
+			APIKeys: []string{"test-api-key"},
+		},
+		Port:                     8318, // Use a different port for testing to avoid conflict
+		Debug:                    true,
+		LoggingToFile:            true,
+		UsageStatisticsEnabled:   false,
+		RequestRetry:             3,
+		MaxRetryInterval:         30,
+		AuthDir:                  "~/.cli-proxy-api", // Use real auth dir with real token
+		AmpRestrictManagementToLocalhost: true,
+	}
+
+	t.Logf("Log file: %s", logFilename)
+
+	// Write the config to a temp file in /tmp directory (not in project)
 	newConfigContent, err := yaml.Marshal(cfg)
-	tempConfigPath := filepath.Join(rootDir, "config_test_temp.yaml")
+	tempConfigPath := filepath.Join("/tmp", fmt.Sprintf("config_test_temp_%d.yaml", time.Now().UnixNano()))
 	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(tempConfigPath, newConfigContent, 0644))
 
-	err = os.WriteFile(tempConfigPath, newConfigContent, 0644)
-	require.NoError(t, err)
-
-	cmd := exec.Command(serverBin, "--config", tempConfigPath)
+	// Run server directly with go run (no need to build)
+	cmd := exec.Command("go", "run", "./cmd/server/main.go", "--config", tempConfigPath)
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -211,11 +255,11 @@ func startServer(t *testing.T, rootDir string) (*exec.Cmd, int, func()) {
 	cleanup := func() {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		_ = os.Remove(serverBin)
 		_ = os.Remove(tempConfigPath)
+		_ = fileLogger.Close()
 	}
 
-	return cmd, port, cleanup
+	return cmd, cfg.Port, cleanup
 }
 
 func waitForServer(baseURL string) error {
@@ -250,6 +294,8 @@ func loadAndModifyPayload(t *testing.T, dir, filename, model string) []byte {
 	require.NoError(t, err)
 
 	payload["model"] = model
+	// Force non-streaming responses for integration assertions that expect JSON.
+	payload["stream"] = false
 
 	modData, err := json.Marshal(payload)
 	require.NoError(t, err)
@@ -270,13 +316,28 @@ func sendRequestWithHeaders(t *testing.T, url, apiKey string, payload []byte, ex
 		req.Header.Set(k, v)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Timeout reduced from 30s to 10s to prevent long hangs
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	startTime := time.Now()
 	resp, err := client.Do(req)
-	require.NoError(t, err)
+	duration := time.Since(startTime)
+
+	if err != nil {
+		t.Logf("Request failed after %v: %v", duration, err)
+		require.NoError(t, err, "Request failed after %v", duration)
+	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
+
+	bodySize := len(body)
+	t.Logf("Request completed in %v, status=%d, body_size=%d bytes", duration, resp.StatusCode, bodySize)
+
+	if resp.StatusCode != 200 {
+		t.Logf("Non-200 response: %s", string(body))
+	}
 
 	return string(body), resp.StatusCode
 }
