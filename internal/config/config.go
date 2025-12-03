@@ -37,6 +37,12 @@ type Config struct {
 	// browser attacks and remote access to management endpoints. Default: true (recommended).
 	AmpRestrictManagementToLocalhost bool `yaml:"amp-restrict-management-to-localhost" json:"amp-restrict-management-to-localhost"`
 
+	// AmpModelMappings defines model name mappings for Amp CLI requests.
+	// When Amp requests a model that isn't available locally, these mappings
+	// allow routing to an alternative model that IS available.
+	// Example: Map "claude-opus-4.5" -> "claude-sonnet-4" when opus isn't available.
+	AmpModelMappings []AmpModelMapping `yaml:"amp-model-mappings" json:"amp-model-mappings"`
+
 	// AuthDir is the directory where authentication token files are stored.
 	AuthDir string `yaml:"auth-dir" json:"-"`
 
@@ -63,6 +69,10 @@ type Config struct {
 
 	// GeminiKey defines Gemini API key configurations with optional routing overrides.
 	GeminiKey []GeminiKey `yaml:"gemini-api-key" json:"gemini-api-key"`
+
+	// VertexCompatAPIKey defines Vertex AI-compatible API key configurations for third-party providers.
+	// Used for services that use Vertex AI-style paths but with simple API key authentication.
+	VertexCompatAPIKey []VertexCompatKey `yaml:"vertex-api-key" json:"vertex-api-key"`
 
 	// RequestRetry defines the retry times when the request failed.
 	RequestRetry int `yaml:"request-retry" json:"request-retry"`
@@ -119,6 +129,18 @@ type QuotaExceeded struct {
 
 	// SwitchPreviewModel indicates whether to automatically switch to a preview model when a quota is exceeded.
 	SwitchPreviewModel bool `yaml:"switch-preview-model" json:"switch-preview-model"`
+}
+
+// AmpModelMapping defines a model name mapping for Amp CLI requests.
+// When Amp requests a model that isn't available locally, this mapping
+// allows routing to an alternative model that IS available.
+type AmpModelMapping struct {
+	// From is the model name that Amp CLI requests (e.g., "claude-opus-4.5").
+	From string `yaml:"from" json:"from"`
+
+	// To is the target model name to route to (e.g., "claude-sonnet-4").
+	// The target model must have available providers in the registry.
+	To string `yaml:"to" json:"to"`
 }
 
 // PayloadConfig defines default and override parameter rules applied to provider payloads.
@@ -327,6 +349,9 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.
 	cfg.SanitizeGeminiKeys()
+
+	// Sanitize Vertex-compatible API keys: drop entries without base-url
+	cfg.SanitizeVertexCompatKeys()
 
 	// Sanitize Codex keys: drop entries without base-url
 	cfg.SanitizeCodexKeys()
@@ -586,6 +611,7 @@ func SaveConfigPreserveComments(configFile string, cfg *Config) error {
 	// Remove deprecated auth block before merging to avoid persisting it again.
 	removeMapKey(original.Content[0], "auth")
 	removeLegacyOpenAICompatAPIKeys(original.Content[0])
+	pruneMappingToGeneratedKeys(original.Content[0], generated.Content[0], "oauth-excluded-models")
 
 	// Merge generated into original in-place, preserving comments/order of existing nodes.
 	mergeMappingPreserve(original.Content[0], generated.Content[0])
@@ -784,6 +810,10 @@ func mergeNodePreserve(dst, src *yaml.Node) {
 				continue
 			}
 			mergeNodePreserve(dst.Content[i], src.Content[i])
+			if dst.Content[i] != nil && src.Content[i] != nil &&
+				dst.Content[i].Kind == yaml.MappingNode && src.Content[i].Kind == yaml.MappingNode {
+				pruneMissingMapKeys(dst.Content[i], src.Content[i])
+			}
 		}
 		// Append any extra items from src
 		for i := len(dst.Content); i < len(src.Content); i++ {
@@ -825,6 +855,7 @@ func shouldSkipEmptyCollectionOnPersist(key string, node *yaml.Node) bool {
 	switch key {
 	case "generative-language-api-key",
 		"gemini-api-key",
+		"vertex-api-key",
 		"claude-api-key",
 		"codex-api-key",
 		"openai-compatibility":
@@ -1058,6 +1089,73 @@ func removeLegacyOpenAICompatAPIKeys(root *yaml.Node) {
 		if seq.Content[i] != nil && seq.Content[i].Kind == yaml.MappingNode {
 			removeMapKey(seq.Content[i], "api-keys")
 		}
+	}
+}
+
+func pruneMappingToGeneratedKeys(dstRoot, srcRoot *yaml.Node, key string) {
+	if key == "" || dstRoot == nil || srcRoot == nil {
+		return
+	}
+	if dstRoot.Kind != yaml.MappingNode || srcRoot.Kind != yaml.MappingNode {
+		return
+	}
+	dstIdx := findMapKeyIndex(dstRoot, key)
+	if dstIdx < 0 || dstIdx+1 >= len(dstRoot.Content) {
+		return
+	}
+	srcIdx := findMapKeyIndex(srcRoot, key)
+	if srcIdx < 0 {
+		removeMapKey(dstRoot, key)
+		return
+	}
+	if srcIdx+1 >= len(srcRoot.Content) {
+		return
+	}
+	srcVal := srcRoot.Content[srcIdx+1]
+	dstVal := dstRoot.Content[dstIdx+1]
+	if srcVal == nil {
+		dstRoot.Content[dstIdx+1] = nil
+		return
+	}
+	if srcVal.Kind != yaml.MappingNode {
+		dstRoot.Content[dstIdx+1] = deepCopyNode(srcVal)
+		return
+	}
+	if dstVal == nil || dstVal.Kind != yaml.MappingNode {
+		dstRoot.Content[dstIdx+1] = deepCopyNode(srcVal)
+		return
+	}
+	pruneMissingMapKeys(dstVal, srcVal)
+}
+
+func pruneMissingMapKeys(dstMap, srcMap *yaml.Node) {
+	if dstMap == nil || srcMap == nil || dstMap.Kind != yaml.MappingNode || srcMap.Kind != yaml.MappingNode {
+		return
+	}
+	keep := make(map[string]struct{}, len(srcMap.Content)/2)
+	for i := 0; i+1 < len(srcMap.Content); i += 2 {
+		keyNode := srcMap.Content[i]
+		if keyNode == nil {
+			continue
+		}
+		key := strings.TrimSpace(keyNode.Value)
+		if key == "" {
+			continue
+		}
+		keep[key] = struct{}{}
+	}
+	for i := 0; i+1 < len(dstMap.Content); {
+		keyNode := dstMap.Content[i]
+		if keyNode == nil {
+			i += 2
+			continue
+		}
+		key := strings.TrimSpace(keyNode.Value)
+		if _, ok := keep[key]; !ok {
+			dstMap.Content = append(dstMap.Content[:i], dstMap.Content[i+2:]...)
+			continue
+		}
+		i += 2
 	}
 }
 
