@@ -127,7 +127,7 @@ ws-auth: false
 #        alias: "claude-sonnet-latest" # client alias mapped to the upstream model
 #    excluded-models:
 #      - "claude-opus-4-5-20251101" # exclude specific models (exact match)
-#      - "claude-3-*"               # wildcard matching prefix (e.g. claude-3-7-sonnet-20250219)
+#      - "claude-4-*"               # wildcard matching prefix (e.g. claude-opus-4-5)
 #      - "*-think"                  # wildcard matching suffix (e.g. claude-opus-4-5-thinking)
 #      - "*haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
 

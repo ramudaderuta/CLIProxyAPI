@@ -64,6 +64,17 @@ The unit suite now has dedicated cases that mirror the real Claude Code requests
 go test ./tests/unit/kiro -run 'BuildRequest|ParseResponse' -count=1
 ```
 
+**Live Kiro payload integration (opt-in):**
+
+- File: `tests/integration/kiro/kiro_payload_integration_test.go`
+- Build tags required: `integration kiro_live` (and non-Windows)
+- Prereq: valid `~/.cli-proxy-api/kiro-auth-token.json`
+- Run examples:
+  - `go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads`
+  - `go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions`
+  - `go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages`
+- Default `go test ./...` skips these live calls.
+
 Key coverage:
 
 | Test | File | What it guards |

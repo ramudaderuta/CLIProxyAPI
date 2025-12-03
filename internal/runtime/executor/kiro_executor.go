@@ -116,11 +116,7 @@ func (e *KiroExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Aut
 
 // CountTokens returns an approximate token count for the request payload.
 func (e *KiroExecutor) CountTokens(_ context.Context, _ *cliproxyauth.Auth, req cliproxyexecutor.Request, _ cliproxyexecutor.Options) (cliproxyexecutor.Response, error) {
-	enc, err := tokenizerForModel(req.Model)
-	if err != nil {
-		return cliproxyexecutor.Response{}, err
-	}
-	count, err := countOpenAIChatTokens(enc, req.Payload)
+	count, err := estimateInputTokens(req.Model, req.Payload)
 	if err != nil {
 		return cliproxyexecutor.Response{}, err
 	}
@@ -268,8 +264,8 @@ func (e *KiroExecutor) performCompletion(ctx context.Context, auth *cliproxyauth
 		log.Debugf("Original: %q", originalText)
 		log.Debugf("Filtered: %q", text)
 	}
-	promptTokens, _ := estimatePromptTokens(req.Model, req.Payload)
-	completionTokens := estimateCompletionTokens(text, toolCalls)
+	promptTokens, _ := estimateInputTokens(req.Model, req.Payload)
+	completionTokens := estimateCompletionTokens(req.Model, text, toolCalls)
 	streamChunks := kirotranslator.ConvertKiroStreamToAnthropic(data, req.Model, promptTokens, completionTokens)
 
 	return &kiroResult{

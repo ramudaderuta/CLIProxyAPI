@@ -1,12 +1,13 @@
-//go:build !windows
-// +build !windows
+//go:build integration && kiro_live && !windows
+// +build integration,kiro_live,!windows
 
 package kiro_test
 
 // This test performs end-to-end integration testing for the Kiro provider,
 // verifying that it correctly translates between OpenAI and Anthropic (Claude) formats.
 //
-// PREREQUISITES:
+// PREREQUISITES (live Kiro call, opt-in via build tags):
+//   - Build tags: integration, kiro_live
 //   - A valid kiro-auth-token.json file must exist in ~/.cli-proxy-api/
 //   - The test uses the real token for authentication
 //
@@ -20,7 +21,7 @@ package kiro_test
 //
 // 1. Run All Tests (OpenAI + Anthropic formats)
 //    ------------------------------------------
-//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads
+//    go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads
 //
 //    Expected duration: 10-30 seconds
 //
@@ -36,19 +37,19 @@ package kiro_test
 //
 // 2. Run Only OpenAI Format Tests
 //    -----------------------------
-//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions
+//    go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions
 //
 // 3. Run Only Anthropic/Claude Format Tests
 //    ---------------------------------------
-//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages
+//    go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages
 //
 // 4. Run Specific Test Cases
 //    ------------------------
 //    Single test case:
-//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions/openai_format_simple
+//    go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/OpenAI_Chat_Completions/openai_format_simple
 //
 //    Specific Claude test:
-//    go test -tags=integration -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages/claude_format_simple
+//    go test -tags='integration kiro_live' -v ./tests/integration/kiro -run TestKiroPayloads/Anthropic_Messages/claude_format_simple
 //
 //    Pattern matching (all simple format tests):
 //    go test -tags=integration -v ./tests/integration/kiro -run '.*/.*simple'

@@ -269,29 +269,6 @@ func TestKiroTranslation_WithTools(t *testing.T) {
 	}
 }
 
-// TestKiroTranslation_ModelMapping tests model mapping consistency
-func TestKiroTranslation_ModelMapping(t *testing.T) {
-	testCases := []struct {
-		openAIModel string
-		expected    string
-	}{
-		{"claude-sonnet-4-5", "CLAUDE_SONNET_4_5_20250929_V1_0"},
-		{"claude-sonnet-4-5-20250929", "CLAUDE_SONNET_4_5_20250929_V1_0"},
-		{"claude-sonnet-4-20250514", "CLAUDE_SONNET_4_20250514_V1_0"},
-		{"claude-3-7-sonnet-20250219", "CLAUDE_3_7_SONNET_20250219_V1_0"},
-		{"unknown-model", "CLAUDE_SONNET_4_5_20250929_V1_0"}, // Should default to claude-sonnet-4-5
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.openAIModel, func(t *testing.T) {
-			mapped := kirotranslator.MapModel(tc.openAIModel)
-			if mapped != tc.expected {
-				t.Errorf("Expected model mapping %s -> %s, got %s", tc.openAIModel, tc.expected, mapped)
-			}
-		})
-	}
-}
-
 // TestBuildRequestWithSystemAndHistory tests building Kiro requests with system prompts and message history
 // TestCompleteToolConversionFlow tests the complete tool conversion flow: Anthropic → Kiro → OpenAI/Anthropic
 func TestCompleteToolConversionFlow(t *testing.T) {

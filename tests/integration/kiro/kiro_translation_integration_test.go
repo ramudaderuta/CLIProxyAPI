@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	kirotranslator "github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro"
 )
 
 // TestKiroTranslationIntegration_CompleteFlow tests the complete translation flow
@@ -278,6 +278,8 @@ func TestKiroTranslationIntegration_ModelMapping(t *testing.T) {
 		openAIModel string
 		expected    string
 	}{
+		{"claude-opus-4-5", "claude-opus-4.5"},
+		{"claude-haiku-4-5", "claude-haiku-4.5"},
 		{"claude-sonnet-4-5", "CLAUDE_SONNET_4_5_20250929_V1_0"},
 		{"claude-sonnet-4-5-20250929", "CLAUDE_SONNET_4_5_20250929_V1_0"},
 		{"claude-sonnet-4-20250514", "CLAUDE_SONNET_4_20250514_V1_0"},

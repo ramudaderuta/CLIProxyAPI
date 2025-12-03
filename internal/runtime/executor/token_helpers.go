@@ -3,10 +3,31 @@ package executor
 import (
 	"fmt"
 	"strings"
+	"sync"
 
+	anthtokenizer "github.com/qhenkart/anthropic-tokenizer-go"
+	log "github.com/sirupsen/logrus"
 	"github.com/tidwall/gjson"
 	"github.com/tiktoken-go/tokenizer"
 )
+
+var (
+	anthropicTokenizerOnce sync.Once
+	anthropicTokenizer     *anthtokenizer.Tokenizer
+	anthropicTokenizerErr  error
+)
+
+func getAnthropicTokenizer() (*anthtokenizer.Tokenizer, error) {
+	anthropicTokenizerOnce.Do(func() {
+		anthropicTokenizer, anthropicTokenizerErr = anthtokenizer.New()
+	})
+	return anthropicTokenizer, anthropicTokenizerErr
+}
+
+func isClaudeFamily(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(m, "claude")
+}
 
 // tokenizerForModel returns a tokenizer codec suitable for an OpenAI-style model id.
 func tokenizerForModel(model string) (tokenizer.Codec, error) {
@@ -39,13 +60,55 @@ func tokenizerForModel(model string) (tokenizer.Codec, error) {
 
 // countOpenAIChatTokens approximates prompt tokens for OpenAI chat completions payloads.
 func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
+	segments, err := collectPromptSegments(payload)
+	if err != nil {
+		return 0, err
+	}
 	if enc == nil {
 		return 0, fmt.Errorf("encoder is nil")
 	}
-	if len(payload) == 0 {
+	return countSegmentsWithTokenizer(enc, segments)
+}
+
+func countClaudePromptTokens(payload []byte) (int64, error) {
+	segments, err := collectPromptSegments(payload)
+	if err != nil {
+		return 0, err
+	}
+	tok, err := getAnthropicTokenizer()
+	if err != nil || tok == nil {
+		if err != nil {
+			log.Debugf("anthropic tokenizer init failed: %v", err)
+		}
+		return 0, fmt.Errorf("anthropic tokenizer unavailable")
+	}
+	joined := strings.TrimSpace(strings.Join(segments, "\n"))
+	if joined == "" {
+		return 0, nil
+	}
+	return int64(tok.Tokens(joined)), nil
+}
+
+func countSegmentsWithTokenizer(enc tokenizer.Codec, segments []string) (int64, error) {
+	if enc == nil {
+		return 0, fmt.Errorf("encoder is nil")
+	}
+	joined := strings.TrimSpace(strings.Join(segments, "\n"))
+	if joined == "" {
 		return 0, nil
 	}
 
+	count, err := enc.Count(joined)
+	if err != nil {
+		return 0, err
+	}
+	return int64(count), nil
+}
+
+func collectPromptSegments(payload []byte) ([]string, error) {
+	if len(payload) == 0 {
+		return nil, nil
+	}
 	root := gjson.ParseBytes(payload)
 	segments := make([]string, 0, 32)
 
@@ -57,17 +120,41 @@ func countOpenAIChatTokens(enc tokenizer.Codec, payload []byte) (int64, error) {
 	collectOpenAIResponseFormat(root.Get("response_format"), &segments)
 	addIfNotEmpty(&segments, root.Get("input").String())
 	addIfNotEmpty(&segments, root.Get("prompt").String())
+	return segments, nil
+}
 
-	joined := strings.TrimSpace(strings.Join(segments, "\n"))
-	if joined == "" {
-		return 0, nil
+// estimateInputTokens estimates prompt/input tokens for a request payload.
+func estimateInputTokens(model string, payload []byte) (int64, error) {
+	if isClaudeFamily(model) {
+		if count, err := countClaudePromptTokens(payload); err == nil {
+			return count, nil
+		}
 	}
-
-	count, err := enc.Count(joined)
+	enc, err := tokenizerForModel(model)
 	if err != nil {
 		return 0, err
 	}
-	return int64(count), nil
+	return countOpenAIChatTokens(enc, payload)
+}
+
+// countTextTokens counts tokens for a plain text string using the best tokenizer for the model.
+func countTextTokens(model, text string) (int64, error) {
+	if strings.TrimSpace(text) == "" {
+		return 0, nil
+	}
+	if isClaudeFamily(model) {
+		tok, err := getAnthropicTokenizer()
+		if err == nil && tok != nil {
+			return int64(tok.Tokens(text)), nil
+		}
+		log.Debugf("countTextTokens anthropic tokenizer unavailable, fallback to tiktoken: %v", err)
+	}
+	enc, err := tokenizerForModel(model)
+	if err != nil {
+		return 0, err
+	}
+	n, err := enc.Count(text)
+	return int64(n), err
 }
 
 func collectAnthropicSystemPrompt(system gjson.Result, segments *[]string) {

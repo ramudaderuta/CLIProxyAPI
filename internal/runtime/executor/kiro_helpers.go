@@ -395,24 +395,31 @@ func parseExpiry(values ...any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-func estimatePromptTokens(model string, payload []byte) (int64, error) {
-	enc, err := tokenizerForModel(model)
-	if err != nil {
-		return 0, err
-	}
-	return countOpenAIChatTokens(enc, payload)
-}
+func estimateCompletionTokens(model, text string, toolCalls []kirotranslator.OpenAIToolCall) int64 {
+	total := int64(0)
 
-func estimateCompletionTokens(text string, toolCalls []kirotranslator.OpenAIToolCall) int64 {
-	length := utf8.RuneCountInString(text)
-	for _, call := range toolCalls {
-		length += utf8.RuneCountInString(call.Arguments)
+	// Assistant text
+	if t, err := countTextTokens(model, text); err == nil {
+		total += t
+	} else {
+		length := utf8.RuneCountInString(text)
+		total += int64(math.Ceil(float64(length) / 4))
 	}
-	tokens := math.Ceil(float64(length) / 4)
-	if tokens < 1 {
+
+	// Tool call arguments (JSON strings)
+	for _, call := range toolCalls {
+		if t, err := countTextTokens(model, call.Arguments); err == nil {
+			total += t
+		} else {
+			length := utf8.RuneCountInString(call.Arguments)
+			total += int64(math.Ceil(float64(length) / 4))
+		}
+	}
+
+	if total < 1 {
 		return 1
 	}
-	return int64(tokens)
+	return total
 }
 
 func usageDetail(prompt, completion int64) usage.Detail {
