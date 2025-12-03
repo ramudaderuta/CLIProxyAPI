@@ -1,4 +1,4 @@
-package kiro
+package helpers
 
 import (
 	"strings"
@@ -120,7 +120,7 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 	}
 
 	if !gjson.Valid(payload) {
-		if text := sanitizeStreamingTextChunk(payload); text != "" {
+		if text := SanitizeStreamingTextChunk(payload); text != "" {
 			b.appendText(text)
 		}
 		return
@@ -128,11 +128,11 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 
 	node := gjson.Parse(payload)
 
-	if isMeteringPayload(node) {
+	if IsMeteringPayload(node) {
 		return
 	}
 
-	if isContextUsagePayload(node) {
+	if IsContextUsagePayload(node) {
 		return
 	}
 
@@ -157,7 +157,7 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 
 	// Legacy text chunks
 	if value := node.Get("content"); value.Exists() {
-		if text := sanitizeStreamingTextChunk(value.String()); text != "" {
+		if text := SanitizeStreamingTextChunk(value.String()); text != "" {
 			b.appendText(text)
 		}
 		if node.Get("followupPrompt").Bool() {
@@ -168,7 +168,7 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 
 	// Legacy tool chunks
 	if name := strings.TrimSpace(node.Get("name").String()); name != "" {
-		id := SanitizeToolCallID(firstString(node.Get("toolUseId").String(), node.Get("tool_use_id").String()))
+		id := SanitizeToolCallID(FirstString(node.Get("toolUseId").String(), node.Get("tool_use_id").String()))
 		if id == "" {
 			return
 		}
@@ -180,7 +180,7 @@ func (b *anthropicLegacyStreamBuilder) consume(frame kiroStreamFrame) {
 	}
 
 	// Fallback: treat anything else as plain text
-	if text := sanitizeStreamingTextChunk(node.String()); text != "" {
+	if text := SanitizeStreamingTextChunk(node.String()); text != "" {
 		b.appendText(text)
 	}
 }
@@ -189,8 +189,8 @@ func (b *anthropicLegacyStreamBuilder) ensureMessageStart() {
 	if b.messageStarted {
 		return
 	}
-	payload := buildMessageStartEvent(b.model)
-	b.events = append(b.events, buildSSEEvent("message_start", payload))
+	payload := BuildMessageStartEvent(b.model)
+	b.events = append(b.events, BuildSSEEvent("message_start", payload))
 	b.messageStarted = true
 }
 
@@ -201,8 +201,8 @@ func (b *anthropicLegacyStreamBuilder) ensureTextBlock() {
 	b.ensureMessageStart()
 	b.textIndex = b.nextBlockIndex
 	b.nextBlockIndex++
-	block := buildContentBlockStartEvent(b.textIndex)
-	b.events = append(b.events, buildSSEEvent("content_block_start", block))
+	block := BuildContentBlockStartEvent(b.textIndex)
+	b.events = append(b.events, BuildSSEEvent("content_block_start", block))
 	b.textStarted = true
 }
 
@@ -220,7 +220,7 @@ func (b *anthropicLegacyStreamBuilder) appendText(text string) {
 			"text": text,
 		},
 	}
-	b.events = append(b.events, buildSSEEvent("content_block_delta", payload))
+	b.events = append(b.events, BuildSSEEvent("content_block_delta", payload))
 }
 
 func (b *anthropicLegacyStreamBuilder) appendToolDelta(id, name string, node gjson.Result) {
@@ -258,7 +258,7 @@ func (b *anthropicLegacyStreamBuilder) ensureToolBlock(id, name string) int {
 			"input": map[string]any{},
 		},
 	}
-	b.events = append(b.events, buildSSEEvent("content_block_start", payload))
+	b.events = append(b.events, BuildSSEEvent("content_block_start", payload))
 	return index
 }
 
@@ -274,7 +274,7 @@ func (b *anthropicLegacyStreamBuilder) ensureToolFragment(id string) *strings.Bu
 func (b *anthropicLegacyStreamBuilder) stopTool(id string) {
 	if idx, ok := b.toolIndexes[id]; ok && !b.toolStopped[id] {
 		if buf, ok := b.toolFragments[id]; ok && buf.Len() > 0 {
-			partialJSON := normalizeArguments(buf.String())
+			partialJSON := NormalizeArguments(buf.String())
 			if partialJSON == "" {
 				partialJSON = buf.String()
 			}
@@ -286,13 +286,13 @@ func (b *anthropicLegacyStreamBuilder) stopTool(id string) {
 					"partial_json": partialJSON,
 				},
 			}
-			b.events = append(b.events, buildSSEEvent("content_block_delta", payload))
+			b.events = append(b.events, BuildSSEEvent("content_block_delta", payload))
 		}
 		payload := map[string]any{
 			"type":  "content_block_stop",
 			"index": idx,
 		}
-		b.events = append(b.events, buildSSEEvent("content_block_stop", payload))
+		b.events = append(b.events, BuildSSEEvent("content_block_stop", payload))
 		b.toolStopped[id] = true
 		delete(b.toolFragments, id)
 	}
@@ -304,7 +304,7 @@ func (b *anthropicLegacyStreamBuilder) stopTextBlock() {
 			"type":  "content_block_stop",
 			"index": b.textIndex,
 		}
-		b.events = append(b.events, buildSSEEvent("content_block_stop", payload))
+		b.events = append(b.events, BuildSSEEvent("content_block_stop", payload))
 		b.textStopped = true
 	}
 }
@@ -325,25 +325,16 @@ func (b *anthropicLegacyStreamBuilder) finalize() [][]byte {
 	} else if len(b.toolIndexes) > 0 {
 		stopReason = "tool_use"
 	}
-	delta := buildMessageDeltaEvent(stopReason, b.promptTokens, b.completionTokens)
+	delta := BuildMessageDeltaEvent(stopReason, b.promptTokens, b.completionTokens)
 	if b.followupPrompt {
 		if deltaMap, ok := delta["delta"].(map[string]any); ok {
 			deltaMap["followup_prompt"] = true
 			deltaMap["stop_reason"] = "followup"
 		}
 	}
-	b.events = append(b.events, buildSSEEvent("message_delta", delta))
-	b.events = append(b.events, buildSSEEvent("message_stop", buildMessageStopEvent()))
+	b.events = append(b.events, BuildSSEEvent("message_delta", delta))
+	b.events = append(b.events, BuildSSEEvent("message_stop", BuildMessageStopEvent()))
 	return b.events
-}
-
-func sanitizeStreamingTextChunk(text string) string {
-	return sanitizeAssistantTextWithOptions(text, assistantTextSanitizeOptions{
-		allowBlank:         true,
-		collapseWhitespace: false,
-		trimResult:         false,
-		dropEmptyLines:     false,
-	})
 }
 
 func extractToolPartial(input gjson.Result) string {

@@ -1,4 +1,4 @@
-package kiro
+package claude
 
 import (
 	"encoding/json"
@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/helpers"
 	"github.com/tidwall/gjson"
 )
 
@@ -142,7 +142,7 @@ func (p *KiroResponseParser) parseJSONResponse(data []byte) (string, []OpenAIToo
 	// Extract tool calls
 	toolCalls := p.extractAllToolCalls(root)
 
-	cleanContent := sanitizeAssistantText(strings.TrimSpace(content))
+	cleanContent := helpers.SanitizeAssistantText(strings.TrimSpace(content))
 	return cleanContent, deduplicateToolCalls(toolCalls)
 }
 
@@ -933,7 +933,7 @@ func (p *KiroSSEStreamParser) ParseStream(raw string) (string, []OpenAIToolCall)
 	p.finalizeAllToolCalls(context)
 
 	// Extract results
-	content := sanitizeAssistantText(strings.TrimSpace(context.TextBuilder.String()))
+	content := helpers.SanitizeAssistantText(strings.TrimSpace(context.TextBuilder.String()))
 	toolCalls := p.extractToolCalls(context)
 
 	// Parse bracket-style tool calls as fallback
@@ -990,7 +990,7 @@ func (p *KiroSSEStreamParser) processSSELine(line string, context *SSEProcessing
 
 	// Process valid JSON line
 	node := p.jsonProcessor.ParseJSON([]byte(line))
-	if isContextUsagePayload(node) {
+	if helpers.IsContextUsagePayload(node) {
 		return
 	}
 	eventType := node.Get("type").String()
@@ -1003,7 +1003,7 @@ func (p *KiroSSEStreamParser) processMalformedLine(line string, context *SSEProc
 	for _, jsonObj := range jsonObjects {
 		if p.jsonProcessor.IsValidJSON([]byte(jsonObj)) {
 			node := p.jsonProcessor.ParseJSON([]byte(jsonObj))
-			if isContextUsagePayload(node) {
+			if helpers.IsContextUsagePayload(node) {
 				continue
 			}
 			eventType := node.Get("type").String()
@@ -1190,121 +1190,6 @@ func tryUnmarshalToolInput(data string) (map[string]any, bool) {
 	return input, true
 }
 
-var (
-	protocolNoisePrefixes = []string{
-		"event-type",
-		"message-type",
-		"content-length",
-		"amz-sdk-request",
-		"x-amzn",
-		"amzn-",
-		"transfer-encoding",
-	}
-	protocolNoisePatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)content-type\s*[: ]*\s*application/json`),
-		regexp.MustCompile(`(?i)content-type`),
-	}
-	collapseWhitespaceRegex = regexp.MustCompile(`[ \f\r]+`)
-)
-
-type assistantTextSanitizeOptions struct {
-	allowBlank         bool
-	collapseWhitespace bool
-	trimResult         bool
-	dropEmptyLines     bool
-}
-
-func sanitizeAssistantText(text string) string {
-	return sanitizeAssistantTextWithOptions(text, assistantTextSanitizeOptions{
-		allowBlank:         false,
-		collapseWhitespace: true,
-		trimResult:         true,
-		dropEmptyLines:     true,
-	})
-}
-
-func sanitizeAssistantTextWithOptions(text string, opts assistantTextSanitizeOptions) string {
-	if strings.TrimSpace(text) == "" && !opts.allowBlank {
-		return ""
-	}
-
-	var builder strings.Builder
-	builder.Grow(len(text))
-	for _, r := range text {
-		switch {
-		case r == '\r':
-			continue
-		case r < 32:
-			if r == '\n' {
-				builder.WriteByte('\n')
-			} else if r == '\t' {
-				builder.WriteByte('\t')
-			} else if r == '\v' {
-				builder.WriteByte(' ')
-			}
-			continue
-		case unicode.IsControl(r):
-			continue
-		}
-		builder.WriteRune(r)
-	}
-
-	cleaned := builder.String()
-	if cleaned == "" {
-		return ""
-	}
-
-	for _, pattern := range protocolNoisePatterns {
-		cleaned = pattern.ReplaceAllString(cleaned, "")
-	}
-
-	lines := strings.Split(cleaned, "\n")
-	filtered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			if opts.dropEmptyLines {
-				continue
-			}
-			filtered = append(filtered, line)
-			continue
-		}
-		lower := strings.ToLower(trimmed)
-		if shouldDropProtocolLine(lower) {
-			continue
-		}
-		if opts.collapseWhitespace {
-			filtered = append(filtered, trimmed)
-		} else {
-			filtered = append(filtered, line)
-		}
-	}
-
-	result := strings.Join(filtered, "\n")
-	if opts.collapseWhitespace {
-		result = collapseWhitespaceRegex.ReplaceAllString(result, " ")
-	}
-	if opts.trimResult {
-		result = strings.TrimSpace(result)
-	}
-	if result == "" && !opts.allowBlank {
-		return ""
-	}
-	return result
-}
-
-func shouldDropProtocolLine(line string) bool {
-	if line == "" {
-		return false
-	}
-	for _, prefix := range protocolNoisePrefixes {
-		if strings.HasPrefix(line, prefix) {
-			return true
-		}
-	}
-	return false
-}
-
 func buildToolLeadIn(toolCalls []OpenAIToolCall) string {
 	if len(toolCalls) == 0 {
 		return ""
@@ -1381,7 +1266,7 @@ func BuildAnthropicMessagePayload(model, content string, toolCalls []OpenAIToolC
 	// Allow empty tool call IDs for edge case compatibility
 
 	// Build content blocks
-	content = sanitizeAssistantText(strings.TrimSpace(content))
+	content = helpers.SanitizeAssistantText(strings.TrimSpace(content))
 	if content == "" && len(toolCalls) > 0 {
 		content = buildToolLeadIn(toolCalls)
 	}
@@ -1462,32 +1347,32 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 	outputTokens := completionTokens
 	inputTokens := promptTokens
 
-	messageStart := buildMessageStartEvent(model)
-	chunks = append(chunks, buildSSEEvent("message_start", messageStart))
+	messageStart := helpers.BuildMessageStartEvent(model)
+	chunks = append(chunks, helpers.BuildSSEEvent("message_start", messageStart))
 
 	trimmed := strings.TrimSpace(content)
 
 	for idx, call := range toolCalls {
 		toolStart := buildToolUseStartEvent(call, idx)
-		chunks = append(chunks, buildSSEEvent("content_block_start", toolStart))
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_start", toolStart))
 
 		toolDelta := buildToolUseDeltaEvent(call, idx)
-		chunks = append(chunks, buildSSEEvent("content_block_delta", toolDelta))
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_delta", toolDelta))
 
-		toolStop := buildContentBlockStopEvent(idx)
-		chunks = append(chunks, buildSSEEvent("content_block_stop", toolStop))
+		toolStop := helpers.BuildContentBlockStopEvent(idx)
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_stop", toolStop))
 	}
 
 	if trimmed != "" {
 		textIndex := len(toolCalls)
-		contentStart := buildContentBlockStartEvent(textIndex)
-		chunks = append(chunks, buildSSEEvent("content_block_start", contentStart))
+		contentStart := helpers.BuildContentBlockStartEvent(textIndex)
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_start", contentStart))
 
-		contentDelta := buildContentBlockDeltaEvent(textIndex, trimmed)
-		chunks = append(chunks, buildSSEEvent("content_block_delta", contentDelta))
+		contentDelta := helpers.BuildContentBlockDeltaEvent(textIndex, trimmed)
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_delta", contentDelta))
 
-		contentStop := buildContentBlockStopEvent(textIndex)
-		chunks = append(chunks, buildSSEEvent("content_block_stop", contentStop))
+		contentStop := helpers.BuildContentBlockStopEvent(textIndex)
+		chunks = append(chunks, helpers.BuildSSEEvent("content_block_stop", contentStop))
 	}
 
 	stopReason := ""
@@ -1497,65 +1382,11 @@ func BuildAnthropicStreamingChunks(id, model string, created int64, content stri
 		stopReason = "end_turn"
 	}
 
-	messageDelta := buildMessageDeltaEvent(stopReason, inputTokens, outputTokens)
-	chunks = append(chunks, buildSSEEvent("message_delta", messageDelta))
-	chunks = append(chunks, buildSSEEvent("message_stop", buildMessageStopEvent()))
+	messageDelta := helpers.BuildMessageDeltaEvent(stopReason, inputTokens, outputTokens)
+	chunks = append(chunks, helpers.BuildSSEEvent("message_delta", messageDelta))
+	chunks = append(chunks, helpers.BuildSSEEvent("message_stop", helpers.BuildMessageStopEvent()))
 
 	return chunks
-}
-
-// Helper functions for building SSE event components
-
-// buildMessageStartEvent creates the message_start event structure
-func buildMessageStartEvent(model string) map[string]any {
-	return map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            fmt.Sprintf("msg_%s", uuid.NewString()),
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []map[string]any{},
-			"model":         model,
-			"stop_reason":   nil,
-			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
-			"usage": map[string]any{
-				"input_tokens":  0,
-				"output_tokens": 0, // BUG FIX: output_tokens should be 0 at message_start
-			},
-		},
-	}
-}
-
-// buildContentBlockStartEvent creates the content_block_start event structure
-func buildContentBlockStartEvent(index int) map[string]any {
-	return map[string]any{
-		"type":  "content_block_start",
-		"index": index,
-		"content_block": map[string]any{
-			"type": "text",
-			"text": "",
-		},
-	}
-}
-
-// buildContentBlockDeltaEvent creates the content_block_delta event structure for text
-func buildContentBlockDeltaEvent(index int, content string) map[string]any {
-	return map[string]any{
-		"type":  "content_block_delta",
-		"index": index,
-		"delta": map[string]any{
-			"type": "text_delta",
-			"text": content,
-		},
-	}
-}
-
-// buildContentBlockStopEvent creates the content_block_stop event structure
-func buildContentBlockStopEvent(index int) map[string]any {
-	return map[string]any{
-		"type":  "content_block_stop",
-		"index": index,
-	}
 }
 
 // buildToolUseStartEvent creates the content_block_start event structure for tool_use
@@ -1587,40 +1418,6 @@ func buildToolUseDeltaEvent(call OpenAIToolCall, index int) map[string]any {
 			"partial_json": string(marshalJSON(input)),
 		},
 	}
-}
-
-// buildMessageDeltaEvent creates the message_delta event structure
-func buildMessageDeltaEvent(stopReason string, inputTokens, outputTokens int64) map[string]any {
-	if strings.TrimSpace(stopReason) == "" {
-		stopReason = "end_turn"
-	}
-	return map[string]any{
-		"type": "message_delta",
-		"delta": map[string]any{
-			"stop_reason":   stopReason,
-			"stop_sequence": nil, // BUG FIX: stop_sequence should be null per Anthropic spec
-		},
-		"usage": map[string]any{
-			"input_tokens":  inputTokens,
-			"output_tokens": outputTokens,
-		},
-	}
-}
-
-// buildMessageStopEvent creates the message_stop event structure
-func buildMessageStopEvent() map[string]any {
-	return map[string]any{
-		"type": "message_stop",
-	}
-}
-
-// buildSSEEvent creates a properly formatted SSE event string
-func buildSSEEvent(eventType string, payload map[string]any) []byte {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return []byte{}
-	}
-	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventType, string(data)))
 }
 
 // Helper function to marshal JSON without errors

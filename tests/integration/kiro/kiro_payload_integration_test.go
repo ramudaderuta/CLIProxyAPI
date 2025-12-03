@@ -1,3 +1,6 @@
+//go:build !windows
+// +build !windows
+
 package kiro_test
 
 // This test performs end-to-end integration testing for the Kiro provider,
@@ -87,6 +90,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -225,13 +229,13 @@ func startServer(t *testing.T, rootDir string) (*exec.Cmd, int, func()) {
 		SDKConfig: sdkconfig.SDKConfig{
 			APIKeys: []string{"test-api-key"},
 		},
-		Port:                     8318, // Use a different port for testing to avoid conflict
-		Debug:                    true,
-		LoggingToFile:            true,
-		UsageStatisticsEnabled:   false,
-		RequestRetry:             3,
-		MaxRetryInterval:         30,
-		AuthDir:                  "~/.cli-proxy-api", // Use real auth dir with real token
+		Port:                             8318, // Use a different port for testing to avoid conflict
+		Debug:                            true,
+		LoggingToFile:                    true,
+		UsageStatisticsEnabled:           false,
+		RequestRetry:                     3,
+		MaxRetryInterval:                 30,
+		AuthDir:                          "~/.cli-proxy-api", // Use real auth dir with real token
 		AmpRestrictManagementToLocalhost: true,
 	}
 
@@ -248,12 +252,17 @@ func startServer(t *testing.T, rootDir string) (*exec.Cmd, int, func()) {
 	cmd.Dir = rootDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	// Put the server in its own process group so we can kill both the go-run wrapper
+	// and the compiled server it spawns. Otherwise the child keeps stdout open and
+	// `go test` hits ErrWaitDelay after the tests finish.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	err = cmd.Start()
 	require.NoError(t, err, "Failed to start server")
 
 	cleanup := func() {
-		_ = cmd.Process.Kill()
+		// Kill the entire process group to ensure the spawned server exits too.
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		_ = cmd.Wait()
 		_ = os.Remove(tempConfigPath)
 		_ = fileLogger.Close()
@@ -316,6 +325,17 @@ func sendRequestWithHeaders(t *testing.T, url, apiKey string, payload []byte, ex
 		req.Header.Set(k, v)
 	}
 
+	// Log request payload (pretty-printed when possible) and headers to the debug log file.
+	prettyPayload := payload
+	if len(payload) > 0 {
+		var buf bytes.Buffer
+		if err := json.Indent(&buf, payload, "", "  "); err == nil {
+			prettyPayload = buf.Bytes()
+		}
+	}
+
+	logrus.Infof("kiro integration: sending request url=%s headers=%v payload=%s", url, req.Header, string(prettyPayload))
+
 	// Timeout reduced from 30s to 10s to prevent long hangs
 	client := &http.Client{Timeout: 10 * time.Second}
 
@@ -325,6 +345,7 @@ func sendRequestWithHeaders(t *testing.T, url, apiKey string, payload []byte, ex
 
 	if err != nil {
 		t.Logf("Request failed after %v: %v", duration, err)
+		logrus.WithError(err).Errorf("kiro integration: request failed url=%s duration=%v", url, duration)
 		require.NoError(t, err, "Request failed after %v", duration)
 	}
 	defer resp.Body.Close()
@@ -334,6 +355,7 @@ func sendRequestWithHeaders(t *testing.T, url, apiKey string, payload []byte, ex
 
 	bodySize := len(body)
 	t.Logf("Request completed in %v, status=%d, body_size=%d bytes", duration, resp.StatusCode, bodySize)
+	logrus.Infof("kiro integration: response status=%d duration=%v body_size=%d body=%s", resp.StatusCode, duration, bodySize, string(body))
 
 	if resp.StatusCode != 200 {
 		t.Logf("Non-200 response: %s", string(body))

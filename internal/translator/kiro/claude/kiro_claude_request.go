@@ -1,4 +1,4 @@
-package kiro
+package claude
 
 import (
 	"crypto/sha256"
@@ -13,6 +13,7 @@ import (
 
 	"github.com/google/uuid"
 	authkiro "github.com/router-for-me/CLIProxyAPI/v6/internal/auth/kiro"
+	"github.com/router-for-me/CLIProxyAPI/v6/internal/translator/kiro/helpers"
 	"github.com/tidwall/gjson"
 )
 
@@ -27,6 +28,84 @@ type toolContextEntry struct {
 	Description string
 	Hash        string
 	Length      int
+}
+
+// mergeAdjacentSameRole collapses consecutive messages with the same role into a single message.
+// This mirrors the defensive fix from AIClient-2-API (commit 1e724c2) to reduce fragmented
+// transcripts emitted by some clients.
+func mergeAdjacentSameRole(messages []gjson.Result) []gjson.Result {
+	merged := make([]gjson.Result, 0, len(messages))
+	for _, msg := range messages {
+		if len(merged) == 0 {
+			merged = append(merged, msg)
+			continue
+		}
+
+		prev := merged[len(merged)-1]
+		prevRole := strings.ToLower(strings.TrimSpace(prev.Get("role").String()))
+		currRole := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if prevRole != "assistant" && prevRole != "user" {
+			merged = append(merged, msg)
+			continue
+		}
+		if prevRole != currRole {
+			merged = append(merged, msg)
+			continue
+		}
+
+		prevMap, ok1 := prev.Value().(map[string]any)
+		currMap, ok2 := msg.Value().(map[string]any)
+		if !ok1 || !ok2 {
+			merged = append(merged, msg)
+			continue
+		}
+
+		if hasToolResult(prevMap["content"]) || hasToolResult(currMap["content"]) {
+			merged = append(merged, msg)
+			continue
+		}
+
+		prevMap = mergeMessageContent(prevMap, currMap)
+		bytes, err := json.Marshal(prevMap)
+		if err != nil {
+			merged = append(merged, msg)
+			continue
+		}
+		merged[len(merged)-1] = gjson.ParseBytes(bytes)
+	}
+	return merged
+}
+
+func mergeMessageContent(prev, curr map[string]any) map[string]any {
+	prevContent := toContentArray(prev["content"])
+	currContent := toContentArray(curr["content"])
+	prev["content"] = append(prevContent, currContent...)
+	return prev
+}
+
+func hasToolResult(raw any) bool {
+	content := toContentArray(raw)
+	for _, item := range content {
+		if obj, ok := item.(map[string]any); ok {
+			typ := strings.ToLower(strings.TrimSpace(fmt.Sprint(obj["type"])))
+			if typ == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// toContentArray normalizes a content field into []any of structured blocks.
+func toContentArray(raw any) []any {
+	switch v := raw.(type) {
+	case []any:
+		return v
+	case string:
+		return []any{map[string]any{"type": "text", "text": v}}
+	default:
+		return []any{map[string]any{"type": "text", "text": fmt.Sprint(v)}}
+	}
 }
 
 func isToolResultOnlyMessage(msg gjson.Result) bool {
@@ -73,7 +152,25 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 	if !messages.Exists() || !messages.IsArray() {
 		return nil, fmt.Errorf("kiro translator: messages array is required")
 	}
-	messageArray := messages.Array()
+	messageArray := mergeAdjacentSameRole(messages.Array())
+
+	// Defensive fix mirroring AIClient-2-API commit 1e724c2: drop a trailing assistant
+	// message whose only content is a single "{" text block (buggy npm Claude Code client
+	// sometimes emits this). This prevents Kiro from receiving a malformed current turn.
+	if len(messageArray) > 0 {
+		last := messageArray[len(messageArray)-1]
+		if strings.EqualFold(last.Get("role").String(), "assistant") {
+			content := last.Get("content")
+			if content.IsArray() && len(content.Array()) == 1 {
+				first := content.Array()[0]
+				typ := strings.ToLower(strings.TrimSpace(first.Get("type").String()))
+				text := strings.TrimSpace(first.Get("text").String())
+				if typ == "text" && text == "{" {
+					messageArray = messageArray[:len(messageArray)-1]
+				}
+			}
+		}
+	}
 	if len(messageArray) == 0 {
 		return nil, fmt.Errorf("kiro translator: messages array is required")
 	}
@@ -102,7 +199,7 @@ func BuildRequest(model string, payload []byte, token *authkiro.KiroTokenStorage
 		}
 	}
 
-	kiroModel := MapModel(model)
+	kiroModel := helpers.MapModel(model)
 
 	history := make([]map[string]any, 0, len(messageArray))
 	startIndex := 0
@@ -317,14 +414,13 @@ func wrapUserMessage(content, model string, toolResults, toolUses, images []map[
 			"origin":  origin,
 		},
 	}
-	context := map[string]any{}
 	if len(toolResults) > 0 {
-		context["toolResults"] = toolResults
-	}
-	if len(tools) > 0 {
-		context["tools"] = tools
-	}
-	if len(context) > 0 {
+		context := map[string]any{
+			"toolResults": toolResults,
+		}
+		if len(tools) > 0 {
+			context["tools"] = tools
+		}
 		payload["userInputMessage"].(map[string]any)["userInputMessageContext"] = context
 	}
 	if len(images) > 0 {
@@ -372,20 +468,20 @@ func extractUserMessage(msg gjson.Result) (string, []map[string]any, []map[strin
 				resultContent := extractNestedContent(part.Get("content"))
 				// Remove incorrect fallback to non-existent "text" field
 				// Tool results use content field, not text field
-				toolUseId := SanitizeToolCallID(firstString(
+				toolUseId := helpers.SanitizeToolCallID(helpers.FirstString(
 					part.Get("tool_use_id").String(),
 					part.Get("tool_useId").String(),
 				))
 				// Always create tool result entry, even with empty content
 				toolResults = append(toolResults, map[string]any{
 					"content":   []map[string]string{{"text": resultContent}},
-					"status":    firstString(part.Get("status").String(), "success"),
+					"status":    helpers.FirstString(part.Get("status").String(), "success"),
 					"toolUseId": toolUseId,
 				})
 			case "tool_use":
 				toolUses = append(toolUses, map[string]any{
 					"name":      part.Get("name").String(),
-					"toolUseId": SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String())),
+					"toolUseId": helpers.SanitizeToolCallID(helpers.FirstString(part.Get("id").String(), part.Get("tool_use_id").String())),
 					"input":     parseJSONSafely(part.Get("input"), part.Get("arguments")),
 				})
 			case "image", "input_image":
@@ -416,7 +512,7 @@ func extractAssistantMessage(msg gjson.Result) (string, []map[string]any) {
 			case "tool_use":
 				toolUses = append(toolUses, map[string]any{
 					"name":      part.Get("name").String(),
-					"toolUseId": SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String())),
+					"toolUseId": helpers.SanitizeToolCallID(helpers.FirstString(part.Get("id").String(), part.Get("tool_use_id").String())),
 					"input":     parseJSONSafely(part.Get("input"), part.Get("arguments")),
 				})
 			}
@@ -721,30 +817,6 @@ func parseJSONSafely(primary, fallback gjson.Result) any {
 	return nil
 }
 
-func firstString(values ...string) string {
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
-// ValidateToolCallID checks if a tool_call_id is non-empty after trimming whitespace.
-func ValidateToolCallID(id string) bool {
-	return strings.TrimSpace(id) != ""
-}
-
-// SanitizeToolCallID trims whitespace and ensures tool_call_id is never empty.
-// If the ID is empty after trimming, a new UUID is generated.
-func SanitizeToolCallID(id string) string {
-	trimmed := strings.TrimSpace(id)
-	if trimmed != "" {
-		return trimmed
-	}
-	return "call_" + uuid.New().String()
-}
-
 func sanitizeTextContent(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
@@ -992,7 +1064,7 @@ func (p *planModeTracker) handleToolUse(part gjson.Result) {
 	if action == "" {
 		return
 	}
-	id := SanitizeToolCallID(firstString(part.Get("id").String(), part.Get("tool_use_id").String()))
+	id := helpers.SanitizeToolCallID(helpers.FirstString(part.Get("id").String(), part.Get("tool_use_id").String()))
 	if id == "" {
 		return
 	}
@@ -1011,7 +1083,7 @@ func (p *planModeTracker) handleToolUse(part gjson.Result) {
 }
 
 func (p *planModeTracker) handleToolResult(part gjson.Result) {
-	id := SanitizeToolCallID(firstString(part.Get("tool_use_id").String(), part.Get("tool_useId").String()))
+	id := helpers.SanitizeToolCallID(helpers.FirstString(part.Get("tool_use_id").String(), part.Get("tool_useId").String()))
 	if id == "" {
 		return
 	}

@@ -1,4 +1,4 @@
-package kiro
+package helpers
 
 import (
 	"strings"
@@ -8,7 +8,7 @@ import (
 
 // isMeteringPayload returns true when the JSON payload represents a meter/usage event
 // (unit/unitPlural/usage trio with no other semantic data).
-func isMeteringPayload(node gjson.Result) bool {
+func IsMeteringPayload(node gjson.Result) bool {
 	if !node.Exists() {
 		return false
 	}
@@ -35,17 +35,17 @@ func isMeteringPayload(node gjson.Result) bool {
 	return !extra
 }
 
-func isMeteringPayloadString(raw string) bool {
+func IsMeteringPayloadString(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || !gjson.Valid(trimmed) {
 		return false
 	}
-	return isMeteringPayload(gjson.Parse(trimmed))
+	return IsMeteringPayload(gjson.Parse(trimmed))
 }
 
 // isContextUsagePayload identifies upstream context-usage telemetry payloads so
 // we can drop them before surfacing a response to Claude Code.
-func isContextUsagePayload(node gjson.Result) bool {
+func IsContextUsagePayload(node gjson.Result) bool {
 	if !node.Exists() || !node.IsObject() {
 		return false
 	}
@@ -76,10 +76,10 @@ func isContextUsagePayload(node gjson.Result) bool {
 	return hasMetric && allowed
 }
 
-func isContextUsagePayloadString(raw string) bool {
+func IsContextUsagePayloadString(raw string) bool {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" || !gjson.Valid(trimmed) {
 		return false
 	}
-	return isContextUsagePayload(gjson.Parse(trimmed))
+	return IsContextUsagePayload(gjson.Parse(trimmed))
 }

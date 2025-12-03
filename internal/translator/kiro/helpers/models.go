@@ -1,4 +1,4 @@
-package kiro
+package helpers
 
 import "strings"
 
