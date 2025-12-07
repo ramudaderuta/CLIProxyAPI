@@ -60,6 +60,39 @@ CLIProxyAPI includes integrated support for [Amp CLI](https://ampcode.com) and A
 - Watcher: [docs/sdk-watcher.md](docs/sdk-watcher.md)
 - Custom Provider Example: `examples/custom-provider`
 
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## Who is with us?
+
+Those projects are based on CLIProxyAPI:
+
+### [vibeproxy](https://github.com/automazeio/vibeproxy)
+
+Native macOS menu bar app to use your Claude Code & ChatGPT subscriptions with AI coding tools - no API keys needed
+
+### [Subtitle Translator](https://github.com/VjayC/SRT-Subtitle-Translator-Validator)
+
+Browser-based tool to translate SRT subtitles using your Gemini subscription via CLIProxyAPI with automatic validation/error correction - no API keys needed
+
+### [CCS (Claude Code Switch)](https://github.com/kaitranntt/ccs)
+
+CLI wrapper for instant switching between multiple Claude accounts and alternative models (Gemini, Codex, Antigravity) via CLIProxyAPI OAuth - no API keys needed
+
+### [ProxyPal](https://github.com/heyhuynhgiabuu/proxypal)
+
+Native macOS GUI for managing CLIProxyAPI: configure providers, model mappings, and endpoints via OAuth - no API keys needed.
+
+> [!NOTE]
+> If you developed a project based on CLIProxyAPI, please open a PR to add it to this list.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
