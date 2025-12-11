@@ -75,14 +75,19 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	upstreamModel := util.ResolveOriginalModel(req.Model, req.Metadata)
+
 	// Official Gemini API via API key or OAuth bearer
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
 	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), false)
 	body = applyThinkingMetadata(body, req.Metadata, req.Model)
+	body = util.ApplyDefaultThinkingIfNeeded(req.Model, body)
+	body = util.NormalizeGeminiThinkingBudget(req.Model, body)
 	body = util.StripThinkingConfigIfUnsupported(req.Model, body)
 	body = fixGeminiImageAspectRatio(req.Model, body)
 	body = applyPayloadConfig(e.cfg, req.Model, body)
+	body, _ = sjson.SetBytes(body, "model", upstreamModel)
 
 	action := "generateContent"
 	if req.Metadata != nil {
@@ -91,7 +96,7 @@ func (e *GeminiExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, r
 		}
 	}
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, action)
+	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, upstreamModel, action)
 	if opts.Alt != "" && action != "countTokens" {
 		url = url + fmt.Sprintf("?$alt=%s", opts.Alt)
 	}
@@ -165,16 +170,21 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 	reporter := newUsageReporter(ctx, e.Identifier(), req.Model, auth)
 	defer reporter.trackFailure(ctx, &err)
 
+	upstreamModel := util.ResolveOriginalModel(req.Model, req.Metadata)
+
 	from := opts.SourceFormat
 	to := sdktranslator.FromString("gemini")
 	body := sdktranslator.TranslateRequest(from, to, req.Model, bytes.Clone(req.Payload), true)
 	body = applyThinkingMetadata(body, req.Metadata, req.Model)
+	body = util.ApplyDefaultThinkingIfNeeded(req.Model, body)
+	body = util.NormalizeGeminiThinkingBudget(req.Model, body)
 	body = util.StripThinkingConfigIfUnsupported(req.Model, body)
 	body = fixGeminiImageAspectRatio(req.Model, body)
 	body = applyPayloadConfig(e.cfg, req.Model, body)
+	body, _ = sjson.SetBytes(body, "model", upstreamModel)
 
 	baseURL := resolveGeminiBaseURL(auth)
-	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, req.Model, "streamGenerateContent")
+	url := fmt.Sprintf("%s/%s/models/%s:%s", baseURL, glAPIVersion, upstreamModel, "streamGenerateContent")
 	if opts.Alt == "" {
 		url = url + "?alt=sse"
 	} else {
@@ -239,7 +249,7 @@ func (e *GeminiExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.A
 			}
 		}()
 		scanner := bufio.NewScanner(httpResp.Body)
-		scanner.Buffer(nil, 20_971_520)
+		scanner.Buffer(nil, 52_428_800) // 50MB
 		var param any
 		for scanner.Scan() {
 			line := scanner.Bytes()

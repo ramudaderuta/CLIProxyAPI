@@ -1,3 +1,7 @@
+# Server host/interface to bind to. Default is empty ("") to bind all interfaces (IPv4 + IPv6).
+# Use "127.0.0.1" or "localhost" to restrict access to local machine only.
+host: ""
+
 # Server port
 port: 8317
 
@@ -101,8 +105,8 @@ ws-auth: false
 #     excluded-models:
 #       - "claude-opus-4-5-20251101" # exclude specific models (exact match)
 #       - "claude-3-*"               # wildcard matching prefix (e.g. claude-3-7-sonnet-20250219)
-#       - "*-think"                  # wildcard matching suffix (e.g. claude-opus-4-5-thinking)
-#       - "*-haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
+#       - "*-thinking"               # wildcard matching suffix (e.g. claude-opus-4-5-thinking)
+#       - "*haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
 
 # Kiro token file configuration (takes precedence over auto-detected kiro-auth-token.json)
 #kiro-token-file:
@@ -145,6 +149,8 @@ ws-auth: false
 #   upstream-api-key: ""
 #   # Restrict Amp management routes (/api/auth, /api/user, etc.) to localhost only (recommended)
 #   restrict-management-to-localhost: true
+#   # Force model mappings to run before checking local API keys (default: false)
+#   force-model-mappings: false
 #   # Amp Model Mappings
 #   # Route unavailable Amp models to alternative models available in your local proxy.
 #   # Useful when Amp CLI requests models you don't have access to (e.g., Claude Opus 4.5)

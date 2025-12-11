@@ -123,6 +123,15 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 							functionResponse := client.FunctionResponse{ID: toolCallID, Name: funcName, Response: map[string]interface{}{"result": responseData}}
 							clientContent.Parts = append(clientContent.Parts, client.Part{FunctionResponse: &functionResponse})
 						}
+					} else if contentTypeResult.Type == gjson.String && contentTypeResult.String() == "image" {
+						sourceResult := contentResult.Get("source")
+						if sourceResult.Get("type").String() == "base64" {
+							inlineData := &client.InlineData{
+								MimeType: sourceResult.Get("media_type").String(),
+								Data:     sourceResult.Get("data").String(),
+							}
+							clientContent.Parts = append(clientContent.Parts, client.Part{InlineData: inlineData})
+						}
 					}
 				}
 				contents = append(contents, clientContent)
@@ -180,7 +189,6 @@ func ConvertClaudeRequestToAntigravity(modelName string, inputRawJSON []byte, _ 
 		if t.Get("type").String() == "enabled" {
 			if b := t.Get("budget_tokens"); b.Exists() && b.Type == gjson.Number {
 				budget := int(b.Int())
-				budget = util.NormalizeThinkingBudget(modelName, budget)
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.thinkingBudget", budget)
 				out, _ = sjson.Set(out, "request.generationConfig.thinkingConfig.include_thoughts", true)
 			}
