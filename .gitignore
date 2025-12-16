@@ -121,6 +121,8 @@ archived/
 # Tooling metadata
 .vscode/*
 .claude/*
+.serena/*
+.bmad/*
 
 # macOS
 .DS_Store
