@@ -121,6 +121,7 @@ archived/
 # Tooling metadata
 .vscode/*
 .claude/*
+.gemini/*
 .serena/*
 .agent/*
 .bmad/*
