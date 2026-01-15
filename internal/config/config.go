@@ -242,6 +242,10 @@ type ClaudeKey struct {
 	// APIKey is the authentication key for accessing Claude API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/claude-sonnet-4").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -279,6 +283,10 @@ func (m ClaudeModel) GetAlias() string { return m.Alias }
 type CodexKey struct {
 	// APIKey is the authentication key for accessing Codex API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
+
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gpt-5-codex").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -318,6 +326,10 @@ type GeminiKey struct {
 	// APIKey is the authentication key for accessing Gemini API services.
 	APIKey string `yaml:"api-key" json:"api-key"`
 
+	// Priority controls selection preference when multiple credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
+
 	// Prefix optionally namespaces models for this credential (e.g., "teamA/gemini-3-pro-preview").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
 
@@ -354,6 +366,10 @@ func (m GeminiModel) GetAlias() string { return m.Alias }
 type OpenAICompatibility struct {
 	// Name is the identifier for this OpenAI compatibility configuration.
 	Name string `yaml:"name" json:"name"`
+
+	// Priority controls selection preference when multiple providers or credentials match.
+	// Higher values are preferred; defaults to 0.
+	Priority int `yaml:"priority,omitempty" json:"priority,omitempty"`
 
 	// Prefix optionally namespaces model aliases for this provider (e.g., "teamA/kimi-k2").
 	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
@@ -521,7 +537,7 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 // SanitizeOAuthModelMappings normalizes and deduplicates global OAuth model name mappings.
 // It trims whitespace, normalizes channel keys to lower-case, drops empty entries,
-// and ensures (From, To) pairs are unique within each channel.
+// allows multiple aliases per upstream name, and ensures aliases are unique within each channel.
 func (cfg *Config) SanitizeOAuthModelMappings() {
 	if cfg == nil || len(cfg.OAuthModelMappings) == 0 {
 		return
@@ -532,7 +548,6 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 		if channel == "" || len(mappings) == 0 {
 			continue
 		}
-		seenName := make(map[string]struct{}, len(mappings))
 		seenAlias := make(map[string]struct{}, len(mappings))
 		clean := make([]ModelNameMapping, 0, len(mappings))
 		for _, mapping := range mappings {
@@ -544,15 +559,10 @@ func (cfg *Config) SanitizeOAuthModelMappings() {
 			if strings.EqualFold(name, alias) {
 				continue
 			}
-			nameKey := strings.ToLower(name)
 			aliasKey := strings.ToLower(alias)
-			if _, ok := seenName[nameKey]; ok {
-				continue
-			}
 			if _, ok := seenAlias[aliasKey]; ok {
 				continue
 			}
-			seenName[nameKey] = struct{}{}
 			seenAlias[aliasKey] = struct{}{}
 			clean = append(clean, ModelNameMapping{Name: name, Alias: alias, Fork: mapping.Fork})
 		}
