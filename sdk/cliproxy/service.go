@@ -124,6 +124,7 @@ func (s *Service) ensureAuthUpdateQueue(ctx context.Context) {
 }
 
 func (s *Service) consumeAuthUpdates(ctx context.Context) {
+	ctx = coreauth.WithSkipPersist(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -542,7 +543,6 @@ func (s *Service) Run(ctx context.Context) error {
 				selector = &coreauth.RoundRobinSelector{}
 			}
 			s.coreManager.SetSelector(selector)
-			log.Infof("routing strategy updated to %s", nextStrategy)
 		}
 
 		s.applyRetryConfig(newCfg)
@@ -678,6 +678,10 @@ func (s *Service) ensureAuthDir() error {
 // registerModelsForAuth (re)binds provider models in the global registry using the core auth ID as client identifier.
 func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 	if a == nil || a.ID == "" {
+		return
+	}
+	if a.Disabled {
+		GlobalModelRegistry().UnregisterClient(a.ID)
 		return
 	}
 	authKind := strings.ToLower(strings.TrimSpace(a.Attributes["auth_kind"]))
