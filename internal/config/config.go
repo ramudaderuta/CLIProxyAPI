@@ -18,7 +18,10 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+const (
+	DefaultPanelGitHubRepository = "https://github.com/router-for-me/Cli-Proxy-API-Management-Center"
+	DefaultPprofAddr             = "127.0.0.1:8316"
+)
 
 // Config represents the application's configuration, loaded from a YAML file.
 type Config struct {
@@ -40,6 +43,9 @@ type Config struct {
 
 	// Debug enables or disables debug-level logging and other debug features.
 	Debug bool `yaml:"debug" json:"debug"`
+
+	// Pprof config controls the optional pprof HTTP debug server.
+	Pprof PprofConfig `yaml:"pprof" json:"pprof"`
 
 	// CommercialMode disables high-overhead HTTP middleware features to minimize per-request memory usage.
 	CommercialMode bool `yaml:"commercial-mode" json:"commercial-mode"`
@@ -119,6 +125,14 @@ type TLSConfig struct {
 	Cert string `yaml:"cert" json:"cert"`
 	// Key is the path to the TLS private key file.
 	Key string `yaml:"key" json:"key"`
+}
+
+// PprofConfig holds pprof HTTP server settings.
+type PprofConfig struct {
+	// Enable toggles the pprof HTTP debug server.
+	Enable bool `yaml:"enable" json:"enable"`
+	// Addr is the host:port address for the pprof HTTP server.
+	Addr string `yaml:"addr" json:"addr"`
 }
 
 // RemoteManagement holds management API configuration under 'remote-management'.
@@ -479,14 +493,15 @@ func LoadConfig(configFile string) (*Config, error) {
 // If optional is true and the file is missing, it returns an empty Config.
 // If optional is true and the file is empty or invalid, it returns an empty Config.
 func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
-	// Perform oauth-model-alias migration before loading config.
-	// This migrates oauth-model-mappings to oauth-model-alias if needed.
-	if migrated, err := MigrateOAuthModelAlias(configFile); err != nil {
-		// Log warning but don't fail - config loading should still work
-		fmt.Printf("Warning: oauth-model-alias migration failed: %v\n", err)
-	} else if migrated {
-		fmt.Println("Migrated oauth-model-mappings to oauth-model-alias")
-	}
+	// NOTE: Startup oauth-model-alias migration is intentionally disabled.
+	// Reason: avoid mutating config.yaml during server startup.
+	// Re-enable the block below if automatic startup migration is needed again.
+	// if migrated, err := MigrateOAuthModelAlias(configFile); err != nil {
+	// 	// Log warning but don't fail - config loading should still work
+	// 	fmt.Printf("Warning: oauth-model-alias migration failed: %v\n", err)
+	// } else if migrated {
+	// 	fmt.Println("Migrated oauth-model-mappings to oauth-model-alias")
+	// }
 
 	// Read the entire configuration file into memory.
 	data, err := os.ReadFile(configFile)
@@ -514,6 +529,8 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.ErrorLogsMaxFiles = 10
 	cfg.UsageStatisticsEnabled = false
 	cfg.DisableCooling = false
+	cfg.Pprof.Enable = false
+	cfg.Pprof.Addr = DefaultPprofAddr
 	cfg.AmpCode.RestrictManagementToLocalhost = false // Default to false: API key auth is sufficient
 	cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
 	if err = yaml.Unmarshal(data, &cfg); err != nil {
@@ -524,18 +541,21 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 		return nil, fmt.Errorf("failed to parse config file: %w", err)
 	}
 
-	var legacy legacyConfigData
-	if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
-		if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
-			cfg.legacyMigrationPending = true
-		}
-		if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
-			cfg.legacyMigrationPending = true
-		}
-		if cfg.migrateLegacyAmpConfig(&legacy) {
-			cfg.legacyMigrationPending = true
-		}
-	}
+	// NOTE: Startup legacy key migration is intentionally disabled.
+	// Reason: avoid mutating config.yaml during server startup.
+	// Re-enable the block below if automatic startup migration is needed again.
+	// var legacy legacyConfigData
+	// if errLegacy := yaml.Unmarshal(data, &legacy); errLegacy == nil {
+	// 	if cfg.migrateLegacyGeminiKeys(legacy.LegacyGeminiKeys) {
+	// 		cfg.legacyMigrationPending = true
+	// 	}
+	// 	if cfg.migrateLegacyOpenAICompatibilityKeys(legacy.OpenAICompat) {
+	// 		cfg.legacyMigrationPending = true
+	// 	}
+	// 	if cfg.migrateLegacyAmpConfig(&legacy) {
+	// 		cfg.legacyMigrationPending = true
+	// 	}
+	// }
 
 	// Hash remote management key if plaintext is detected (nested)
 	// We consider a value to be already hashed if it looks like a bcrypt hash ($2a$, $2b$, or $2y$ prefix).
@@ -554,6 +574,11 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	cfg.RemoteManagement.PanelGitHubRepository = strings.TrimSpace(cfg.RemoteManagement.PanelGitHubRepository)
 	if cfg.RemoteManagement.PanelGitHubRepository == "" {
 		cfg.RemoteManagement.PanelGitHubRepository = DefaultPanelGitHubRepository
+	}
+
+	cfg.Pprof.Addr = strings.TrimSpace(cfg.Pprof.Addr)
+	if cfg.Pprof.Addr == "" {
+		cfg.Pprof.Addr = DefaultPprofAddr
 	}
 
 	if cfg.LogsMaxTotalSizeMB < 0 {
@@ -591,17 +616,20 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 	// Validate raw payload rules and drop invalid entries.
 	cfg.SanitizePayloadRules()
 
-	if cfg.legacyMigrationPending {
-		fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
-		if !optional && configFile != "" {
-			if err := SaveConfigPreserveComments(configFile, &cfg); err != nil {
-				return nil, fmt.Errorf("failed to persist migrated legacy config: %w", err)
-			}
-			fmt.Println("Legacy configuration normalized and persisted.")
-		} else {
-			fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
-		}
-	}
+	// NOTE: Legacy migration persistence is intentionally disabled together with
+	// startup legacy migration to keep startup read-only for config.yaml.
+	// Re-enable the block below if automatic startup migration is needed again.
+	// if cfg.legacyMigrationPending {
+	// 	fmt.Println("Detected legacy configuration keys, attempting to persist the normalized config...")
+	// 	if !optional && configFile != "" {
+	// 		if err := SaveConfigPreserveComments(configFile, &cfg); err != nil {
+	// 			return nil, fmt.Errorf("failed to persist migrated legacy config: %w", err)
+	// 		}
+	// 		fmt.Println("Legacy configuration normalized and persisted.")
+	// 	} else {
+	// 		fmt.Println("Legacy configuration normalized in memory; persistence skipped.")
+	// 	}
+	// }
 
 	// Return the populated configuration struct.
 	return &cfg, nil
